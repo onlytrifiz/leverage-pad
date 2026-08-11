@@ -1,0 +1,23 @@
+# segreti — MAI committare (chiavi private, master secret, RPC con api-key)
+.env
+.env.*
+!.env.example
+*.local.md
+*.local.json
+secrets*.md
+secrets*.json
+
+# stato runtime (contiene sub-wallet address, contabilita', lockfile, fingerprint)
+state/*.json
+state/*.lock
+
+# dipendenze
+node_modules/
+lighter/.venv/
+**/__pycache__/
+*.pyc
+
+# artefatti di build/temp
+out/
+cache/
+*.log

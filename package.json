@@ -1,0 +1,15 @@
+{
+  "name": "leverage-pad",
+  "version": "0.1.0",
+  "description": "perpspad-style launchpad su Robinhood Chain: coin con liquidita' lockata per sempre, fee che alimentano un perp a leva su Lighter, buyback&burn continuo.",
+  "license": "MIT",
+  "scripts": {
+    "deploy-locker": "node deployLocker.js",
+    "launch": "node launchCoin.js",
+    "keeper": "node keeper.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "ethers": "^5.8.0"
+  }
+}
