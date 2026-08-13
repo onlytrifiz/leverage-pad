@@ -32,23 +32,40 @@ function call(cmd, params = {}, env = {}) {
         let parsed = null;
         try { parsed = JSON.parse((stdout || '').trim().split('\n').pop()); } catch { /* sotto */ }
         if (parsed && parsed.ok) return resolve(parsed);
-        if (parsed && parsed.error) return reject(new Error('lighter:' + cmd + ': ' + parsed.error));
+        if (parsed && parsed.error) {
+          // il sidecar ha risposto con un errore strutturato: l'API ha VALUTATO e
+          // rifiutato la richiesta, quindi sappiamo che non e' successo nulla.
+          // `definitive` permette al chiamante di ripristinare lo stato in sicurezza.
+          const e = new Error('lighter:' + cmd + ': ' + parsed.error);
+          e.definitive = true;
+          return reject(e);
+        }
+        // nessun JSON: timeout, processo ucciso, crash → esito AMBIGUO, la
+        // richiesta potrebbe essere partita. Nessun ripristino automatico.
         return reject(new Error('lighter:' + cmd + ': ' + (err ? err.message : 'output non-JSON')));
       });
   });
 }
 
+// cache con TTL: il keeper gira per giorni e size_dec/min_base possono cambiare
+// lato exchange — una cache eterna corromperebbe la scala della contabilita' tranche.
 let _markets = null;
+let _marketsAt = 0;
+const MARKETS_TTL_MS = 10 * 60 * 1000;
 async function markets() {
-  if (!_markets) _markets = (await call('markets')).markets;
+  if (!_markets || Date.now() - _marketsAt > MARKETS_TTL_MS) {
+    _markets = (await call('markets')).markets;
+    _marketsAt = Date.now();
+  }
   return _markets;
 }
-// symbol → {index, sizeDec, priceDec, status}
+// symbol → {index, sizeDec, priceDec, status, minBaseUnits}
 async function market(symbol) {
   const m = await markets();
   const info = m[symbol];
   if (!info) throw new Error(`mercato Lighter "${symbol}" inesistente sul profilo ${config.LIGHTER_PROFILE}`);
-  return { index: info.index, sizeDec: info.size_dec, priceDec: info.price_dec, status: info.status };
+  const minBaseUnits = info.min_base ? Math.max(1, Math.round(parseFloat(info.min_base) * 10 ** info.size_dec)) : 1;
+  return { index: info.index, sizeDec: info.size_dec, priceDec: info.price_dec, status: info.status, minBaseUnits };
 }
 
 const selftest = () => call('selftest');

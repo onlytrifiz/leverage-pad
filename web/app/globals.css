@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+/*
+ * leverage-pad — terminale scuro tinto di verde Robinhood.
+ * Mark validati (dataviz): up #16b14c · down #ad3a3a su #0a0c0a
+ * (deutan ΔE 14.2, contrasto ≥3:1). Le varianti -bright sono SOLO testo/glow.
+ * #00c805 e' il verde brand: bottoni pieni con testo scuro, mai testo minuto.
+ */
+@theme {
+  --color-void: #0a0c0a;
+  --color-panel: #0e120e;
+  --color-panel-2: #131a14;
+  --color-line: #1e281f;
+  --color-line-2: #2c3d2e;
+
+  --color-ink: #e8ece8;
+  --color-ink-2: #9aa89c;
+  --color-ink-3: #5c6a5e;
+
+  --color-accent: #00c805;
+  --color-accent-bright: #2ee06b;
+  --color-accent-dim: #06340f;
+
+  --color-up: #16b14c;
+  --color-up-bright: #2ee06b;
+  --color-down: #ad3a3a;
+  --color-down-bright: #ff6b6b;
+
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+html {
+  background: var(--color-void);
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-void);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  position: relative;
+}
+
+/* atmosfera: due aloni verdi fissi, molto tenui — il resto resta nero */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(900px 420px at 78% -80px, rgba(0, 200, 5, 0.07), transparent 60%),
+    radial-gradient(700px 500px at -10% 110%, rgba(0, 200, 5, 0.04), transparent 60%);
+}
+
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+::selection {
+  background: var(--color-accent);
+  color: var(--color-void);
+}
+
+/* label micro uppercase — l'unita' tipografica base del terminale */
+.lbl {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-ink-3);
+  font-weight: 500;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* pannello: gradiente appena percettibile + filo di luce sul bordo alto */
+.panel {
+  background: linear-gradient(180deg, #10150f 0%, var(--color-panel) 100%);
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(232, 236, 232, 0.03);
+}
+
+/* header di sezione: marker verde + titolo */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--color-line);
+}
+.panel-head .lbl:first-child::before {
+  content: "▪ ";
+  color: var(--color-accent-bright);
+}
+
+/* bottone brand: verde robinhood pieno, testo scuro */
+.btn-primary {
+  background: var(--color-accent);
+  color: #04140a;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 11px 14px;
+  width: 100%;
+  transition: box-shadow 0.15s, filter 0.15s;
+}
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.12);
+  box-shadow: 0 0 24px rgba(0, 200, 5, 0.35);
+}
+.btn-primary:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* glow del segno-firma (odometro burn, market cap) */
+.green-glow {
+  text-shadow: 0 0 18px rgba(46, 224, 107, 0.4), 0 0 44px rgba(0, 200, 5, 0.16);
+}
+
+/* nastro prezzi: scorre di mezza larghezza (la lista e' duplicata) */
+@keyframes tape {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+/* freccia animata della pipeline del motore (home) */
+@keyframes flow-dash {
+  to { background-position-x: -14px; }
+}
+.flow-arrow {
+  height: 1px;
+  flex: 1;
+  min-width: 18px;
+  background-image: linear-gradient(90deg, var(--color-accent-bright) 55%, transparent 45%);
+  background-size: 7px 1px;
+  animation: flow-dash 0.9s linear infinite;
+  opacity: 0.65;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--color-accent-bright);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

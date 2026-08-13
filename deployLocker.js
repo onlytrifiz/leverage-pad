@@ -5,10 +5,10 @@ const config = require('./config');
 const { provider, gasPrice } = require('./lib/chain');
 
 /**
- * deployLocker.js — deploy one-shot del PerpsPadLocker (NPM nel constructor).
+ * deployLocker.js — deploy one-shot del MultiplyLocker (NPM nel constructor).
  *
  * Il locker e' UNO per tutto il launchpad: senza owner e senza upgrade, una volta
- * deployato non si tocca piu'. L'address finisce in perpspad/state/locker.deployed.json
+ * deployato non si tocca piu'. L'address finisce in state/locker.deployed.json
  * e va copiato nel .env come PERPSPAD_LOCKER.
  *
  * Uso: node deployLocker.js [--dry]
@@ -19,8 +19,8 @@ async function main() {
   if (config.LOCKER) console.log(`ATTENZIONE: PERPSPAD_LOCKER gia' settato (${config.LOCKER}) — un secondo deploy crea un locker NUOVO e separato`);
   if (!config.DEPLOYER_KEY) throw new Error('DEPLOYER_PRIVATE_KEY/LAUNCHER_PRIVATE_KEY mancante nel .env');
   const deployer = new ethers.Wallet(config.DEPLOYER_KEY, provider);
-  const art = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'contracts', 'PerpsPadLocker.json'), 'utf8'));
-  console.log(`deploy PerpsPadLocker(NPM ${config.POSITION_MANAGER}) da ${deployer.address}…`);
+  const art = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'contracts', 'MultiplyLocker.json'), 'utf8'));
+  console.log(`deploy MultiplyLocker(NPM ${config.POSITION_MANAGER}) da ${deployer.address}…`);
   if (dry) { console.log('--dry: non inviato'); return; }
   const f = new ethers.ContractFactory(art.abi, art.bytecode, deployer);
   const c = await f.deploy(config.POSITION_MANAGER, { gasPrice: await gasPrice(), type: 0 });

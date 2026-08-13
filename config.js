@@ -29,31 +29,47 @@ module.exports = {
   // locker deployato (riempito da deployLocker.js — vuoto finche' non si deploya)
   LOCKER: process.env.PERPSPAD_LOCKER || '',
 
-  // ── parametri di lancio (stile pons, come launchDirect) ─────────────────────
+  // ── parametri di lancio ─────────────────────────────────────────────────────
   DEFAULT_SUPPLY: '1000000000',   // 1B, tutta in pool one-sided
   DEFAULT_POOL_FEE: 10000,        // 1%, spacing 200
-  DEFAULT_MCAP_USD: '1.3557',     // mcap iniziale in unita' quote (pons-equivalente)
+  DEFAULT_MCAP_USD: '4000',       // mcap iniziale in unita' quote (in linea coi launchpad)
 
   // ── economia keeper ─────────────────────────────────────────────────────────
-  // Il whitepaper perpspad dichiara 50/15/20/15 (perp/creator/treasury/buyback), ma
-  // il loro CODICE reale divide la partner-fee 50% perp / 25% buyback / 25% treasury,
-  // con il 15% creator su un canale Meteora SEPARATO (creator.claimCreatorTradingFee).
-  // Noi abbiamo UN solo flusso (il locker incassa tutto), quindi teniamo il creator
-  // come slice di testa (15%, la promessa di prodotto) e applichiamo il loro rapporto
-  // 50/25/25 al resto → perp 42.5% / buyback 21.25% / treasury 21.25% / creator 15%.
-  // Ogni bucket e' override via env (in bps, somma DEVE fare 10000). perp = resto esatto.
+  // Split multiply.cash: 100% perp — full degen. TUTTE le fee (lato quote)
+  // diventano collaterale della posizione. Il protocollo guadagna SOLO dal 25%
+  // del profitto perp che rientra (TP_MASTER_SHARE_BPS); il restante 75% fa
+  // buyback&burn, piu' il burn del lato coin delle fee a ogni tick.
+  // Ogni bucket resta override via env (bps, somma DEVE fare 10000).
   SPLIT_BPS: {
-    perp: Number(process.env.PERPSPAD_SPLIT_PERP ?? 4250),
-    creator: Number(process.env.PERPSPAD_SPLIT_CREATOR ?? 1500),
-    treasury: Number(process.env.PERPSPAD_SPLIT_TREASURY ?? 2125),
-    buyback: Number(process.env.PERPSPAD_SPLIT_BUYBACK ?? 2125),
+    perp: Number(process.env.PERPSPAD_SPLIT_PERP ?? 10000),
+    creator: Number(process.env.PERPSPAD_SPLIT_CREATOR ?? 0),
+    treasury: Number(process.env.PERPSPAD_SPLIT_TREASURY ?? 0),
+    buyback: Number(process.env.PERPSPAD_SPLIT_BUYBACK ?? 0),
   },
-  OPEN_GATE_USD: 20,              // apre il perp quando la riserva perp arriva qui
-  TOPUP_STEP_USD: 20,             // ogni +$20 di riserva → top-up collaterale
-  PERP_WITHDRAW_FLOOR_USD: Number(process.env.PERPSPAD_PERP_WITHDRAW_FLOOR_USD || 25), // preleva il profitto realizzato da Lighter sopra questa soglia
+  OPEN_GATE_USD: Number(process.env.PERPSPAD_OPEN_GATE_USD || 20),   // apre il perp quando la riserva arriva qui
+  TOPUP_STEP_USD: Number(process.env.PERPSPAD_TOPUP_STEP_USD || 20), // ogni +N$ di riserva → top-up collaterale
+
+  // ── profili di rischio del take-profit (scelti al lancio, --risk) ───────────
+  // Il TP e' PER TRANCHE: ogni deposito/topup e' una tranche col suo entry, e
+  // quando il suo PnL raggiunge +triggerPct (sul collaterale della tranche, cioe'
+  // il sottostante si muove di triggerPct/leva dal suo entry) la tranche si
+  // chiude TUTTA e realizza. Niente diluizione da topup: ogni dollaro di fee
+  // corre verso il proprio target.
+  // Override via env (utili per tuning e per i test end-to-end: abbassare il
+  // trigger fa scattare il take-profit senza aspettare il movimento reale).
+  RISK_PROFILES: {
+    safe: { triggerPct: Number(process.env.PERPSPAD_RISK_SAFE ?? 0.20) },          // ogni tranche incassa a +20%
+    balanced: { triggerPct: Number(process.env.PERPSPAD_RISK_BALANCED ?? 0.50) },  // ogni tranche incassa a +50%
+    degen: { triggerPct: Number(process.env.PERPSPAD_RISK_DEGEN ?? 1.00) },        // ogni tranche incassa a +100%
+  },
+  DEFAULT_RISK: 'balanced',
+  // Preleva il profitto realizzato da Lighter sopra questa soglia. Lighter rifiuta
+  // i prelievi piccoli ("withdrawal amount is too small", misurato: $0.07 no) —
+  // tenere il floor ben sopra quel minimo evita cicli di rifiuto inutili.
+  PERP_WITHDRAW_FLOOR_USD: Number(process.env.PERPSPAD_PERP_WITHDRAW_FLOOR_USD || 25),
   TP_MASTER_SHARE_BPS: Number(process.env.PERPSPAD_TP_MASTER_SHARE_BPS || 2500),       // del profitto rientrato: 25% treasury, 75% buyback (come perpspad)
-  BUYBACK_FLOOR_USD: 25,          // sotto questa soglia il buyback aspetta
-  BUYBACK_MAX_PER_TICK_USD: 25,   // un tick spende al massimo questo (niente ordini block-moving)
+  BUYBACK_FLOOR_USD: Number(process.env.PERPSPAD_BUYBACK_FLOOR_USD || 25),        // sotto questa soglia il buyback aspetta
+  BUYBACK_MAX_PER_TICK_USD: Number(process.env.PERPSPAD_BUYBACK_MAX_USD || 25),   // un tick spende al massimo questo (niente ordini block-moving)
   BUYBACK_MAX_SLIPPAGE_BPS: Number(process.env.PERPSPAD_BUYBACK_SLIPPAGE_BPS || 300), // 3%: minOut dal prezzo spot
   CREATOR_MIN_PAYOUT_USD: 1,      // payout creator sotto $1 restano in accumulo
   CLAIM_MIN_USD: 0.5,             // non chiama collect() per briciole

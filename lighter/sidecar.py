@@ -95,6 +95,7 @@ async def cmd_markets(p):
             res[sym] = {"index": md.get("market_id", md.get("market_index")),
                         "size_dec": md.get("supported_size_decimals", md.get("size_decimals")),
                         "price_dec": md.get("supported_price_decimals", md.get("price_decimals")),
+                        "min_base": md.get("min_base_amount"),
                         "status": md.get("status")}
         return {"ok": True, "markets": res}
     finally:
@@ -139,6 +140,7 @@ async def cmd_account(p):
             })
         return {"ok": True,
                 "collateral": a0.get("collateral", a0.get("available_balance")),
+                "available_balance": a0.get("available_balance"),
                 "positions": norm, "raw": a0}
     finally:
         await c.close()
@@ -210,9 +212,11 @@ async def _mark_and_sizedec(market_index):
 
 
 async def _market_order(p, reduce_only):
-    # base_amount esplicito (per il close: 20% della size corrente, nota al keeper)
-    # oppure dimensionato da notionalUsd al prezzo mark (per open/topup)
+    # base_amount esplicito (per il close: la size delle tranche mature, nota al keeper)
+    # oppure dimensionato da notionalUsd al prezzo mark (per open/topup).
+    # Il mark usato per dimensionare torna nel response: e' l'entry della tranche.
     base_amount = p.get("baseAmount")
+    mark = None
     if base_amount is None:
         mark, size_dec = await _mark_and_sizedec(p["marketIndex"])
         if not mark or mark <= 0:
@@ -231,7 +235,7 @@ async def _market_order(p, reduce_only):
             is_ask=bool(p["isAsk"]),
             reduce_only=reduce_only,
         )
-        return {"ok": err is None, "txHash": tx_hash, "baseAmount": int(base_amount), "error": err}
+        return {"ok": err is None, "txHash": tx_hash, "baseAmount": int(base_amount), "mark": mark, "error": err}
     finally:
         await client.close()
 

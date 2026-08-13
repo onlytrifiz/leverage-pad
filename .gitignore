@@ -21,3 +21,5 @@ lighter/.venv/
 out/
 cache/
 *.log
+web/.env.local
+.playwright-mcp/

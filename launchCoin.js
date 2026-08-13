@@ -26,8 +26,10 @@ const registry = require('./lib/registry');
  *
  *   --pair    default USDG (quote in dollari → gate USD esatti); qualsiasi ERC20
  *             (stock token compresi) e' supportato, ma serve PERPSPAD_PRICE_<SYM>
- *   --creator default: il deployer. E' SOLO una destinazione payout (15%)
- *   --market/--side/--lev: il sottostante perp (fase Lighter; per ora registrato)
+ *   --creator default: il deployer. Destinazione payout (attiva solo se lo split
+ *             creator e' > 0; default 0)
+ *   --market/--side/--lev: il sottostante perp su Lighter
+ *   --risk    profilo take-profit: safe | balanced | degen (default balanced)
  *   --dry     stampa il piano senza inviare nulla
  *
  * Ripresa: se un run muore a meta', rilanciare con --token 0x… salta il deploy
@@ -46,9 +48,9 @@ function requireDeployer() {
 }
 
 async function deployToken(deployer, name, symbol, supplyStr) {
-  const art = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'contracts', 'PerpsPadToken.json'), 'utf8'));
+  const art = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'contracts', 'MultiplyToken.json'), 'utf8'));
   const supply = ethers.utils.parseUnits(supplyStr, 18);
-  console.log(`deploy PerpsPadToken "${name}" (${symbol}) supply ${supplyStr}…`);
+  console.log(`deploy MultiplyToken "${name}" (${symbol}) supply ${supplyStr}…`);
   const f = new ethers.ContractFactory(art.abi, art.bytecode, deployer);
   const c = await f.deploy(name, symbol, supply, { gasPrice: await gasPrice(), type: 0 });
   console.log('  tx', c.deployTransaction.hash);
@@ -73,13 +75,21 @@ async function poolTick(pool) {
 // H2 — l'NFT LP e' DAVVERO la posizione di questa coin? (token0/token1/fee giusti,
 // liquidita' > 0). Senza questo check un --lp sbagliato lockerebbe l'NFT del pool
 // errato, lasciando libera la LP vera — garanzia di lock rotta in modo invisibile.
-async function assertLpMatches(npm, lpTokenId, token, pair, fee) {
+async function assertLpMatches(npm, lpTokenId, token, pair, fee, expectedRange) {
   const p = await npm.positions(lpTokenId);
   const set = new Set([p.token0.toLowerCase(), p.token1.toLowerCase()]);
   if (!set.has(token.toLowerCase()) || !set.has(pair.toLowerCase()) || Number(p.fee) !== Number(fee)) {
     throw new Error(`LP NFT ${lpTokenId} NON e' la posizione di questa coin (token0=${p.token0} token1=${p.token1} fee=${p.fee}); atteso ${token}/${pair} fee ${fee}`);
   }
   if (p.liquidity.isZero()) throw new Error(`LP NFT ${lpTokenId} ha liquidita' 0`);
+  // due NFT sullo stesso pool si distinguono dal RANGE: senza questo check un --lp
+  // sbagliato lockerebbe una posizione dust lasciando libera quella con la supply.
+  if (expectedRange) {
+    const tol = expectedRange.spacing;
+    if (Math.abs(Number(p.tickLower) - expectedRange.tickLower) > tol || Math.abs(Number(p.tickUpper) - expectedRange.tickUpper) > tol) {
+      throw new Error(`LP NFT ${lpTokenId} ha range [${p.tickLower}, ${p.tickUpper}] diverso dal piano [${expectedRange.tickLower}, ${expectedRange.tickUpper}]: potrebbe essere un'ALTRA posizione sullo stesso pool — verifica il tokenId`);
+    }
+  }
 }
 
 async function main() {
@@ -117,12 +127,14 @@ async function main() {
   // 2) pool one-sided (skip se gia' esistente = ripresa)
   let pool = await getPool(token, pair, fee);
   let lpTokenId = null;
+  let rangeRef = null; // range del piano (fresh o ricostruito): usato dal check dell'LP
   const npm = new ethers.Contract(config.POSITION_MANAGER, npmIface, deployer);
   if (pool === ethers.constants.AddressZero) {
     const bal = await erc20(token).balanceOf(deployer.address);
     if (bal.isZero()) throw new Error('il deployer non ha supply del token');
     const mcapRaw = ethers.utils.parseUnits(arg('mcap', config.DEFAULT_MCAP_USD), pMeta.decimals);
     const plan = buildLaunchPlan({ token, pair, fee, spacing, supplyRaw: bal, mcapRaw, recipient: deployer.address });
+    rangeRef = { tickLower: plan.tickLower, tickUpper: plan.tickUpper, spacing };
     console.log(` piano      : tick ${plan.tick} range [${plan.tickLower} → ${plan.tickUpper}] one-sided, tutta la supply`);
 
     // H1 — in --dry il piano si stampa e si ESCE, senza inviare nulla (anche con --token,
@@ -155,8 +167,16 @@ async function main() {
     // M1 — pool gia' esistente: puo' essere una ripresa NOSTRA o un pool creato da un
     // terzo (factory permissionless, CA pubblica dopo il deploy). Distinguiamo dal tick.
     const mcapRaw = ethers.utils.parseUnits(arg('mcap', config.DEFAULT_MCAP_USD), pMeta.decimals);
-    const bal = await erc20(token).balanceOf(deployer.address);
-    const expected = buildLaunchPlan({ token, pair, fee, spacing, supplyRaw: bal.isZero() ? mcapRaw : bal, mcapRaw, recipient: deployer.address });
+    // Ripresa (mint fatto, lock no): il riferimento per ricalcolare il tick atteso
+    // e' la supply TOTALE del token — la stessa che il piano originale ha usato,
+    // dato che al lancio il deployer detiene l'intera supply. NON usare il saldo
+    // del deployer: dopo il mint one-sided gli resta solo DUST (misurato: ~1.8e8
+    // wei) e il tick calcolato da li' e' spazzatura, rendendo il check M1 inutile
+    // (e potenzialmente indulgente verso un pool ostile a tick vicino a quello).
+    const supplyRef = await erc20(token).totalSupply();
+    if (supplyRef.isZero()) throw new Error('totalSupply del token e\' 0: impossibile ricostruire il tick atteso');
+    const expected = buildLaunchPlan({ token, pair, fee, spacing, supplyRaw: supplyRef, mcapRaw, recipient: deployer.address });
+    rangeRef = { tickLower: expected.tickLower, tickUpper: expected.tickUpper, spacing };
     const tick = await poolTick(pool);
     const atOurTick = Math.abs(Number(tick) - expected.tick) <= spacing;
     console.log(` pool       : ${pool} gia' esistente (tick ${tick}, atteso ~${expected.tick}) — ${atOurTick ? 'coerente col nostro lancio (ripresa)' : '⚠️  NON al nostro tick: forse creato da un TERZO'}`);
@@ -177,10 +197,11 @@ async function main() {
   if (registered === ethers.constants.AddressZero) {
     const owner = await npm.ownerOf(lpTokenId);
     if (owner.toLowerCase() !== deployer.address.toLowerCase()) throw new Error(`LP NFT ${lpTokenId} non e' del deployer (owner ${owner})`);
-    await assertLpMatches(npm, lpTokenId, token, pair, fee); // H2: e' davvero la posizione di QUESTA coin
-    if (dry) { console.log(`\n--dry: lockerei il tokenId ${lpTokenId} → ${subWallet.address} (non inviato)`); return; }
-    console.log(' lock LP NFT → locker (permanente)…');
-    const data = ethers.utils.defaultAbiCoder.encode(['address'], [subWallet.address]);
+    await assertLpMatches(npm, lpTokenId, token, pair, fee, rangeRef); // H2: e' davvero la posizione di QUESTA coin (pair, fee E range)
+    if (dry) { console.log(`\n--dry: lockerei il tokenId ${lpTokenId} → fee quote a ${subWallet.address}, fee coin bruciate dal contratto (non inviato)`); return; }
+    console.log(' lock LP NFT → locker (permanente, burn del lato coin nel contratto)…');
+    // data = (recipient del lato quote, token della coin da bruciare a ogni collect)
+    const data = ethers.utils.defaultAbiCoder.encode(['address', 'address'], [subWallet.address, token]);
     const txL = await npm['safeTransferFrom(address,address,uint256,bytes)'](deployer.address, config.LOCKER, lpTokenId, data, { gasLimit: 300000, gasPrice: await gasPrice(), type: 0 });
     console.log('  tx', txL.hash);
     const rcL = await txL.wait();
@@ -191,7 +212,17 @@ async function main() {
     if (registered.toLowerCase() !== subWallet.address.toLowerCase()) throw new Error('feeRecipient registrato DIVERSO dal sub-wallet derivato: master secret cambiato?');
   }
 
-  // 4) registry
+  // 4) registry — anche questo e' un side effect REALE: registrare una coin fa
+  // partire il keeper (collect/swap/burn/deposit con fondi veri) al tick dopo.
+  // In --dry si esce prima, sempre.
+  if (dry) { console.log(`\n--dry: registrerei ${tMeta.symbol} (lp ${lpTokenId}) nel registry — non scritto`); return; }
+  const riskProfile = arg('risk', config.DEFAULT_RISK);
+  if (!config.RISK_PROFILES[riskProfile]) {
+    throw new Error(`profilo di rischio "${riskProfile}" sconosciuto: validi ${Object.keys(config.RISK_PROFILES).join(', ')}`);
+  }
+  // initialSupply: riferimento per "bruciati = initialSupply − totalSupply" (cattura
+  // anche i burn fatti dal locker e dagli utenti via 0xdEaD, non solo quelli del keeper)
+  const initialSupply = Number(ethers.utils.formatUnits(await erc20(token).totalSupply(), 18));
   const reg = registry.load();
   registry.addCoin(reg, {
     token, name: tMeta.name, symbol: tMeta.symbol,
@@ -199,6 +230,7 @@ async function main() {
     fee, pool, lpTokenId,
     subWallet: subWallet.address, creator,
     market: arg('market', 'BTC'), side: arg('side', 'long'), leverage: Number(arg('lev', '3')),
+    riskProfile, initialSupply,
     createdAt: new Date().toISOString(),
   });
   registry.save(reg);

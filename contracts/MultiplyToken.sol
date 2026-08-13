@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.24;
 
-/// @title PerpsPadToken — ERC20 per i lanci perpspad (stile LaunchToken + burn)
+/// @title MultiplyToken — ERC20 dei lanci multiply.cash
 /// @notice Supply fissa mintata al deployer nel constructor. Nessun owner, nessuna
-///         funzione admin, nessuna tassa, nessun mint successivo. Unica aggiunta
-///         rispetto a LaunchToken: burn() pubblica che DIMINUISCE la totalSupply,
-///         cosi' il buyback&burn del keeper e' un burn vero (supply visibile che
-///         scende su explorer), non un parcheggio su 0xdEaD.
-contract PerpsPadToken {
+///         funzione admin, nessuna tassa, nessun mint successivo. Si brucia in due
+///         modi equivalenti: burn() oppure un semplice transfer verso 0xdEaD (il
+///         modo in cui la gente brucia di fatto) — in entrambi i casi la
+///         totalSupply DIMINUISCE davvero, niente supply fantasma parcheggiata
+///         sul dead address.
+/// @dev    Il transfer verso address(0) REVERTA come in qualunque ERC20 standard:
+///         li' una destinazione zero e' quasi sempre un bug del chiamante (campo
+///         non inizializzato), e bruciare in silenzio i suoi token sarebbe peggio
+///         che fermarlo. Per bruciare ci sono burn() e 0xdEaD, entrambi espliciti.
+contract MultiplyToken {
     string public name;
     string public symbol;
     uint8 public constant decimals = 18;
     uint256 public totalSupply;
+
+    address private constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
@@ -46,15 +53,24 @@ contract PerpsPadToken {
     }
 
     function burn(uint256 value) external {
-        balanceOf[msg.sender] -= value;
+        _burn(msg.sender, value);
+    }
+
+    function _burn(address from, uint256 value) internal {
+        balanceOf[from] -= value;
         totalSupply -= value;
-        emit Transfer(msg.sender, address(0), value);
+        emit Transfer(from, address(0), value);
     }
 
     function _transfer(address from, address to, uint256 value) internal {
-        // vietato il transfer verso 0x0: brucerebbe token SENZA ridurre totalSupply
-        // (gonfiando la supply contabile). Per bruciare c'e' burn(), che la decrementa.
+        // destinazione zero = errore del chiamante, non un burn: reverta.
         require(to != address(0), "to zero");
+        // transfer verso 0xdEaD = burn VERO: la gente brucia cosi', e la supply
+        // contabile deve scendere insieme ai token.
+        if (to == DEAD) {
+            _burn(from, value);
+            return;
+        }
         balanceOf[from] -= value;
         balanceOf[to] += value;
         emit Transfer(from, to, value);
