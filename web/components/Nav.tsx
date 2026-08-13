@@ -15,7 +15,7 @@ export default function Nav() {
           <Link href="/" className="transition-colors hover:text-ink">Market</Link>
           <Link href="/launch" className="transition-colors hover:text-ink">Launch</Link>
           <Link href="/stats" className="transition-colors hover:text-ink">Stats</Link>
-          <Link href="/paper" className="transition-colors hover:text-ink">Paper</Link>
+          <Link href="/docs" className="transition-colors hover:text-ink">Docs</Link>
         </nav>
         <div className="ml-auto flex items-center gap-4">
           <span className="lbl hidden items-center gap-1.5 md:flex">
