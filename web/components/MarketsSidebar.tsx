@@ -1,55 +1,76 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { MarketRow } from "@/lib/lighter";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Reveal, RevealItem, LivePulse } from "@/components/motion";
+import { Sparkles } from "@/components/animate-ui/icons/sparkles";
+import { fmtMark, fmtChange } from "@/lib/format";
 import AssetIcon from "./AssetIcon";
+import { useMarkets } from "./markets-provider";
 
-/** i 39 perp di Lighter, ordinati per volume: cosa puoi mettere sotto una coin */
+/** The Lighter perps, by volume: what a coin can be pointed at. */
 export default function MarketsSidebar() {
-  const [rows, setRows] = useState<MarketRow[] | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch("/api/markets")
-        .then((r) => r.json())
-        .then((j) => alive && setRows(j.markets ?? []))
-        .catch(() => alive && setRows([]));
-    load();
-    const id = setInterval(load, 20_000);
-    return () => { alive = false; clearInterval(id); };
-  }, []);
+  const { markets, loaded } = useMarkets();
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <span className="lbl">markets</span>
-        <span className="lbl flex items-center gap-1.5">
-          <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent-bright" />
-          lighter
-        </span>
-      </div>
-      <div className="max-h-[640px] overflow-y-auto p-1.5">
-        {rows == null && <div className="lbl px-3 py-5">loading markets…</div>}
-        {rows?.map((m) => (
-          <div key={m.marketId} className="flex items-center justify-between gap-2 rounded px-2.5 py-2 transition-colors hover:bg-panel-2">
-            <span className="flex min-w-0 items-center gap-2 text-[12px] font-semibold text-ink">
-              <AssetIcon symbol={m.symbol} size={18} />
+    <div className="rail">
+      <RailHead title="Markets" meta="Lighter" />
+      <div className="rail-body">
+        {!loaded &&
+          Array.from({ length: 8 }).map((_, i) => (
+            <div key={i} className="flex items-center justify-between gap-2 px-2 py-2">
+              <Skeleton className="h-5 w-24" />
+              <Skeleton className="h-5 w-14" />
+            </div>
+          ))}
+        <Reveal className="contents" trigger="mount">
+        {markets.map((m) => (
+          <RevealItem
+            key={m.marketId}
+            className="flex min-w-0 items-center justify-between gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-muted"
+          >
+            <span className="flex min-w-0 items-center gap-2 text-md font-medium text-ink">
+              <AssetIcon symbol={m.symbol} size={20} />
               <span className="truncate">{m.symbol}</span>
             </span>
-            <span className="text-right">
-              <span className="num block text-[12px] text-ink-2">
-                ${m.mark != null ? (m.mark >= 100 ? m.mark.toLocaleString("en-US", { maximumFractionDigits: 0 }) : m.mark.toPrecision(4)) : "—"}
-              </span>
+            <span className="shrink-0 text-right">
+              <span className="num block text-sm text-ink-2">{fmtMark(m.mark)}</span>
               {m.change24h != null && (
-                <span className={`num block text-[10px] ${m.change24h >= 0 ? "text-up-bright" : "text-down-bright"}`}>
-                  {m.change24h >= 0 ? "+" : ""}{m.change24h.toFixed(2)}%
+                <span
+                  className={`num block text-xs ${m.change24h >= 0 ? "text-up" : "text-down"}`}
+                >
+                  {fmtChange(m.change24h)}
                 </span>
               )}
             </span>
-          </div>
+          </RevealItem>
         ))}
+        </Reveal>
       </div>
+      <Button
+        size="xl"
+        className="group/launch mt-3 w-full shrink-0"
+        nativeButton={false}
+        render={<Link href="/launch" />}
+      >
+        <Sparkles aria-hidden size={15} animateOnHover />
+        Launch a coin
+      </Button>
+    </div>
+  );
+}
+
+export function RailHead({ title, meta }: { title: string; meta?: string }) {
+  return (
+    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border pb-2.5">
+      <span className="text-sm font-semibold text-ink">{title}</span>
+      {meta && (
+        <span className="flex items-center gap-1.5 text-xs text-ink-3">
+          <LivePulse />
+          {meta}
+        </span>
+      )}
     </div>
   );
 }

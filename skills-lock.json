@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "skills": {
+    "airlock": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/airlock/SKILL.md",
+      "computedHash": "163ffa3ebb45e72b4b4d892f82184cba482481cc1ede82ec770554d1312aa66b"
+    },
+    "doppler-hooks": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/doppler-hooks/SKILL.md",
+      "computedHash": "9081c9464751cd24f3a2e0424d8a6f789125f3a3fc36b8581f72cf716577ba23"
+    },
+    "fee-architecture": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/fee-architecture/SKILL.md",
+      "computedHash": "077ae6ef0613195cb629f5e2067eb5ba23a62a9dffd941c8f2c2a77a068f437e"
+    },
+    "pda-multicurve": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/pda-multicurve/SKILL.md",
+      "computedHash": "68b498d8376f293575db416851a8952a5e0668c8612be91ba94790cc577afa9e"
+    },
+    "rehypothecation-hook": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/rehypothecation-hook/SKILL.md",
+      "computedHash": "f6a9e72512ab26454ea7624e498b703e395bc4388d8257ae099ca800ac93eead"
+    },
+    "token-lifecycle": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/token-lifecycle/SKILL.md",
+      "computedHash": "063a55496c2a9b7a6c8a6ee5307fd6ab6f861c0a08b8b4fca986c94f96b93395"
+    },
+    "uniswap-fundamentals": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/uniswap-fundamentals/SKILL.md",
+      "computedHash": "2154947aa3a72a9abcbf60ee02633b7dccea5fccecafd48082bb93c77afeafbd"
+    },
+    "verification": {
+      "source": "whetstoneresearch/doppler-skills",
+      "sourceType": "github",
+      "skillPath": "skills/verification/SKILL.md",
+      "computedHash": "e866a8a37096a2704a2429f8d057a215e3ab8c3c808a66f8d60764fcc61f1163"
+    }
+  }
+}

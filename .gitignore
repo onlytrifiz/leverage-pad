@@ -23,3 +23,16 @@ cache/
 *.log
 web/.env.local
 .playwright-mcp/
+logs/
+
+# Foundry project (contracts-v4): dependencies are re-installed with `forge install`, dry-runs are noise
+contracts-v4/lib/
+contracts-v4/broadcast/**/dry-run/
+
+# skills CLI mirror (the copies in .claude/skills are the ones we keep) and 21st cache
+.agents/
+web/.21st/
+
+# local screenshots and editor leftovers
+/*.png
+*.bak

@@ -1,11 +1,22 @@
 import { ethers } from "ethers";
-import { RPC_URL, LOCKER } from "./config";
+import { RPC_URL, PINATA_GATEWAY } from "./config";
+import { USDG, DOPPLER, V4_POOL_MANAGER, LAUNCH_ROUTER, LAUNCH_FEE_HUB, ROUTER_DEPLOY_BLOCK } from "./clientConfig";
 import type { Candle, Coin, FeedItem } from "./types";
+import { multicallPerItem, type Call } from "./multicall";
 
 /**
- * Letture on-chain (sola lettura, RPC pubblico). Il prezzo viene da slot0 del
- * pool; candele e live feed dai log (Swap, Collected, Transfer). I numeri float
- * servono SOLO per la visualizzazione, mai per costruire transazioni.
+ * On-chain reads for coins launched through the multiply router (Uniswap v4 via
+ * Doppler). Read-only, public RPC. Prices are floats for display only; nothing
+ * here builds a transaction.
+ *
+ * Sources, in order of authority:
+ *   - the router's `MultiplyLaunch` events: which coins exist, their pool ids
+ *     and launch settings;
+ *   - the token's IPFS metadata: name, image and the engine parameters
+ *     (`multiply{market, side, leverage, risk, creator}`);
+ *   - the PoolManager: price and liquidity (`extsload` of the pool's slots);
+ *   - the PoolManager `Swap` log per pool id: candles, trades and the hook's
+ *     own fee conversions.
  */
 
 // Dentro il bundle di Next il trasporto HTTP interno di ethers v5 fallisce con
@@ -31,21 +42,28 @@ export const provider = new FetchRpcProvider(RPC_URL, { chainId: 4663, name: "ro
 const ERC20_ABI = [
   "function totalSupply() view returns (uint256)",
   "function balanceOf(address) view returns (uint256)",
+  "function name() view returns (string)",
+  "function symbol() view returns (string)",
+  "function tokenURI() view returns (string)",
   "event Transfer(address indexed from, address indexed to, uint256 value)",
 ];
-const POOL_ABI = [
-  "function slot0() view returns (uint160 sqrtPriceX96,int24,uint16,uint16,uint16,uint8,bool)",
-  "function liquidity() view returns (uint128)",
-  "event Swap(address indexed sender, address indexed recipient, int256 amount0, int256 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick)",
+const POOL_MANAGER_ABI = [
+  "function extsload(bytes32 slot) view returns (bytes32)",
+  "event Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)",
 ];
-const LOCKER_ABI = [
-  "event Collected(uint256 indexed tokenId, address indexed feeRecipient, uint256 amount0, uint256 amount1)",
+const ROUTER_ABI = [
+  "event MultiplyLaunch(address indexed asset, address indexed launcher, bytes32 indexed poolId, uint24 fee, bool antiSnipe, uint256 mcap, int24 tick, uint128 firstBuy, uint128 firstBuyOut, string tokenURI)",
 ];
+
+const ERC20_IFACE = new ethers.utils.Interface(ERC20_ABI);
+const PM_IFACE = new ethers.utils.Interface(POOL_MANAGER_ABI);
+const ROUTER_IFACE = new ethers.utils.Interface(ROUTER_ABI);
 
 export const erc20 = (a: string) => new ethers.Contract(a, ERC20_ABI, provider);
-export const poolContract = (a: string) => new ethers.Contract(a, POOL_ABI, provider);
 
 const Q96 = Math.pow(2, 96);
+const PAIR_DECIMALS = 6;
+const INITIAL_SUPPLY = 1_000_000_000;
 
 /** prezzo della coin in unita' quote, da sqrtPriceX96 (coin 18 dec) */
 export function coinPriceFromSqrtP(
@@ -59,20 +77,231 @@ export function coinPriceFromSqrtP(
   return rawQuotePerCoin * Math.pow(10, 18 - pairDecimals);
 }
 
-export async function poolState(coin: Coin) {
-  const pool = poolContract(coin.pool);
-  const [slot0, liquidity] = await Promise.all([pool.slot0(), pool.liquidity()]);
-  const coinIsToken0 = ethers.BigNumber.from(coin.token).lt(ethers.BigNumber.from(coin.pair));
-  const priceUsd = coinPriceFromSqrtP(slot0.sqrtPriceX96, coinIsToken0, coin.pairDecimals);
-  return { sqrtPriceX96: slot0.sqrtPriceX96 as ethers.BigNumber, liquidity, coinIsToken0, priceUsd };
+const coinIsToken0Of = (coin: Pick<Coin, "token" | "pair">) =>
+  ethers.BigNumber.from(coin.token).lt(ethers.BigNumber.from(coin.pair));
+
+// ── v4 storage layout: pools[poolId] lives at slot 6 of the PoolManager ─────
+const POOLS_SLOT = 6;
+const poolBaseSlot = (poolId: string) =>
+  ethers.utils.keccak256(ethers.utils.defaultAbiCoder.encode(["bytes32", "uint256"], [poolId, POOLS_SLOT]));
+const liquiditySlot = (poolId: string) =>
+  ethers.BigNumber.from(poolBaseSlot(poolId)).add(3).toHexString(); // slot0, feeGrowth0, feeGrowth1, liquidity
+
+function decodeSlot0(word: string) {
+  const s0 = ethers.BigNumber.from(word);
+  const sqrtPriceX96 = s0.and(ethers.BigNumber.from(1).shl(160).sub(1));
+  let tick = s0.shr(160).and(0xffffff).toNumber();
+  if (tick >= 0x800000) tick -= 0x1000000;
+  return { sqrtPriceX96, tick, lpFee: s0.shr(208).and(0xffffff).toNumber() };
 }
+
+// ── coins from the router's launch events ───────────────────────────────────
+
+type Metadata = {
+  name?: string;
+  symbol?: string;
+  image?: string;
+  multiply?: { market?: string; side?: string; leverage?: number; risk?: string; creator?: string | null };
+};
+
+const metadataCache = new Map<string, Promise<Metadata | null>>();
+
+/** ipfs:// JSON through the dedicated gateway, data: URIs decoded inline; cached per URI */
+function fetchMetadata(uri: string): Promise<Metadata | null> {
+  if (!uri) return Promise.resolve(null);
+  let p = metadataCache.get(uri);
+  if (!p) {
+    p = (async () => {
+      try {
+        if (uri.startsWith("data:application/json;base64,")) {
+          return JSON.parse(Buffer.from(uri.slice(29), "base64").toString("utf8")) as Metadata;
+        }
+        if (uri.startsWith("data:application/json,")) return JSON.parse(decodeURIComponent(uri.slice(22))) as Metadata;
+        if (uri.startsWith("ipfs://")) {
+          const cid = uri.slice(7);
+          const host = PINATA_GATEWAY ? `https://${PINATA_GATEWAY}/ipfs/` : "https://ipfs.io/ipfs/";
+          const r = await fetch(host + cid, { next: { revalidate: 3600 } });
+          if (!r.ok) return null;
+          return (await r.json()) as Metadata;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    })();
+    metadataCache.set(uri, p);
+  }
+  return p;
+}
+
+const SIDES = new Set(["long", "short"]);
+const RISKS = new Set(["safe", "balanced", "degen"]);
+
+let coinsCache: { at: number; coins: Coin[] } | null = null;
+const COINS_TTL_MS = 10_000;
+
+/**
+ * Every coin launched through the router, newest first. One log query from the
+ * router's deploy block (adaptive range), one multicall for names and symbols,
+ * one metadata fetch per coin (cached). Coins whose metadata does not carry the
+ * engine settings still appear, with the engine marked unknown.
+ */
+export async function loadRouterCoins(): Promise<Coin[]> {
+  if (coinsCache && Date.now() - coinsCache.at < COINS_TTL_MS) return coinsCache.coins;
+  const latest = await provider.getBlockNumber();
+  const topic = ROUTER_IFACE.getEventTopic("MultiplyLaunch");
+  const logs: ethers.providers.Log[] = [];
+  // walk forward in chunks the public RPC accepts; the router is young, so this is short
+  const STEP = 400_000;
+  for (let from = ROUTER_DEPLOY_BLOCK; from <= latest; from += STEP) {
+    const to = Math.min(latest, from + STEP - 1);
+    let chunk: ethers.providers.Log[] = [];
+    try {
+      chunk = await provider.getLogs({ address: LAUNCH_ROUTER, topics: [topic], fromBlock: from, toBlock: to });
+    } catch (e) {
+      console.error(`[loadRouterCoins] getLogs ${from}-${to}: ${(e as Error).message?.slice(0, 120)}`);
+    }
+    logs.push(...chunk);
+  }
+  if (logs.length === 0) {
+    coinsCache = { at: Date.now(), coins: [] };
+    return [];
+  }
+  const launches = logs.map((l) => ({ log: l, ev: ROUTER_IFACE.parseLog(l).args }));
+  const tOf = await blockTimeEstimator(launches[0].log.blockNumber, latest);
+  const names = await multicallPerItem(provider, launches, ({ ev }) => [
+    { target: ev.asset, iface: ERC20_IFACE, fn: "name" },
+    { target: ev.asset, iface: ERC20_IFACE, fn: "symbol" },
+  ]).catch(() => launches.map(() => [null, null]));
+  const metas = await Promise.all(launches.map(({ ev }) => fetchMetadata(String(ev.tokenURI))));
+
+  const coins: Coin[] = launches.map(({ log, ev }, i) => {
+    const m = metas[i];
+    const eng = m?.multiply ?? {};
+    const side = SIDES.has(String(eng.side)) ? (eng.side as "long" | "short") : "long";
+    const risk = RISKS.has(String(eng.risk)) ? (eng.risk as Coin["riskProfile"]) : undefined;
+    return {
+      token: ev.asset,
+      name: names[i]?.[0]?.[0] ?? m?.name ?? "",
+      symbol: names[i]?.[1]?.[0] ?? m?.symbol ?? "",
+      poolId: ev.poolId,
+      pair: USDG,
+      pairSymbol: "USDG",
+      pairDecimals: PAIR_DECIMALS,
+      fee: Number(ev.fee),
+      antiSnipe: Boolean(ev.antiSnipe),
+      openingMcapUsd: Number(ethers.utils.formatUnits(ev.mcap, PAIR_DECIMALS)),
+      launcher: ev.launcher,
+      subWallet: LAUNCH_FEE_HUB,
+      creator: eng.creator && /^0x[0-9a-fA-F]{40}$/.test(eng.creator) ? eng.creator : ev.launcher,
+      market: String(eng.market ?? "").toUpperCase() || "?",
+      side,
+      leverage: Number(eng.leverage) || 0,
+      riskProfile: risk,
+      tokenURI: String(ev.tokenURI),
+      image: m?.image,
+      initialSupply: INITIAL_SUPPLY,
+      launchBlock: log.blockNumber,
+      createdAt: new Date(tOf(log.blockNumber) * 1000).toISOString(),
+    };
+  });
+  coins.reverse();
+  coinsCache = { at: Date.now(), coins };
+  return coins;
+}
+
+// ── pool state, batched ─────────────────────────────────────────────────────
+
+export type CoinChainState = {
+  priceUsd: number | null;
+  totalSupply: number | null;
+  marketCapUsd: number | null;
+  sqrtPriceX96: string | null;
+  liquidity: string | null;
+  tick: number | null;
+  coinIsToken0: boolean;
+  /** fee destination balances, only requested by the detail read */
+  subQuote: number | null;
+  subCoin: number | null;
+};
+
+const EMPTY_STATE = (coin: Coin): CoinChainState => ({
+  priceUsd: null,
+  totalSupply: null,
+  marketCapUsd: null,
+  sqrtPriceX96: null,
+  liquidity: null,
+  tick: null,
+  coinIsToken0: coinIsToken0Of(coin),
+  subQuote: null,
+  subCoin: null,
+});
+
+/**
+ * Price, liquidity, supply and (optionally) the fee destination's balances for
+ * many coins in one Multicall3 call. A pool that cannot be read yields nulls
+ * for that coin only.
+ */
+export async function readCoinStates(
+  coins: Coin[],
+  { withSubWallet = false }: { withSubWallet?: boolean } = {}
+): Promise<Map<string, CoinChainState>> {
+  const out = new Map<string, CoinChainState>();
+  if (coins.length === 0) return out;
+  const perCoin = withSubWallet ? 5 : 3;
+  let groups: (ethers.utils.Result | null)[][];
+  try {
+    groups = await multicallPerItem(provider, coins, (coin) => {
+      const calls: Call[] = [
+        { target: V4_POOL_MANAGER, iface: PM_IFACE, fn: "extsload", args: [poolBaseSlot(coin.poolId)] },
+        { target: V4_POOL_MANAGER, iface: PM_IFACE, fn: "extsload", args: [liquiditySlot(coin.poolId)] },
+        { target: coin.token, iface: ERC20_IFACE, fn: "totalSupply" },
+      ];
+      if (withSubWallet) {
+        calls.push(
+          { target: coin.pair, iface: ERC20_IFACE, fn: "balanceOf", args: [coin.subWallet] },
+          { target: coin.token, iface: ERC20_IFACE, fn: "balanceOf", args: [coin.subWallet] }
+        );
+      }
+      return calls;
+    });
+  } catch (e) {
+    console.error(`[readCoinStates] multicall failed: ${(e as Error).message?.slice(0, 160)}`);
+    for (const coin of coins) out.set(coin.token.toLowerCase(), EMPTY_STATE(coin));
+    return out;
+  }
+  coins.forEach((coin, i) => {
+    const g = groups[i] ?? [];
+    if (g.length !== perCoin) {
+      out.set(coin.token.toLowerCase(), EMPTY_STATE(coin));
+      return;
+    }
+    const [slot0Word, liqWord, supply, quoteBal, coinBal] = g;
+    const coinIsToken0 = coinIsToken0Of(coin);
+    const slot0 = slot0Word ? decodeSlot0(slot0Word[0]) : null;
+    const uninitialized = slot0 ? slot0.sqrtPriceX96.isZero() : true;
+    const priceUsd = slot0 && !uninitialized ? coinPriceFromSqrtP(slot0.sqrtPriceX96, coinIsToken0, coin.pairDecimals) : null;
+    const totalSupply = supply ? Number(ethers.utils.formatUnits(supply[0], 18)) : null;
+    out.set(coin.token.toLowerCase(), {
+      priceUsd,
+      totalSupply,
+      marketCapUsd: priceUsd != null && totalSupply != null ? priceUsd * totalSupply : null,
+      sqrtPriceX96: slot0 ? slot0.sqrtPriceX96.toString() : null,
+      liquidity: liqWord ? ethers.BigNumber.from(liqWord[0]).and(ethers.BigNumber.from(1).shl(128).sub(1)).toString() : null,
+      tick: slot0 ? slot0.tick : null,
+      coinIsToken0,
+      subQuote: quoteBal ? Number(ethers.utils.formatUnits(quoteBal[0], coin.pairDecimals)) : null,
+      subCoin: coinBal ? Number(ethers.utils.formatUnits(coinBal[0], 18)) : null,
+    });
+  });
+  return out;
+}
+
+// ── logs ────────────────────────────────────────────────────────────────────
 
 /** stima timestamp dei blocchi: due letture, interpolazione lineare */
 async function blockTimeEstimator(fromBlock: number, latest: number) {
-  const [a, b] = await Promise.all([
-    provider.getBlock(Math.max(0, fromBlock)),
-    provider.getBlock(latest),
-  ]);
+  const [a, b] = await Promise.all([provider.getBlock(Math.max(0, fromBlock)), provider.getBlock(latest)]);
   const span = Math.max(1, latest - fromBlock);
   const avg = (b.timestamp - a.timestamp) / span;
   return (bn: number) => Math.round(b.timestamp - (latest - bn) * avg);
@@ -83,10 +312,7 @@ async function getLogsAdaptive(filter: ethers.providers.Filter, latest: number, 
   let range = Math.min(maxRange, latest);
   while (range >= 2000) {
     try {
-      return {
-        logs: await provider.getLogs({ ...filter, fromBlock: latest - range, toBlock: latest }),
-        fromBlock: latest - range,
-      };
+      return { logs: await provider.getLogs({ ...filter, fromBlock: latest - range, toBlock: latest }), fromBlock: latest - range };
     } catch {
       range = Math.floor(range / 2);
     }
@@ -97,26 +323,25 @@ async function getLogsAdaptive(filter: ethers.providers.Filter, latest: number, 
 const CANDLE_BUCKET_S = 15 * 60;
 const LOG_RANGE_BLOCKS = 400_000;
 
+/** every Swap on the coin's pool, newest range the RPC accepts */
+async function poolSwaps(coin: Coin, latest: number) {
+  return getLogsAdaptive(
+    { address: V4_POOL_MANAGER, topics: [PM_IFACE.getEventTopic("Swap"), coin.poolId] },
+    latest,
+    Math.min(LOG_RANGE_BLOCKS, Math.max(2000, latest - coin.launchBlock + 1))
+  );
+}
+
 export async function poolCandles(coin: Coin): Promise<Candle[]> {
   const latest = await provider.getBlockNumber();
-  const pool = poolContract(coin.pool);
-  const { logs, fromBlock } = await getLogsAdaptive(
-    { address: coin.pool, topics: [pool.interface.getEventTopic("Swap")] },
-    latest,
-    LOG_RANGE_BLOCKS
-  );
+  const { logs, fromBlock } = await poolSwaps(coin, latest);
   if (!logs.length) return [];
   const tOf = await blockTimeEstimator(fromBlock, latest);
-  const coinIsToken0 = ethers.BigNumber.from(coin.token).lt(ethers.BigNumber.from(coin.pair));
-
+  const coinIsToken0 = coinIsToken0Of(coin);
   const points = logs.map((l) => {
-    const ev = pool.interface.parseLog(l);
-    return {
-      t: tOf(l.blockNumber),
-      p: coinPriceFromSqrtP(ev.args.sqrtPriceX96, coinIsToken0, coin.pairDecimals),
-    };
+    const ev = PM_IFACE.parseLog(l);
+    return { t: tOf(l.blockNumber), p: coinPriceFromSqrtP(ev.args.sqrtPriceX96, coinIsToken0, coin.pairDecimals) };
   });
-
   const buckets = new Map<number, Candle>();
   for (const { t, p } of points) {
     const bt = Math.floor(t / CANDLE_BUCKET_S) * CANDLE_BUCKET_S;
@@ -128,7 +353,6 @@ export async function poolCandles(coin: Coin): Promise<Candle[]> {
       c.close = p;
     }
   }
-  // riempi i buchi trascinando la close (candele piatte)
   const sorted = [...buckets.values()].sort((a, b) => a.time - b.time);
   const filled: Candle[] = [];
   for (const c of sorted) {
@@ -144,90 +368,73 @@ export async function poolCandles(coin: Coin): Promise<Candle[]> {
   return filled;
 }
 
-/** live feed: collect del locker, burn, buyback, payout — dai log reali */
-export async function coinFeed(coin: Coin, creator: string, treasury: string): Promise<FeedItem[]> {
+/**
+ * Fees the pool has produced so far, in USDG, from its swaps: the hook takes
+ * `fee` of the output leg of every trade, and converts coin-side fees to USDG in
+ * the same call. The hook's own conversion swaps (sender = the Rehype hook) are
+ * not trades and are skipped. Exact at the flat fee; during a protection window
+ * the real take is higher.
+ */
+export async function poolFeesUsd(coin: Coin): Promise<number> {
+  const latest = await provider.getBlockNumber();
+  const { logs } = await poolSwaps(coin, latest);
+  const coinIsToken0 = coinIsToken0Of(coin);
+  let usd = 0;
+  for (const l of logs) {
+    const ev = PM_IFACE.parseLog(l);
+    if (String(ev.args.sender).toLowerCase() === DOPPLER.rehype.toLowerCase()) continue;
+    const a0 = ev.args.amount0 as ethers.BigNumber;
+    const a1 = ev.args.amount1 as ethers.BigNumber;
+    const quoteDelta = coinIsToken0 ? a1 : a0;
+    const coinDelta = coinIsToken0 ? a0 : a1;
+    // fee on the output leg: a buy pays in coin (valued at the trade's own price), a sell in USDG
+    const price = coinPriceFromSqrtP(ev.args.sqrtPriceX96, coinIsToken0, coin.pairDecimals);
+    const quoteUsd = Math.abs(Number(ethers.utils.formatUnits(quoteDelta, coin.pairDecimals)));
+    const coinOutUsd = Math.abs(Number(ethers.utils.formatUnits(coinDelta, 18))) * price;
+    const buying = quoteDelta.lt(0); // the pool's delta: negative quote = quote left the trader
+    usd += ((buying ? coinOutUsd : quoteUsd) * coin.fee) / 1_000_000;
+  }
+  return usd;
+}
+
+/** live feed: trades, the hook's fee conversions, burns — from real logs */
+export async function coinFeed(coin: Coin): Promise<FeedItem[]> {
   const latest = await provider.getBlockNumber();
   const token = erc20(coin.token);
-  const quote = erc20(coin.pair);
-  const pool = poolContract(coin.pool);
   const transferTopic = token.interface.getEventTopic("Transfer");
-  const subPadded = ethers.utils.hexZeroPad(coin.subWallet, 32);
-
-  const queries: Promise<{ logs: ethers.providers.Log[]; fromBlock: number }>[] = [
-    // burn: Transfer(sub → 0x0) del token della coin
-    getLogsAdaptive(
-      { address: coin.token, topics: [transferTopic, subPadded, ethers.utils.hexZeroPad(ethers.constants.AddressZero, 32)] },
-      latest, LOG_RANGE_BLOCKS
-    ),
-    // movimenti quote in USCITA dal sub-wallet (payout creator/treasury, deposito perp)
-    getLogsAdaptive(
-      { address: coin.pair, topics: [transferTopic, subPadded] },
-      latest, LOG_RANGE_BLOCKS
-    ),
-    // swap sul pool (i buyback hanno recipient = sub-wallet)
-    getLogsAdaptive(
-      { address: coin.pool, topics: [pool.interface.getEventTopic("Swap")] },
-      latest, LOG_RANGE_BLOCKS
-    ),
-  ];
-  if (LOCKER) {
-    const lockerC = new ethers.Contract(LOCKER, LOCKER_ABI, provider);
-    queries.push(
-      getLogsAdaptive(
-        {
-          address: LOCKER,
-          topics: [
-            lockerC.interface.getEventTopic("Collected"),
-            ethers.utils.hexZeroPad(ethers.BigNumber.from(coin.lpTokenId).toHexString(), 32),
-          ],
-        },
-        latest, LOG_RANGE_BLOCKS
-      )
-    );
-  }
-
-  const results = await Promise.all(queries);
-  const fromBlock = Math.min(...results.map((r) => r.fromBlock));
+  const [swaps, burns, burnsDead] = await Promise.all([
+    poolSwaps(coin, latest),
+    getLogsAdaptive({ address: coin.token, topics: [transferTopic, null, ethers.utils.hexZeroPad(ethers.constants.AddressZero, 32)] }, latest, LOG_RANGE_BLOCKS),
+    getLogsAdaptive({ address: coin.token, topics: [transferTopic, null, ethers.utils.hexZeroPad("0x000000000000000000000000000000000000dEaD", 32)] }, latest, LOG_RANGE_BLOCKS),
+  ]);
+  const fromBlock = Math.min(swaps.fromBlock, burns.fromBlock, burnsDead.fromBlock);
   const tOf = await blockTimeEstimator(fromBlock, latest);
   const items: FeedItem[] = [];
-  const fmtQ = (v: ethers.BigNumber) =>
-    Number(ethers.utils.formatUnits(v, coin.pairDecimals)).toFixed(2);
-  const fmtC = (v: ethers.BigNumber) =>
-    Math.round(Number(ethers.utils.formatUnits(v, 18))).toLocaleString("en-US");
+  const fmtQ = (v: number) => v.toFixed(2);
+  const fmtC = (v: ethers.BigNumber) => Math.round(Number(ethers.utils.formatUnits(v, 18))).toLocaleString("en-US");
+  const coinIsToken0 = coinIsToken0Of(coin);
 
-  for (const l of results[0].logs) {
+  for (const l of [...burns.logs, ...burnsDead.logs]) {
     const ev = token.interface.parseLog(l);
+    if (ev.args.from === ethers.constants.AddressZero || ev.args.value.isZero()) continue; // mint, or the Airlock's zero-value transfer at creation
     items.push({ kind: "burn", text: "burned", amountText: `${fmtC(ev.args.value)} ${coin.symbol}`, tone: "accent", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
   }
-  for (const l of results[1].logs) {
-    const ev = quote.interface.parseLog(l);
-    const to = String(ev.args.to).toLowerCase();
-    if (to === creator.toLowerCase())
-      items.push({ kind: "creator", text: "creator paid", amountText: `$${fmtQ(ev.args.value)}`, tone: "accent", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
-    else if (treasury && to === treasury.toLowerCase())
-      items.push({ kind: "treasury", text: "treasury paid", amountText: `$${fmtQ(ev.args.value)}`, tone: "plain", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
-    else if (to !== coin.pool.toLowerCase())
-      items.push({ kind: "deposit", text: "perp deposit → lighter", amountText: `$${fmtQ(ev.args.value)}`, tone: "accent", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
-  }
-  const coinIsToken0 = ethers.BigNumber.from(coin.token).lt(ethers.BigNumber.from(coin.pair));
-  for (const l of results[2].logs) {
-    const ev = pool.interface.parseLog(l);
+  for (const l of swaps.logs) {
+    const ev = PM_IFACE.parseLog(l);
     const p = coinPriceFromSqrtP(ev.args.sqrtPriceX96, coinIsToken0, coin.pairDecimals);
-    const isBuyback = String(ev.args.recipient).toLowerCase() === coin.subWallet.toLowerCase();
-    const quoteIn = coinIsToken0 ? ev.args.amount1 : ev.args.amount0;
-    if (isBuyback) {
-      items.push({ kind: "buyback", text: "buyback", amountText: `$${fmtQ(quoteIn.abs())}`, tone: "accent", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
-    } else {
-      const buying = quoteIn.gt(0); // quote entra nel pool = qualcuno compra la coin
-      items.push({ kind: "tick", text: `trade @ ${p.toPrecision(4)}`, amountText: `${buying ? "+" : "−"}$${fmtQ(quoteIn.abs())}`, tone: buying ? "up" : "down", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
+    const quoteDelta: ethers.BigNumber = coinIsToken0 ? ev.args.amount1 : ev.args.amount0;
+    const quoteUsd = Math.abs(Number(ethers.utils.formatUnits(quoteDelta, coin.pairDecimals)));
+    const fromHook = String(ev.args.sender).toLowerCase() === DOPPLER.rehype.toLowerCase();
+    if (fromHook) {
+      items.push({ kind: "collect", text: "fees → USDG", amountText: `$${fmtQ(quoteUsd)}`, tone: "plain", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
+      continue;
     }
-  }
-  if (results[3]) {
-    for (const l of results[3].logs) {
-      const lockerC = new ethers.Contract(LOCKER, LOCKER_ABI, provider);
-      const ev = lockerC.interface.parseLog(l);
-      const quoteAmt = coinIsToken0 ? ev.args.amount1 : ev.args.amount0;
-      items.push({ kind: "collect", text: "fees collected", amountText: `$${fmtQ(quoteAmt)}`, tone: "plain", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
+    const isBuyback = String(ev.args.sender).toLowerCase() === coin.subWallet.toLowerCase();
+    const buying = quoteDelta.lt(0);
+    if (isBuyback) {
+      items.push({ kind: "buyback", text: "buyback", amountText: `$${fmtQ(quoteUsd)}`, tone: "accent", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
+    } else {
+      items.push({ kind: "tick", text: `trade @ ${p.toPrecision(4)}`, amountText: `${buying ? "+" : "−"}$${fmtQ(quoteUsd)}`, tone: buying ? "up" : "down", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
     }
   }
   return items.sort((a, b) => b.ts - a.ts).slice(0, 40);

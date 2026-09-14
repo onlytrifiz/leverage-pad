@@ -1,3 +1,11 @@
+import { Badge } from "@/components/ui/badge";
+
+/**
+ * Project-specific pills, composed from the Badge primitive rather than
+ * hand-styled spans — status chips were being rebuilt inline in five files with
+ * three different paddings.
+ */
+
 export function HedgeBadge({
   side,
   market,
@@ -8,25 +16,25 @@ export function HedgeBadge({
   leverage: number;
 }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded border border-accent/50 bg-accent-dim/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-accent-bright">
-      {leverage}x {side} {market}
-    </span>
+    <Badge variant={side === "long" ? "up" : "down"}>
+      {leverage}× {side} {market}
+    </Badge>
   );
 }
 
 export function DemoBadge() {
   return (
-    <span className="inline-flex items-center rounded border border-line-2 bg-panel-2 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-2">
-      demo data
-    </span>
+    <Badge variant="secondary" className="text-ink-3">
+      Demo data
+    </Badge>
   );
 }
 
-export function LiveBadge({ label = "live" }: { label?: string }) {
+export function LiveBadge({ label = "Live" }: { label?: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 rounded border border-up/40 bg-up/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-up-bright">
-      <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-up-bright" />
+    <Badge variant="brand">
+      <span aria-hidden className="size-1.5 rounded-full bg-brand" />
       {label}
-    </span>
+    </Badge>
   );
 }

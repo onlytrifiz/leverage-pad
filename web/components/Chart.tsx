@@ -1,104 +1,77 @@
-"use client";
-
-import { useEffect, useRef, useState } from "react";
-import {
-  createChart,
-  createTextWatermark,
-  CandlestickSeries,
-  type IChartApi,
-} from "lightweight-charts";
-import type { Candle } from "@/lib/types";
+import { Panel, PanelHeader, PanelTitle } from "@/components/ui/panel";
 
 /**
- * Chart candele dal pool V3 (o serie demo). Colori mark validati:
- * up #16b14c / down #ad3a3a su #0a0c0a (gap di luminosita' per i CVD).
- * Griglia e assi recessivi, watermark ticker in stile terminale.
+ * Token chart: a DexScreener embed of the coin's Uniswap v4 pool (the pair id is the pool id).
+ *
+ * DexScreener indexes Robinhood Chain under the `robinhood` slug and picks up a
+ * v4 pool at its first swap, so the very pool the engine trades is there with candles,
+ * volume and buy/sell counts. Better their chart than rebuilding candles from
+ * Swap events: no series to maintain, no charting library in the bundle, and
+ * the reader meets an interface they already know.
+ *
+ * `trades=0` and `info=0` switch off the sections we would be duplicating: the
+ * trade list is our own live feed, the token figures are in the page header.
+ *
+ * Note: this is an iframe to an external host — a CSP added later needs
+ * `frame-src https://dexscreener.com`.
  */
-export default function Chart({ address, symbol }: { address: string; symbol: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const [state, setState] = useState<"loading" | "empty" | "ready">("loading");
 
-  useEffect(() => {
-    if (!ref.current) return;
-    const el = ref.current;
-    const chart = createChart(el, {
-      autoSize: true,
-      layout: {
-        background: { color: "transparent" },
-        textColor: "#5c6a5e",
-        fontFamily: "var(--font-plex-mono), monospace",
-        fontSize: 10,
-        attributionLogo: false,
-      },
-      grid: {
-        vertLines: { color: "#121812" },
-        horzLines: { color: "#121812" },
-      },
-      rightPriceScale: { borderColor: "#1e281f" },
-      timeScale: { borderColor: "#1e281f", timeVisible: true, secondsVisible: false },
-      crosshair: {
-        vertLine: { color: "#2c3d2e", labelBackgroundColor: "#131a14" },
-        horzLine: { color: "#2c3d2e", labelBackgroundColor: "#131a14" },
-      },
-      localization: {
-        priceFormatter: (p: number) => (p >= 1 ? p.toFixed(2) : p.toPrecision(4)),
-      },
+/**
+ * A pool launched minutes ago is not in DexScreener's index yet, and the embed
+ * would render their "pair not found" page inside ours. Ask the API first; when
+ * in doubt (API down, slow network) still try the embed — better to attempt it
+ * than to hide the chart of a live coin.
+ */
+async function isIndexed(pool: string): Promise<boolean> {
+  try {
+    const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/robinhood/${pool}`, {
+      next: { revalidate: 300 },
     });
-    chartRef.current = chart;
-    createTextWatermark(chart.panes()[0], {
-      horzAlign: "center",
-      vertAlign: "center",
-      lines: [{ text: `$${symbol}`, color: "rgba(46, 224, 107, 0.05)", fontSize: 72, fontStyle: "bold" }],
-    });
-    const series = chart.addSeries(CandlestickSeries, {
-      upColor: "#16b14c",
-      downColor: "#ad3a3a",
-      borderUpColor: "#16b14c",
-      borderDownColor: "#ad3a3a",
-      wickUpColor: "#16b14c",
-      wickDownColor: "#ad3a3a",
-      priceFormat: { type: "price", precision: 10, minMove: 1e-10 },
-    });
+    if (!r.ok) return true;
+    const j = (await r.json()) as { pairs?: unknown[] | null };
+    return !!j.pairs?.length;
+  } catch {
+    return true;
+  }
+}
 
-    let cancelled = false;
-    fetch(`/api/coin/${address}/candles`)
-      .then((r) => r.json())
-      .then(({ candles }: { candles: Candle[] }) => {
-        if (cancelled) return;
-        if (!candles?.length) {
-          setState("empty");
-          return;
-        }
-        series.setData(candles.map((c) => ({ ...c, time: c.time as never })));
-        chart.timeScale().fitContent();
-        setState("ready");
-      })
-      .catch(() => !cancelled && setState("empty"));
-
-    return () => {
-      cancelled = true;
-      chart.remove();
-      chartRef.current = null;
-    };
-  }, [address, symbol]);
+export default async function Chart({ pool, symbol }: { pool: string; symbol: string }) {
+  const page = `https://dexscreener.com/robinhood/${pool}`;
+  const indexed = await isIndexed(pool);
+  const src =
+    `${page}?embed=1&loadChartSettings=0&theme=light&chartTheme=light` +
+    `&info=0&trades=0&tabs=0&chartLeftToolbar=0&chartDefaultOnMobile=1&interval=15`;
 
   return (
-    <div className="panel overflow-hidden">
-      <div className="panel-head">
-        <span className="lbl">${symbol} · token chart</span>
-        <span className="lbl">uniswap v3 · on-chain</span>
-      </div>
-      <div className="relative h-[380px]">
-        <div ref={ref} className="absolute inset-0" />
-        {state !== "ready" && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <span className="lbl">
-              {state === "loading" ? "loading swaps…" : "no trades yet — chart appears with the first swap"}
+    <Panel className="overflow-hidden">
+      <PanelHeader>
+        <PanelTitle>${symbol} · token chart</PanelTitle>
+        <a
+          href={page}
+          target="_blank"
+          rel="noreferrer"
+          className="shrink-0 text-xs text-ink-3 transition-colors hover:text-brand"
+        >
+          DexScreener ↗
+        </a>
+      </PanelHeader>
+      <div className="relative h-[380px] bg-panel-2 sm:h-[520px]">
+        {indexed ? (
+          <iframe
+            src={src}
+            title={`${symbol} price chart on DexScreener`}
+            className="absolute inset-0 h-full w-full border-0"
+            loading="lazy"
+          />
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center">
+            <span className="text-md font-semibold text-ink">Chart coming shortly</span>
+            <span className="max-w-[380px] text-sm leading-relaxed text-ink-3">
+              DexScreener picks up the pool shortly after its first swap.
             </span>
           </div>
         )}
       </div>
-    </div>
+    </Panel>
   );
 }

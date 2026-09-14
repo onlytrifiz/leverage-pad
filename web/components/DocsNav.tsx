@@ -37,7 +37,9 @@ export default function DocsNav({ groups }: { groups: DocsGroup[] }) {
     <nav className="space-y-5">
       {groups.map((g) => (
         <div key={g.label}>
-          <div className="lbl mb-2">{g.label}</div>
+          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.06em] text-ink-3 first-letter:uppercase">
+            {g.label}
+          </div>
           <ul className="space-y-0.5 border-l border-line">
             {g.items.map((item) => {
               const isActive = item.id === active;
@@ -45,9 +47,9 @@ export default function DocsNav({ groups }: { groups: DocsGroup[] }) {
                 <li key={item.id}>
                   <a
                     href={`#${item.id}`}
-                    className={`-ml-px block border-l py-1 pl-3 text-[12px] leading-snug transition-colors ${
+                    className={`-ml-px block border-l py-1.5 pl-3 text-sm leading-snug transition-colors ${
                       isActive
-                        ? "border-accent-bright font-semibold text-accent-bright"
+                        ? "border-brand font-semibold text-brand"
                         : "border-transparent text-ink-2 hover:border-line-2 hover:text-ink"
                     }`}
                   >

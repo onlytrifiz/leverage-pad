@@ -4,16 +4,21 @@ import { useEffect, useState } from "react";
 import type { FeedItem } from "@/lib/types";
 import { timeAgo } from "@/lib/format";
 import { explorerTx } from "@/lib/clientConfig";
+import { AnimatePresence, motion } from "motion/react";
+import { Panel, PanelHeader, PanelTitle, PanelMeta } from "@/components/ui/panel";
+import { Activity } from "@/components/animate-ui/icons/activity";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
 
 const TONE: Record<FeedItem["tone"], string> = {
-  up: "text-up-bright",
-  down: "text-down-bright",
-  accent: "text-accent-bright",
+  up: "text-up",
+  down: "text-down",
+  accent: "text-brand",
   plain: "text-ink-2",
 };
 
-/** gli eventi del protocollo (burn, buyback, payout, deposito perp) hanno la
- *  strip verde di sfondo — i trade restano righe piatte con il segno colorato */
+/** Protocol events (burn, buyback, payout, perp deposit) get the green strip;
+ *  trades stay flat rows carrying only the coloured sign. */
 const isProtocol = (k: FeedItem["kind"]) =>
   k === "burn" || k === "buyback" || k === "creator" || k === "deposit";
 
@@ -39,23 +44,45 @@ export default function LiveFeed({ address, demo }: { address: string; demo: boo
   }, [address]);
 
   return (
-    <div className="panel">
-      <div className="panel-head">
-        <span className="lbl">live feed</span>
-        <span className="lbl">
-          {items?.length ? `last event ${timeAgo(items[0].ts, now)}` : ""}
-        </span>
-      </div>
-      <div className="max-h-[420px] overflow-y-auto p-1.5">
-        {items == null && <div className="lbl px-3 py-6">reading chain events…</div>}
+    <Panel>
+      <PanelHeader>
+        <PanelTitle className="flex items-center gap-2">
+          <Activity
+            aria-hidden
+            size={16}
+            animation="default-loop"
+            loop
+            loopDelay={2200}
+            className="text-brand"
+          />
+          Live feed
+        </PanelTitle>
+        <PanelMeta>{items?.length ? `Last event ${timeAgo(items[0].ts, now)}` : ""}</PanelMeta>
+      </PanelHeader>
+      <div className="max-h-[420px] overflow-y-auto p-2.5">
+        {items == null &&
+          Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="mx-1 my-1.5 h-7" />
+          ))}
         {items != null && items.length === 0 && (
-          <div className="lbl px-3 py-6">no events yet — the keeper writes here as fees flow</div>
+          <Empty>
+            <EmptyHeader>
+              <EmptyTitle>Nothing yet</EmptyTitle>
+              <EmptyDescription>Events appear here as fees flow through the engine.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         )}
+        <AnimatePresence initial={false}>
         {items?.map((it, i) => (
-          <div
-            key={i}
-            className={`flex items-baseline justify-between gap-3 rounded px-2.5 py-2 text-[12px] ${
-              isProtocol(it.kind) ? "my-0.5 border-l-2 border-accent bg-accent-dim/25" : ""
+          <motion.div
+            key={`${it.txHash}-${it.ts}-${i}`}
+            layout
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.25, ease: [0.22, 0.61, 0.36, 1] }}
+            className={`flex items-baseline justify-between gap-3 rounded-lg px-3 py-2 text-sm ${
+              isProtocol(it.kind) ? "my-0.5 border-l-2 border-brand bg-brand-soft" : ""
             }`}
           >
             <div className="flex min-w-0 items-baseline gap-2">
@@ -66,16 +93,17 @@ export default function LiveFeed({ address, demo }: { address: string; demo: boo
                   href={explorerTx(it.txHash)}
                   target="_blank"
                   rel="noreferrer"
-                  className="text-[10px] uppercase tracking-[0.1em] text-ink-3 underline decoration-line underline-offset-2 hover:text-ink-2"
+                  className="text-xs text-ink-3 underline decoration-line-2 underline-offset-2 hover:text-ink-2"
                 >
                   tx
                 </a>
               )}
             </div>
-            <span className="lbl shrink-0 normal-case tracking-normal">{timeAgo(it.ts, now)}</span>
-          </div>
+            <span className="shrink-0 text-xs text-ink-3">{timeAgo(it.ts, now)}</span>
+          </motion.div>
         ))}
+        </AnimatePresence>
       </div>
-    </div>
+    </Panel>
   );
 }

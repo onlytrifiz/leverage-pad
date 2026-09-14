@@ -94,6 +94,17 @@ module.exports = {
   LIGHTER_PYTHON: process.env.PERPSPAD_LIGHTER_PYTHON || 'python3', // interprete col lighter-sdk installato
   LIGHTER_API_KEY_INDEX: Number(process.env.PERPSPAD_LIGHTER_API_KEY_INDEX || 4), // 0-3 riservati a desktop/mobile
   LIGHTER_MAX_SLIPPAGE: Number(process.env.PERPSPAD_LIGHTER_MAX_SLIPPAGE || 0.02),  // 2% sugli ordini market
+  // Quota del collaterale libero effettivamente impiegata all'apertura. Lighter
+  // calcola il margine richiesto sul prezzo di ESECUZIONE: impiegando il 100% del
+  // saldo, basta un tick di prezzo sfavorevole tra la lettura del mark e il fill
+  // perche' il requisito superi il disponibile e l'ordine venga scartato IN SILENZIO
+  // (misurato live: $22 di notional su $2.20 → nessun fill; $15 → fill regolare).
+  COLLATERAL_HEADROOM: Number(process.env.PERPSPAD_COLLATERAL_HEADROOM || 0.95),
+  // Sotto questa cifra il collaterale libero non viene impiegato: quando il saldo
+  // "libero" e' gonfiato dal PnL non ancora realizzato, tentare l'apertura produce
+  // solo fill-scheggia (l'exchange concede il margine sul realizzato, non sul
+  // potenziale). Accumulare e' meglio che sporcare la scala di tranche inchiudibili.
+  MIN_DEPLOY_USD: Number(process.env.PERPSPAD_MIN_DEPLOY_USD || 2),
   LIGHTER_ISOLATED: process.env.PERPSPAD_LIGHTER_CROSS ? false : true,             // isolated di default
 
   // ── segreti / destinazioni ─────────────────────────────────────────────────

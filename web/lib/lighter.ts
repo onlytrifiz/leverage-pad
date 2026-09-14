@@ -7,9 +7,12 @@ import type { PerpPosition } from "./types";
  * coerente con l'etica "verify on-chain" del prodotto.
  */
 
-async function lighterGet(pathname: string): Promise<Record<string, unknown> | null> {
+async function lighterGet(
+  pathname: string,
+  revalidate = 5
+): Promise<Record<string, unknown> | null> {
   try {
-    const r = await fetch(`${LIGHTER_API}${pathname}`, { next: { revalidate: 5 } });
+    const r = await fetch(`${LIGHTER_API}${pathname}`, { next: { revalidate } });
     if (!r.ok) return null;
     return await r.json();
   } catch {
@@ -23,6 +26,29 @@ export async function resolveAccountIndex(l1Address: string): Promise<number | n
   const subs = (j.sub_accounts as { index: number }[] | undefined) ?? [];
   if (!subs.length) return null;
   return Math.min(...subs.map((s) => Number(s.index)));
+}
+
+export type TokenLogo = { logo: string; ext: string };
+
+/**
+ * Logo e ESTENSIONE di ogni token, dal tokenlist di Lighter.
+ *
+ * Senza questo si tira a indovinare: 39 dei 57 mercati di Robinhood Chain non
+ * hanno lo svg sul CDN, quindi un fallback svg→png costa una richiesta fallita
+ * (403) e un flicker per ognuno di quei simboli. Qui l'estensione e' quella
+ * dichiarata dal venue, e si chiede l'immagine giusta al primo colpo.
+ */
+export async function allTokenLogos(): Promise<Record<string, TokenLogo>> {
+  const j = await lighterGet(`/api/v1/tokenlist`, 3600);
+  const tokens = (j?.tokens as Record<string, unknown>[] | undefined) ?? [];
+  const out: Record<string, TokenLogo> = {};
+  for (const t of tokens) {
+    const symbol = String(t.symbol ?? "");
+    const logo = String(t.logo ?? "").trim();
+    if (!symbol || !logo) continue;
+    out[symbol] = { logo, ext: String(t.logo_extension || "png") };
+  }
+  return out;
 }
 
 export type MarketRow = {
@@ -86,6 +112,8 @@ export async function perpPosition(
 
   if (!pos) {
     return {
+      accountIndex,
+      marketId,
       open: false,
       collateralUsd: acc.collateral != null ? Number(acc.collateral) : null,
       positionSizeUsd: null,
@@ -93,16 +121,26 @@ export async function perpPosition(
       markPrice: mark,
       unrealizedPnlUsd: null,
       liquidationPrice: null,
+      fundingPaidUsd: null,
     };
   }
-  const size = Math.abs(Number(pos.position ?? pos.size ?? 0));
+  const size = Math.abs(Number(pos.position ?? 0));
   return {
+    accountIndex,
+    marketId,
     open: size > 0,
     collateralUsd: pos.allocated_margin != null ? Number(pos.allocated_margin) : Number(acc.collateral ?? 0),
-    positionSizeUsd: mark != null ? size * mark : null,
+    // il venue pubblica gia' il notional: moltiplicare size x mark reintroduce
+    // uno scarto ogni volta che il mark letto non e' quello della valutazione
+    positionSizeUsd:
+      pos.position_value != null ? Number(pos.position_value) : mark != null ? size * mark : null,
     entryPrice: pos.avg_entry_price != null ? Number(pos.avg_entry_price) : null,
     markPrice: mark,
     unrealizedPnlUsd: pos.unrealized_pnl != null ? Number(pos.unrealized_pnl) : null,
     liquidationPrice: pos.liquidation_price != null ? Number(pos.liquidation_price) : null,
+    // funding cumulativo: negativo = pagato. Non compare nel PnL non realizzato,
+    // ma il collaterale l'ha gia' subito — e il keeper lo porta nel realizzato.
+    fundingPaidUsd:
+      pos.total_funding_paid_out != null ? Number(pos.total_funding_paid_out) : null,
   };
 }

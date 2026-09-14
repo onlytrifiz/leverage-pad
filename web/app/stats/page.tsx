@@ -1,11 +1,17 @@
 import Link from "next/link";
 import { listCoins, openPositions } from "@/lib/detail";
 import { fmtUsd, fmtInt } from "@/lib/format";
+import { Container, PageHeader } from "@/components/ui/container";
+import { StatGrid, Stat } from "@/components/ui/stat";
+import { Badge } from "@/components/ui/badge";
 import { DemoBadge } from "@/components/Badge";
 import AutoRefresh from "@/components/AutoRefresh";
+import { Reveal, RevealItem } from "@/components/motion";
 
-export const metadata = { title: "stats · multiply.cash" };
+export const metadata = { title: "Stats" };
 export const dynamic = "force-dynamic";
+
+const COLUMNS = "grid-cols-[1.4fr_1.2fr_1fr_1fr_1fr_1fr]";
 
 export default async function StatsPage() {
   const [coins, positions] = await Promise.all([listCoins(), openPositions()]);
@@ -17,66 +23,93 @@ export default async function StatsPage() {
   const isDemo = coins.some((c) => c.demo);
 
   return (
-    <div className="pt-8">
-      <AutoRefresh everyMs={30_000} />
-      <div className="flex items-center gap-3">
-        <h1 className="text-[26px] font-bold tracking-tight">Protocol stats</h1>
-        {isDemo && <DemoBadge />}
-      </div>
-      <p className="mt-2 max-w-[560px] text-[13px] leading-relaxed text-ink-2">
-        Everything here is derived from the registry, the chain and Lighter — the same
-        numbers you can reconstruct yourself from the explorer.
-      </p>
+    <Container className="pt-8">
+      <PageHeader
+        title="Protocol stats"
+        lede="Every coin launched, what its engine is holding, and what it has burned so far."
+        aside={
+          <span className="flex items-center gap-3">
+            <AutoRefresh everyMs={30_000} />
+            {isDemo && <DemoBadge />}
+          </span>
+        }
+      />
 
-      <div className="panel mt-6 grid grid-cols-2 gap-px overflow-hidden bg-line/50 sm:grid-cols-3 lg:grid-cols-6">
-        {[
-          { label: "coins launched", value: String(coins.length) },
-          { label: "combined mcap", value: fmtUsd(totalMcap) },
-          { label: "fees collected", value: fmtUsd(totalFees) },
-          { label: "tokens burned", value: fmtInt(totalBurned) },
-          { label: "open notional", value: fmtUsd(totalNotional) },
-          {
-            label: "unrealized pnl",
-            value: (totalPnl >= 0 ? "+" : "−") + fmtUsd(Math.abs(totalPnl)),
-            tone: totalPnl >= 0 ? "text-up-bright" : "text-down-bright",
-          },
-        ].map((s) => (
-          <div key={s.label} className="bg-panel px-4 py-4">
-            <div className="lbl mb-1.5">{s.label}</div>
-            <div className={`num text-[18px] font-semibold ${s.tone ?? ""}`}>{s.value}</div>
-          </div>
+      <StatGrid cols={6} className="mt-7">
+        <Stat label="Coins launched" amount={coins.length} format="plain" countOnMount />
+        <Stat label="Combined mcap" amount={totalMcap} format="usd" countOnMount />
+        <Stat label="Fees collected" amount={totalFees} format="usd" countOnMount />
+        <Stat label="Tokens burned" amount={totalBurned} format="int" countOnMount tone="brand" />
+        <Stat label="Open notional" amount={totalNotional} format="usd" countOnMount />
+        <Stat
+          label="Unrealized PnL"
+          amount={totalPnl}
+          format="signedUsd"
+          countOnMount
+          tone={totalPnl >= 0 ? "up" : "down"}
+        />
+      </StatGrid>
+
+      {/* header row: only where the grid exists */}
+      <div className={`mt-8 hidden gap-3 px-5 pb-2 md:grid ${COLUMNS}`}>
+        {["Coin", "Underlying", "Market cap", "Fees", "Burned", "Engine"].map((h) => (
+          <span key={h} className="text-xs font-medium text-ink-3">
+            {h}
+          </span>
         ))}
       </div>
 
-      <div className="mt-8 overflow-x-auto">
-        <div className="min-w-[720px]">
-          <div className="grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr] gap-3 px-4 py-2">
-            {["coin", "underlying", "mcap", "fees", "burned", "engine"].map((h) => (
-              <span key={h} className="lbl">{h}</span>
-            ))}
-          </div>
-          <div className="space-y-1.5">
-            {coins.map(({ coin, marketCapUsd, feesCollectedUsd, burnedTokens, perpOpen }) => (
-              <Link
-                key={coin.token}
-                href={`/token/${coin.token}`}
-                className="panel grid grid-cols-[1.4fr_1fr_1fr_1fr_1fr_1fr] items-center gap-3 px-4 py-3 transition-all hover:border-accent/40"
+      <Reveal as="ul" className="mt-4 flex flex-col gap-2 md:mt-0">
+        {coins.map(({ coin, marketCapUsd, feesCollectedUsd, burnedTokens, perpOpen }) => (
+          <RevealItem as="li" key={coin.token}>
+            <Link
+              href={`/token/${coin.token}`}
+              className={`block rounded-[14px] border border-border bg-card px-4 py-4 shadow-[0_1px_2px_rgba(12,52,32,0.04)] transition-[color,background-color,border-color,box-shadow,transform] duration-200 hover:-translate-y-0.5 hover:border-brand/40 hover:shadow-[0_6px_18px_-8px_rgba(12,52,32,0.28)] sm:px-5 md:grid md:items-center md:gap-3 ${COLUMNS}`}
+            >
+              <div className="flex min-w-0 items-center justify-between gap-3 md:block">
+                <span className="truncate text-md font-semibold text-ink">${coin.symbol}</span>
+                <span className="num shrink-0 text-md font-semibold text-ink md:hidden">
+                  {fmtUsd(marketCapUsd)}
+                </span>
+              </div>
+
+              <span
+                className={`mt-2 block truncate text-sm font-medium md:mt-0 ${
+                  coin.side === "long" ? "text-up" : "text-down"
+                }`}
               >
-                <span className="text-[13px] font-bold">${coin.symbol}</span>
-                <span className={`text-[11px] font-semibold uppercase tracking-[0.1em] ${coin.side === "long" ? "text-up-bright" : "text-down-bright"}`}>
-                  {coin.leverage}x {coin.side} {coin.market}
+                {coin.leverage}× {coin.side} {coin.market}
+              </span>
+
+              <span className="num hidden truncate text-sm text-ink md:block">
+                {fmtUsd(marketCapUsd)}
+              </span>
+
+              {/* on a phone the three remaining figures read as one labelled line */}
+              <span className="num mt-2 flex flex-wrap gap-x-4 text-sm text-ink-3 md:hidden">
+                <span>
+                  Fees <span className="text-ink">{fmtUsd(feesCollectedUsd)}</span>
                 </span>
-                <span className="num text-[12px]">{fmtUsd(marketCapUsd)}</span>
-                <span className="num text-[12px]">{fmtUsd(feesCollectedUsd)}</span>
-                <span className="num text-[12px] text-accent-bright">{fmtInt(burnedTokens)}</span>
-                <span className={`text-[10px] font-semibold uppercase tracking-[0.1em] ${perpOpen ? "text-accent-bright" : "text-ink-3"}`}>
-                  {perpOpen ? "● perp live" : "accumulating"}
+                <span>
+                  Burned <span className="text-brand">{fmtInt(burnedTokens)}</span>
                 </span>
-              </Link>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
+              </span>
+              <span className="num hidden truncate text-sm text-ink md:block">
+                {fmtUsd(feesCollectedUsd)}
+              </span>
+              <span className="num hidden truncate text-sm text-brand md:block">
+                {fmtInt(burnedTokens)}
+              </span>
+
+              <span className="mt-3 block md:mt-0">
+                <Badge variant={perpOpen ? "brand" : "secondary"}>
+                  {perpOpen ? "Perp live" : "Accumulating"}
+                </Badge>
+              </span>
+            </Link>
+          </RevealItem>
+        ))}
+      </Reveal>
+    </Container>
   );
 }

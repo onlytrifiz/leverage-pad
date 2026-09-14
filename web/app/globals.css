@@ -1,157 +1,402 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
 /*
- * leverage-pad — terminale scuro tinto di verde Robinhood.
- * Mark validati (dataviz): up #16b14c · down #ad3a3a su #0a0c0a
- * (deutan ΔE 14.2, contrasto ≥3:1). Le varianti -bright sono SOLO testo/glow.
- * #00c805 e' il verde brand: bottoni pieni con testo scuro, mai testo minuto.
+ * `dark:` is kept class-based on purpose. shadcn components ship `dark:*`
+ * utilities; without this variant Tailwind would bind them to the OS
+ * preference and half the UI would flip for a dark-mode visitor on a site
+ * that only has a light palette.
+ */
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * multiply.cash — mint paper, forest-green ink.
+ * Palette sampled from the logo (three rising chevrons): the darkest step of
+ * the gradient, #0c3420, is the ink; the lightest, #8ce8b0, is graphic fill
+ * only — at 1.35:1 it never carries text.
+ *
+ * Contrast verified on canvas/surface/surface-2:
+ *   ink 12.6:1 · ink-2 6.9:1 · ink-3 5.2:1 · brand 6.0:1 · up 4.9:1 · down 6.0:1
  */
 @theme {
-  --color-void: #0a0c0a;
-  --color-panel: #0e120e;
-  --color-panel-2: #131a14;
-  --color-line: #1e281f;
-  --color-line-2: #2c3d2e;
+  /* surfaces */
+  --color-void: #f2f6f2;
+  --color-panel: #ffffff;
+  --color-panel-2: #eaf1ec;
+  --color-line: #d4e2d8;
+  --color-line-2: #bacfbe;
 
-  --color-ink: #e8ece8;
-  --color-ink-2: #9aa89c;
-  --color-ink-3: #5c6a5e;
+  /* inks */
+  --color-ink: #0c3420;
+  --color-ink-2: #3f5a49;
+  --color-ink-3: #566c5e;
 
-  --color-accent: #00c805;
-  --color-accent-bright: #2ee06b;
-  --color-accent-dim: #06340f;
+  /*
+   * Brand green — one colour for everything interactive.
+   * Named `brand`, not `accent`: shadcn owns `--accent` for its subtle hover
+   * surface, and two different meanings behind one utility name is how the
+   * whole site silently turns grey.
+   */
+  --color-brand: #0f6b3f;
+  --color-brand-strong: #0b5c35;
+  --color-brand-soft: #dcefe3;
 
-  --color-up: #16b14c;
-  --color-up-bright: #2ee06b;
-  --color-down: #ad3a3a;
-  --color-down-bright: #ff6b6b;
+  /* market semantics — the +/− sign carries the meaning, colour reinforces it */
+  --color-up: #0f7a43;
+  --color-down: #b3261e;
 
+  /* logo ramp: forest to mint, graphic elements only */
+  --color-step-1: #0c3420;
+  --color-step-2: #1f6640;
+  --color-step-3: #2e8a57;
+  --color-step-4: #3fae70;
+  --color-mint: #8ce8b0;
+
+  --font-display: var(--font-familjen), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  /*
+   * Type scale. Before this the pages carried sixteen one-off arbitrary sizes
+   * (12.5, 13.5, 14.5, 19, 34…); these eleven steps replace all of them, so a
+   * heading and a label can only ever land on a step somebody chose.
+   */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 1.4;
+  --text-xs: 12px;
+  --text-xs--line-height: 1.45;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.5;
+  --text-md: 14px;
+  --text-md--line-height: 1.5;
+  --text-base: 15px;
+  --text-base--line-height: 1.55;
+  --text-lg: 16px;
+  --text-lg--line-height: 1.5;
+  --text-xl: 19px;
+  --text-xl--line-height: 1.35;
+  --text-2xl: 22px;
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 26px;
+  --text-3xl--line-height: 1.2;
+  --text-4xl: 32px;
+  --text-4xl--line-height: 1.12;
+  --text-5xl: 40px;
+  --text-5xl--line-height: 1.05;
 }
 
-html {
-  background: var(--color-void);
-  color-scheme: dark;
+/*
+ * shadcn's semantic tokens mapped onto the palette above, so every component
+ * pulled from the registry lands in the mint/forest world with no per-component
+ * overrides. This block is the only place the two vocabularies meet.
+ */
+:root {
+  --radius: 0.625rem;
+
+  --background: var(--color-void);
+  --foreground: var(--color-ink);
+  --card: var(--color-panel);
+  --card-foreground: var(--color-ink);
+  --popover: var(--color-panel);
+  --popover-foreground: var(--color-ink);
+
+  --primary: var(--color-brand);
+  --primary-foreground: #ffffff;
+  --secondary: var(--color-panel-2);
+  --secondary-foreground: var(--color-ink);
+
+  --muted: var(--color-panel-2);
+  --muted-foreground: var(--color-ink-3);
+  --accent: var(--color-panel-2);
+  --accent-foreground: var(--color-ink);
+
+  --destructive: var(--color-down);
+  --border: var(--color-line);
+  --input: var(--color-line);
+  --ring: var(--color-brand);
+
+  /*
+   * Header height as one value instead of the magic numbers that used to be
+   * spread across the ticker (top-[64px]), the rails (top:118px) and the home
+   * grid. The mobile header is taller because the nav links wrap to a second
+   * row — which is exactly why the ticker used to sit on top of them.
+   */
+  --nav-h: 104px;
+  --tape-h: 37px;
+  --header-h: calc(var(--nav-h) + var(--tape-h));
 }
 
-body {
-  background: var(--color-void);
-  color: var(--color-ink);
-  font-family: var(--font-mono);
-  font-size: 14px;
-  -webkit-font-smoothing: antialiased;
-  position: relative;
+@media (min-width: 640px) {
+  :root {
+    --nav-h: 64px;
+  }
 }
 
-/* atmosfera: due aloni verdi fissi, molto tenui — il resto resta nero */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background:
-    radial-gradient(900px 420px at 78% -80px, rgba(0, 200, 5, 0.07), transparent 60%),
-    radial-gradient(700px 500px at -10% 110%, rgba(0, 200, 5, 0.04), transparent 60%);
+@theme inline {
+  --font-heading: var(--font-display);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
 }
 
-body > * {
-  position: relative;
-  z-index: 1;
+/*
+ * Recurring elements live inside Tailwind's layers: a non-layered `.panel`
+ * outranks every utility regardless of specificity and would swallow any
+ * `bg-*` or `border-*` applied on top of it.
+ */
+@layer base {
+  html {
+    background: var(--color-void);
+    color-scheme: light;
+  }
+
+  body {
+    background: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    position: relative;
+  }
+
+  /*
+   * The page is security paper.
+   *
+   * Two fixed, pointer-events-none layers, never on a scrolling container: a
+   * mint veil for depth, and a fibre grain so the white stops reading as a
+   * browser default. The grain is an inline feTurbulence rather than an image
+   * so it costs one paint and no request.
+   */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: radial-gradient(900px 460px at 88% -120px, rgba(140, 232, 176, 0.28), transparent 62%);
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.55;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23g)' opacity='0.16'/%3E%3C/svg%3E");
+  }
+
+  body > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  ::selection {
+    background: var(--color-mint);
+    color: var(--color-ink);
+  }
+
+  h1, h2, h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+    color: var(--color-ink);
+  }
+
+  * {
+    @apply border-border;
+  }
 }
 
-::selection {
-  background: var(--color-accent);
-  color: var(--color-void);
+@layer components {
+  /* mono is reserved for data: figures, prices, addresses, commands */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+
+  /*
+   * Side rails: context, not content. No paper and no border — they stay on the
+   * mint ground and read as secondary precisely because they are not cards.
+   */
+  .rail {
+    position: sticky;
+    top: calc(var(--header-h) + 16px);
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100dvh - var(--header-h) - 40px);
+  }
+
+  /*
+   * Scroll shadows via background-attachment: the two `local` layers travel
+   * with the content and cover the `scroll` ones at the ends of the list, so
+   * the shadow appears only when there is genuinely more to see.
+   */
+  .rail-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-top: 4px;
+    background:
+      linear-gradient(var(--color-void) 30%, rgba(242, 246, 242, 0)) center top / 100% 22px no-repeat local,
+      linear-gradient(rgba(242, 246, 242, 0), var(--color-void) 70%) center bottom / 100% 22px no-repeat local,
+      linear-gradient(rgba(12, 52, 32, 0.11), rgba(12, 52, 32, 0)) center top / 100% 11px no-repeat scroll,
+      linear-gradient(rgba(12, 52, 32, 0), rgba(12, 52, 32, 0.11)) center bottom / 100% 11px no-repeat scroll;
+  }
+
+  /*
+   * Engraved rule: the fine repeating line that runs across a share
+   * certificate. Used to separate movements of the page where a plain border
+   * would read as a browser table.
+   */
+  .rule-engraved {
+    height: 6px;
+    background-image: repeating-linear-gradient(
+      90deg,
+      var(--color-line-2) 0 1px,
+      transparent 1px 4px
+    );
+    opacity: 0.75;
+  }
+
+  /*
+   * Engraved hatching, the shading an engraver uses instead of a flat fill.
+   * It carries emphasis blocks so they are not one more white card.
+   */
+  .hatch {
+    background-color: var(--color-panel-2);
+    background-image: repeating-linear-gradient(
+      -45deg,
+      rgba(12, 52, 32, 0.09) 0 1px,
+      transparent 1px 6px
+    );
+  }
+
+  .hatch-brand {
+    background-color: var(--color-brand-soft);
+    background-image: repeating-linear-gradient(
+      -45deg,
+      rgba(12, 52, 32, 0.11) 0 1px,
+      transparent 1px 5px
+    );
+  }
+
+  /*
+   * Certificate frame: a double rule with the inner one hairline, the way the
+   * border of an engraved instrument is set.
+   */
+  .frame-engraved {
+    border: 1px solid var(--color-line-2);
+    box-shadow:
+      inset 0 0 0 1px var(--color-panel),
+      inset 0 0 0 2px var(--color-line);
+  }
+
+  /* price tape: travels half its width (the list is duplicated) */
+  @keyframes tape {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+
+  /*
+   * The signature: the engine's stages climb like the three chevrons of the
+   * logo. Each step carries its colour from the ramp; the last one is the burn.
+   *
+   * The rise is 26px a step and every plate is the same height. The first
+   * attempt offset by 12px against plates of differing heights, which does not
+   * read as a staircase - it reads as four boxes that failed to line up.
+   */
+  .stair {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: end;
+    gap: 12px;
+  }
+  .stair-step {
+    position: relative;
+    border-left: 3px solid var(--step-color, var(--color-step-1));
+    background-color: var(--color-panel);
+    background-image: repeating-linear-gradient(
+      -45deg,
+      rgba(12, 52, 32, 0.055) 0 1px,
+      transparent 1px 6px
+    );
+    border-radius: 2px 10px 10px 2px;
+    padding: 12px 14px;
+    min-height: 68px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  @media (min-width: 720px) {
+    .stair {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0;
+      padding-top: 62px;
+    }
+    .stair-step {
+      margin-bottom: calc(var(--i) * 26px);
+      margin-right: 14px;
+    }
+    /*
+     * The riser: a hairline climbing from each plate to the next, so the eye is
+     * carried up the sequence instead of being asked to infer it from offsets.
+     */
+    .stair-step::after {
+      content: "";
+      position: absolute;
+      right: -14px;
+      bottom: 0;
+      width: 14px;
+      height: 26px;
+      border-left: 1px dashed var(--color-line-2);
+      border-bottom: 1px dashed var(--color-line-2);
+    }
+    .stair-step:last-child::after {
+      display: none;
+    }
+  }
 }
 
-/* label micro uppercase — l'unita' tipografica base del terminale */
-.lbl {
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--color-ink-3);
-  font-weight: 500;
-}
-
-.num {
-  font-variant-numeric: tabular-nums;
-}
-
-/* pannello: gradiente appena percettibile + filo di luce sul bordo alto */
-.panel {
-  background: linear-gradient(180deg, #10150f 0%, var(--color-panel) 100%);
-  border: 1px solid var(--color-line);
-  border-radius: 8px;
-  box-shadow: inset 0 1px 0 rgba(232, 236, 232, 0.03);
-}
-
-/* header di sezione: marker verde + titolo */
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--color-line);
-}
-.panel-head .lbl:first-child::before {
-  content: "▪ ";
-  color: var(--color-accent-bright);
-}
-
-/* bottone brand: verde robinhood pieno, testo scuro */
-.btn-primary {
-  background: var(--color-accent);
-  color: #04140a;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
-  font-size: 12px;
-  border-radius: 6px;
-  padding: 11px 14px;
-  width: 100%;
-  transition: box-shadow 0.15s, filter 0.15s;
-}
-.btn-primary:hover:not(:disabled) {
-  filter: brightness(1.12);
-  box-shadow: 0 0 24px rgba(0, 200, 5, 0.35);
-}
-.btn-primary:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
-/* glow del segno-firma (odometro burn, market cap) */
-.green-glow {
-  text-shadow: 0 0 18px rgba(46, 224, 107, 0.4), 0 0 44px rgba(0, 200, 5, 0.16);
-}
-
-/* nastro prezzi: scorre di mezza larghezza (la lista e' duplicata) */
-@keyframes tape {
-  from { transform: translateX(0); }
-  to { transform: translateX(-50%); }
-}
-
-/* freccia animata della pipeline del motore (home) */
-@keyframes flow-dash {
-  to { background-position-x: -14px; }
-}
-.flow-arrow {
-  height: 1px;
-  flex: 1;
-  min-width: 18px;
-  background-image: linear-gradient(90deg, var(--color-accent-bright) 55%, transparent 45%);
-  background-size: 7px 1px;
-  animation: flow-dash 0.9s linear infinite;
-  opacity: 0.65;
-}
-
+/*
+ * Deliberately outside the layers: several inputs clear their outline with a
+ * utility (so, in the utilities layer) and would erase the keyboard focus ring.
+ * Non-layered beats any layer, so the ring always survives.
+ */
 a:focus-visible,
 button:focus-visible,
-input:focus-visible {
-  outline: 2px solid var(--color-accent-bright);
+input:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid var(--color-brand);
   outline-offset: 2px;
+  border-radius: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {

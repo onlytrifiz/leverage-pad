@@ -1,9 +1,9 @@
 import { ethers } from "ethers";
 import { loadRegistry, type RegistryTranche } from "./registry";
-import { erc20, poolState, poolCandles, coinFeed } from "./chain";
+import { poolCandles, coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd } from "./chain";
 import { resolveAccountIndex, perpPosition } from "./lighter";
 import { demoCoins, demoDetail, demoCandles, demoFeed, demoPositions } from "./mock";
-import { FORCE_DEMO, TREASURY } from "./config";
+import { FORCE_DEMO } from "./config";
 import type { Candle, Coin, CoinDetail, CoinListItem, FeedItem, OpenPosition, TrancheView } from "./types";
 
 /** trigger dei profili di rischio (speculare a config.js del keeper) */
@@ -47,12 +47,22 @@ export function buildTrancheViews(
 
 const fmt = (raw: string, dec: number) => Number(ethers.utils.formatUnits(raw || "0", dec));
 
-export function isDemo(): boolean {
-  return FORCE_DEMO || loadRegistry().coins.length === 0;
+/** demo se forzata da env o se non c'e' ancora nessuna coin lanciata dal router */
+const demoFrom = (coins: unknown[]) => FORCE_DEMO || coins.length === 0;
+
+/** coins from the router's events, keeper state as an overlay keyed by token */
+async function loadAll() {
+  const [coins, reg] = await Promise.all([loadRouterCoins(), loadRegistry()]);
+  return { coins, state: reg.state };
+}
+
+export async function isDemo(): Promise<boolean> {
+  return demoFrom((await loadAll()).coins);
 }
 
 export async function listCoins(): Promise<CoinListItem[]> {
-  if (isDemo()) {
+  const reg = await loadAll();
+  if (demoFrom(reg.coins)) {
     return demoCoins().map((coin) => {
       const d = demoDetail(coin.token)!;
       return {
@@ -66,62 +76,50 @@ export async function listCoins(): Promise<CoinListItem[]> {
       };
     });
   }
-  const reg = loadRegistry();
-  return Promise.all(
-    reg.coins.map(async (coin) => {
-      const st = reg.state[coin.token.toLowerCase()];
-      let priceUsd: number | null = null;
-      let marketCapUsd: number | null = null;
-      let totalSupply: number | null = null;
-      try {
-        const [ps, supply] = await Promise.all([poolState(coin), erc20(coin.token).totalSupply()]);
-        priceUsd = ps.priceUsd;
-        totalSupply = Number(ethers.utils.formatUnits(supply, 18));
-        marketCapUsd = ps.priceUsd * totalSupply;
-      } catch (e) {
-        // RPC giu' o pool illeggibile: la lista mostra i trattini, ma il motivo va nei log
-        console.error(`[listCoins] ${coin.symbol}: ${(e as Error).message?.slice(0, 160)}`);
-      }
-      return {
-        coin,
-        priceUsd,
-        marketCapUsd,
-        // stessa fonte del dettaglio: cattura anche i burn del locker e degli utenti
-        burnedTokens:
-          coin.initialSupply != null && totalSupply != null
-            ? Math.max(0, coin.initialSupply - totalSupply)
-            : st ? fmt(st.totalBurnedRaw, 18) : 0,
-        feesCollectedUsd: st ? fmt(st.totalCollected0, coin.pairDecimals) : 0,
-        perpOpen: !!st?.perpOpen,
-        demo: false,
-      };
-    })
-  );
+  /* one Multicall3 round trip for every coin on the page; fees from each pool's swap log */
+  const [states, fees] = await Promise.all([
+    readCoinStates(reg.coins),
+    Promise.all(reg.coins.map((c) => poolFeesUsd(c).catch(() => 0))),
+  ]);
+  return reg.coins.map((coin, i) => {
+    const st = reg.state[coin.token.toLowerCase()];
+    const chain = states.get(coin.token.toLowerCase());
+    const totalSupply = chain?.totalSupply ?? null;
+    return {
+      coin,
+      priceUsd: chain?.priceUsd ?? null,
+      marketCapUsd: chain?.marketCapUsd ?? null,
+      burnedTokens:
+        coin.initialSupply != null && totalSupply != null ? Math.max(0, coin.initialSupply - totalSupply) : st ? fmt(st.totalBurnedRaw, 18) : 0,
+      feesCollectedUsd: st ? fmt(st.totalCollected0, coin.pairDecimals) : fees[i],
+      perpOpen: !!st?.perpOpen,
+      demo: false,
+    };
+  });
 }
 
 export async function coinDetail(address: string): Promise<CoinDetail | null> {
-  if (isDemo()) return demoDetail(address);
-  const reg = loadRegistry();
+  const reg = await loadAll();
+  if (demoFrom(reg.coins)) return demoDetail(address);
   const coin = reg.coins.find((c) => c.token.toLowerCase() === address.toLowerCase());
   if (!coin) return null;
   const st = reg.state[coin.token.toLowerCase()];
 
-  const [ps, supplyRaw, quoteBal, coinBal] = await Promise.all([
-    poolState(coin).catch(() => null),
-    erc20(coin.token).totalSupply().catch(() => null),
-    erc20(coin.pair).balanceOf(coin.subWallet).catch(() => null),
-    erc20(coin.token).balanceOf(coin.subWallet).catch(() => null),
+  /* price, supply and both fee-destination balances in a single request; fees from the swap log */
+  const [states, feesFromSwaps] = await Promise.all([
+    readCoinStates([coin], { withSubWallet: true }),
+    poolFeesUsd(coin).catch(() => 0),
   ]);
+  const chain = states.get(coin.token.toLowerCase())!;
 
-  const totalSupply = supplyRaw ? Number(ethers.utils.formatUnits(supplyRaw, 18)) : null;
-  // bruciati = supply iniziale − supply corrente: cattura TUTTI i burn (quelli del
-  // locker a ogni collect, i buyback del keeper, gli invii a 0xdEaD degli utenti).
-  // Fallback sul contatore del keeper per coin registrate senza initialSupply.
+  const totalSupply = chain.totalSupply;
+  // bruciati = supply iniziale − supply corrente: cattura TUTTI i burn (burn() del
+  // keeper sui buyback, invii a 0xdEaD degli utenti). Fallback sul contatore del keeper.
   const burnedTokens =
     coin.initialSupply != null && totalSupply != null
       ? Math.max(0, coin.initialSupply - totalSupply)
       : st ? fmt(st.totalBurnedRaw, 18) : 0;
-  const priceUsd = ps?.priceUsd ?? null;
+  const priceUsd = chain.priceUsd;
 
   let perp = null;
   const accountIndex =
@@ -141,7 +139,7 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
       totalSupply,
       burnedTokens,
       burnedPct: totalSupply != null ? burnedTokens / (totalSupply + burnedTokens) : null,
-      feesCollectedUsd: st ? fmt(st.totalCollected0, d) : 0,
+      feesCollectedUsd: st ? fmt(st.totalCollected0, d) : feesFromSwaps,
       buybackReserveUsd: st ? fmt(st.buybackReserveRaw, d) : 0,
       perpReserveUsd: st ? fmt(st.perpReserveRaw, d) : 0,
       creatorOwedUsd: st ? fmt(st.creatorOwedRaw, d) : 0,
@@ -153,35 +151,40 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
     tranches,
     subWallet: {
       address: coin.subWallet,
-      quoteBalanceUsd: quoteBal ? Number(ethers.utils.formatUnits(quoteBal, d)) : null,
-      coinBalance: coinBal ? Number(ethers.utils.formatUnits(coinBal, 18)) : null,
+      quoteBalanceUsd: chain.subQuote,
+      coinBalance: chain.subCoin,
     },
-    poolRaw: ps
-      ? { sqrtPriceX96: ps.sqrtPriceX96.toString(), liquidity: ps.liquidity.toString(), coinIsToken0: ps.coinIsToken0 }
-      : null,
+    poolRaw:
+      chain.sqrtPriceX96 != null && chain.liquidity != null
+        ? {
+            sqrtPriceX96: chain.sqrtPriceX96,
+            liquidity: chain.liquidity,
+            coinIsToken0: chain.coinIsToken0,
+          }
+        : null,
   };
 }
 
 export async function coinCandles(address: string): Promise<Candle[]> {
-  if (isDemo()) return demoCandles(address);
-  const reg = loadRegistry();
+  const reg = await loadAll();
+  if (demoFrom(reg.coins)) return demoCandles(address);
   const coin = reg.coins.find((c) => c.token.toLowerCase() === address.toLowerCase());
   if (!coin) return [];
   return poolCandles(coin).catch(() => []);
 }
 
 export async function coinFeedItems(address: string): Promise<FeedItem[]> {
-  if (isDemo()) return demoFeed(address);
-  const reg = loadRegistry();
+  const reg = await loadAll();
+  if (demoFrom(reg.coins)) return demoFeed(address);
   const coin = reg.coins.find((c) => c.token.toLowerCase() === address.toLowerCase());
   if (!coin) return [];
-  return coinFeed(coin, coin.creator, TREASURY).catch(() => []);
+  return coinFeed(coin).catch(() => []);
 }
 
 /** posizioni perp aperte su tutte le coin (per la sidebar della home) */
 export async function openPositions(): Promise<OpenPosition[]> {
-  if (isDemo()) return demoPositions();
-  const reg = loadRegistry();
+  const reg = await loadAll();
+  if (demoFrom(reg.coins)) return demoPositions();
   const rows = await Promise.all(
     reg.coins.map(async (coin): Promise<OpenPosition | null> => {
       const st = reg.state[coin.token.toLowerCase()];
@@ -196,6 +199,8 @@ export async function openPositions(): Promise<OpenPosition[]> {
         token: coin.token,
         symbol: coin.symbol,
         market: coin.market,
+        accountIndex,
+        marketId: p.marketId,
         side: coin.side,
         leverage: coin.leverage,
         notionalUsd: p.positionSizeUsd,

@@ -96,6 +96,7 @@ async def cmd_markets(p):
                         "size_dec": md.get("supported_size_decimals", md.get("size_decimals")),
                         "price_dec": md.get("supported_price_decimals", md.get("price_decimals")),
                         "min_base": md.get("min_base_amount"),
+                        "min_quote": md.get("min_quote_amount"),
                         "status": md.get("status")}
         return {"ok": True, "markets": res}
     finally:
@@ -137,6 +138,11 @@ async def cmd_account(p):
                 "unrealized_pnl": pos.get("unrealized_pnl", pos.get("unrealized_pnl_usd")),
                 "allocated_margin": pos.get("allocated_margin", pos.get("position_margin")),
                 "liquidation_price": pos.get("liquidation_price"),
+                # funding CUMULATIVO pagato/incassato da questa posizione (negativo =
+                # pagato). E' gia' dentro il collaterale su Lighter, ma la contabilita'
+                # a tranche del keeper misura solo il prezzo: senza questo campo il
+                # realizzato rivendica piu' di quanto c'e' sul conto.
+                "total_funding_paid_out": pos.get("total_funding_paid_out"),
             })
         return {"ok": True,
                 "collateral": a0.get("collateral", a0.get("available_balance")),

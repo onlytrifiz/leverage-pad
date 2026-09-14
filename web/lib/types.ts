@@ -1,13 +1,26 @@
+/**
+ * A coin launched through the multiply router: a Doppler market on Uniswap v4.
+ * Everything here is read from the router's `MultiplyLaunch` event and the
+ * token's IPFS metadata; nothing needs the keeper to exist.
+ */
 export type Coin = {
   token: string;
   name: string;
   symbol: string;
+  /** Uniswap v4 pool id (keccak of the PoolKey); also the DexScreener pair id */
+  poolId: string;
+  /** the numeraire: USDG on every launch today */
   pair: string;
   pairSymbol: string;
   pairDecimals: number;
+  /** trading fee taken by the hook, 1e6-based (30_000 = 3%) */
   fee: number;
-  pool: string;
-  lpTokenId: string;
+  antiSnipe: boolean;
+  /** opening market cap in numeraire units, as launched */
+  openingMcapUsd: number;
+  /** wallet that sent the launch */
+  launcher: string;
+  /** where the fees land until the keeper adopts the coin (hub), then the coin's sub-wallet */
   subWallet: string;
   creator: string;
   market: string;
@@ -15,8 +28,12 @@ export type Coin = {
   leverage: number;
   /** profilo take-profit del motore: scelto al lancio */
   riskProfile?: "safe" | "balanced" | "degen";
-  /** supply alla registrazione: riferimento per bruciati = initial − totalSupply */
+  tokenURI: string;
+  /** ipfs:// image from the metadata, when pinned to the standard */
+  image?: string;
+  /** supply at launch: burned = initial − totalSupply */
   initialSupply?: number;
+  launchBlock: number;
   createdAt: string;
 };
 
@@ -34,6 +51,9 @@ export type OpenPosition = {
   token: string;
   symbol: string;
   market: string;
+  /** conto e mercato su Lighter: la riga si aggiorna da sola dallo stream */
+  accountIndex: number | null;
+  marketId: number | null;
   side: "long" | "short";
   leverage: number;
   notionalUsd: number | null;
@@ -45,6 +65,10 @@ export type OpenPosition = {
 };
 
 export type PerpPosition = {
+  /** identita' della posizione sul venue: serve al canale websocket che la segue
+   *  live. Null in demo, dove non c'e' nessun conto da seguire. */
+  accountIndex: number | null;
+  marketId: number | null;
   open: boolean;
   collateralUsd: number | null;
   positionSizeUsd: number | null;
@@ -52,6 +76,8 @@ export type PerpPosition = {
   markPrice: number | null;
   unrealizedPnlUsd: number | null;
   liquidationPrice: number | null;
+  /** funding cumulativo pagato (negativo) o incassato dalla posizione */
+  fundingPaidUsd: number | null;
 };
 
 export type FeedItem = {
@@ -72,15 +98,11 @@ export type Candle = {
   close: number;
 };
 
-/** vista di una tranche del motore perp: entry → target con progresso live */
 export type TrancheView = {
-  /** size in unita' base del mercato (es. "0.00310 BTC") */
   sizeText: string;
   entryMark: number;
   targetMark: number;
-  /** avanzamento 0..1 del mark tra entry e target */
   progress: number;
-  /** movimento % del sottostante da entry, e % necessaria al target */
   movePct: number;
   neededPct: number;
   collateralUsd: number;
@@ -106,9 +128,12 @@ export type CoinDetail = {
     updatedAt: number;
   };
   perp: PerpPosition | null;
-  /** ladder delle tranche aperte (ordinate dalla piu' vicina al target) */
   tranches: TrancheView[];
-  subWallet: { address: string; quoteBalanceUsd: number | null; coinBalance: number | null };
-  /** stato raw del pool per il quote esatto dello swap client-side */
+  subWallet: {
+    address: string;
+    quoteBalanceUsd: number | null;
+    coinBalance: number | null;
+  };
+  /** live pool state for the swap quote; null in demo or when unreadable */
   poolRaw: { sqrtPriceX96: string; liquidity: string; coinIsToken0: boolean } | null;
 };

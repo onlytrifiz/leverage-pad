@@ -65,7 +65,8 @@ async function market(symbol) {
   const info = m[symbol];
   if (!info) throw new Error(`mercato Lighter "${symbol}" inesistente sul profilo ${config.LIGHTER_PROFILE}`);
   const minBaseUnits = info.min_base ? Math.max(1, Math.round(parseFloat(info.min_base) * 10 ** info.size_dec)) : 1;
-  return { index: info.index, sizeDec: info.size_dec, priceDec: info.price_dec, status: info.status, minBaseUnits };
+  const minQuoteUsd = info.min_quote ? parseFloat(info.min_quote) : 0;
+  return { index: info.index, sizeDec: info.size_dec, priceDec: info.price_dec, status: info.status, minBaseUnits, minQuoteUsd };
 }
 
 const selftest = () => call('selftest');

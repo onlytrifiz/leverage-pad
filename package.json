@@ -6,7 +6,8 @@
   "scripts": {
     "deploy-locker": "node deployLocker.js",
     "launch": "node launchCoin.js",
-    "keeper": "node keeper.js"
+    "keeper": "node keeper.js",
+    "test": "node --test test/keeper.test.js test/launchQueue.test.js"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

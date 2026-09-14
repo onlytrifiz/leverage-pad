@@ -7,6 +7,7 @@ const { deriveSubWallet, checkFingerprint } = require('./lib/subwallet');
 const { encryptSecret, decryptSecret, isEncrypted } = require('./lib/secrets');
 const { buildSwapCalldata } = require('./lib/v3');
 const registry = require('./lib/registry');
+const publish = require('./lib/publish');
 const lighter = require('./lighter/client');
 
 /**
@@ -164,17 +165,44 @@ function reconcileTranches(tranches, posBase, mark, sizeDec) {
     const synth = { base: posBase - sum, entryMark: mark, collateralUsd: 0, sizeDec, ts: Date.now(), synthetic: true };
     return { tranches: [...tranches, synth], changed: true, note: `size on-chain > contabilita': tranche sintetica da ${posBase - sum} unita' all'entry corrente` };
   }
-  // posBase < sum: funding/riduzioni esterne → scala proporzionale, resto alla piu' grande
+  // posBase < sum: funding/riduzioni esterne → scala proporzionale, resto alla piu' grande.
+  // Il resto si assegna PRIMA di scartare le tranche azzerate dal floor: con un libro
+  // di tranche minuscole (le schegge del finding #8) il floor puo' azzerarle tutte, e
+  // filtrare per prime lasciava il libro vuoto con la posizione ancora aperta. Al tick
+  // dopo sarebbe rientrata come sintetica al mark corrente, cioe' con l'entry sbagliata
+  // e il target del take-profit falsato. L'indice si sceglie sulle base ORIGINALI,
+  // che sono le uniche informative quando le scalate sono tutte a zero.
   const factor = posBase / sum;
-  const scaled = tranches.map((t) => ({ ...t, base: Math.floor(t.base * factor) })).filter((t) => t.base > 0);
+  const scaled = tranches.map((t) => ({ ...t, base: Math.floor(t.base * factor) }));
   const acc = scaled.reduce((a, t) => a + t.base, 0);
-  let rem = posBase - acc;
+  const rem = posBase - acc;
   if (rem > 0 && scaled.length) {
     let iMax = 0;
-    for (let i = 1; i < scaled.length; i++) if (scaled[i].base > scaled[iMax].base) iMax = i;
+    for (let i = 1; i < tranches.length; i++) if (tranches[i].base > tranches[iMax].base) iMax = i;
     scaled[iMax].base += rem;
   }
-  return { tranches: scaled, changed: true, note: `tranche riscalate a ${posBase} unita' (contabilita' era ${sum})` };
+  const kept = scaled.filter((t) => t.base > 0);
+  return { tranches: kept, changed: true, note: `tranche riscalate a ${posBase} unita' (contabilita' era ${sum})` };
+}
+
+// Registra una tranche nuova, FONDENDO i fill-scheggia nella precedente.
+// Una tranche piu' piccola del minimo d'ordine del mercato non potrebbe MAI essere
+// chiusa da sola: non deve esistere come entita' separata. Succede quando il saldo
+// "libero" e' gonfiato dal PnL non ancora realizzato (misurato live su HYPE 20x:
+// sei micro-tranche da 1-17 unita' contro un minimo di 100). La fusione con entry
+// medio pesato e' anche il valore contabilmente corretto.
+function addTranche(tranches, t, minBaseUnits) {
+  const last = tranches[tranches.length - 1];
+  if (last && t.base < (minBaseUnits || 1)) {
+    const total = last.base + t.base;
+    last.entryMark = (last.entryMark * last.base + t.entryMark * t.base) / total;
+    last.base = total;
+    last.collateralUsd = (last.collateralUsd || 0) + (t.collateralUsd || 0);
+    last.ts = t.ts;
+    return { tranches, merged: true };
+  }
+  tranches.push(t);
+  return { tranches, merged: false };
 }
 
 // separa le tranche mature (target raggiunto) da quelle ancora in corsa
@@ -210,10 +238,48 @@ function realizedFromTranches(tranches, mark, side, sizeDec) {
   }, 0);
 }
 
+// Delta di funding dall'ultimo tick, per mercato.
+//
+// Il perp paga (o incassa) funding a ogni round e quel flusso finisce direttamente
+// nel collaterale su Lighter. La contabilita' a tranche, invece, calcola il
+// realizzato come (mark - entry) x size: SOLO prezzo. Senza riconciliare il
+// funding, perpRealizedUsd rivendica piu' di quanto c'e' davvero sul conto e il
+// withdraw dello step 8 finisce per prelevare margine — o viene rifiutato e
+// ritentato all'infinito mentre il buco cresce.
+//
+// `total_funding_paid_out` e' CUMULATIVO e vive quanto la posizione, quindi si
+// tiene l'ultimo valore visto e si applica solo la differenza. La baseline si
+// ricostruisce dalle sole posizioni PRESENTI: quando una posizione sparisce la
+// sua baseline cade da sola, e una posizione nuova sullo stesso mercato riparte
+// da zero senza generare un credito fantasma.
+function fundingDelta(seen, positions) {
+  const prev = seen && typeof seen === 'object' ? seen : {};
+  const next = {};
+  let delta = 0;
+  for (const p of positions || []) {
+    const mid = String(p.market_id);
+    const cum = Number(p.total_funding_paid_out);
+    // campo assente (API vecchia o mercato senza funding): la baseline si conserva
+    // com'e', cosi' un buco temporaneo nella risposta non si traduce in un delta.
+    if (!isFinite(cum)) {
+      if (prev[mid] !== undefined) next[mid] = prev[mid];
+      continue;
+    }
+    delta += cum - Number(prev[mid] || 0);
+    next[mid] = cum;
+  }
+  return { delta, seen: next };
+}
+
 // output ESATTO di un exact-in swap V3 in un range a liquidita' costante (i pool
 // perpspad sono a posizione singola one-sided → L costante nel range: esatto).
 // Formule canoniche SqrtPriceMath, identiche a uniQuote.js del repo.
 function quoteExactInV3(sqrtP, L, amountInNet, zeroForOne) {
+  // Liquidita' nulla nel tick attivo: il pool non puo' eseguire. Senza questa guardia
+  // il ramo token1-in divide per L e solleva division-by-zero, che nel buyback si
+  // presenterebbe come errore opaco del tick invece di uno skip pulito. (La copia
+  // lato web in SwapPanel la guardia ce l'aveva gia': qui mancava.)
+  if (L.isZero()) return ethers.constants.Zero;
   if (zeroForOne) {
     // token0 in → token1 out, prezzo scende
     const sqrtNext = L.mul(Q96).mul(sqrtP).div(L.mul(Q96).add(amountInNet.mul(sqrtP)));
@@ -228,6 +294,31 @@ function quoteExactInV3(sqrtP, L, amountInNet, zeroForOne) {
 // (tiene conto dell'impatto di prezzo) e tolgo la tolleranza di slippage. Se un
 // sandwich/volume ha spostato il prezzo tra il quote e l'esecuzione, lo swap
 // reverta e si ritenta al tick dopo — niente leak da amountOutMinimum:0.
+/**
+ * Quanti quote (in unita' umane) valgono `coinRaw` unita' RAW di coin, allo spot.
+ *
+ * sqrtPriceX96 codifica il prezzo RAW di token1 per token0. Restando in raw su
+ * entrambi i lati non serve alcun fattore per i 18 decimali della coin: basta
+ * girare il rapporto secondo chi dei due e' il quote e dividere per i decimali
+ * del quote alla fine. Funzione pura: e' coperta dai test a secco.
+ */
+function coinValueInQuote(sqrtPriceX96, coinRaw, quoteIs0, pairDecimals) {
+  const p = Number(sqrtPriceX96.toString()) ** 2 / 2 ** 192;   // raw token1 per raw token0
+  if (!isFinite(p) || p <= 0) return 0;
+  const quoteRawPerCoinRaw = quoteIs0 ? 1 / p : p;
+  const quoteRaw = Number(coinRaw.toString()) * quoteRawPerCoinRaw;
+  if (!isFinite(quoteRaw)) return 0;
+  return quoteRaw / 10 ** pairDecimals;
+}
+
+// valore in USD del lato coin delle fee, allo spot del pool: serve al gate del
+// claim per "vedere" anche la parte bruciabile
+async function coinSideUsd(coin, coinRaw, quoteIs0, unitUsd) {
+  const pool = new ethers.Contract(coin.pool, POOL_ABI, provider);
+  const { sqrtPriceX96 } = await pool.slot0();
+  return coinValueInQuote(sqrtPriceX96, coinRaw, quoteIs0, coin.pairDecimals) * unitUsd;
+}
+
 async function buybackMinOut(coin, quoteIs0, spendRaw) {
   const pool = new ethers.Contract(coin.pool, POOL_ABI, provider);
   const [{ sqrtPriceX96 }, L] = await Promise.all([pool.slot0(), pool.liquidity()]);
@@ -310,15 +401,44 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   }
 
   // ── 1. CLAIM: decidi con la static, misura col delta reale ──────────────────
-  let est;
-  try { const [a0, a1] = await locker.callStatic.collect(coin.lpTokenId); est = quoteIs0 ? a0 : a1; }
+  let est, estCoin;
+  try {
+    const [a0, a1] = await locker.callStatic.collect(coin.lpTokenId);
+    est = quoteIs0 ? a0 : a1;
+    estCoin = quoteIs0 ? a1 : a0;
+  }
   catch (e) { console.log(`  [${coin.symbol}] static collect fallita: ${e.message.slice(0, 80)}`); return; }
 
-  if (usdOf(est, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD) {
+  // Il gate valuta ENTRAMBI i lati. Guardare solo il quote rendeva invisibili le fee
+  // lato coin, che sono gia' bruciabili: una coin con pressione in vendita accumula
+  // burn mai riscossi finche' non arriva abbastanza volume in ACQUISTO. Misurato dal
+  // vivo: $84 di volume avevano prodotto $0.49 di quote e 119k di coin, e il gate
+  // restava chiuso. Lo spot del pool si legge solo quando il quote da solo non basta,
+  // per non aggiungere una lettura per coin a ogni tick.
+  let claimableUsd = usdOf(est, coin.pairDecimals, unitUsd);
+  if (claimableUsd < config.CLAIM_MIN_USD && estCoin.gt(0)) {
+    claimableUsd += await coinSideUsd(coin, estCoin, quoteIs0, unitUsd).catch(() => 0);
+  }
+
+  if (claimableUsd >= config.CLAIM_MIN_USD) {
     const quoteBefore = await quote.balanceOf(sub.address);
+    const supplyBefore = await coinC.totalSupply().catch(() => null);
     await send(keeper, { to: config.LOCKER, data: locker.interface.encodeFunctionData('collect', [coin.lpTokenId]), gasLimit: 300000 }, 'collect');
     const realQuote = (await quote.balanceOf(sub.address)).sub(quoteBefore); // fee quote REALMENTE incassate
     st.totalCollected0 = BN(st.totalCollected0).add(realQuote).toString();
+
+    // Il lato coin lo brucia il LOCKER dentro la collect, mandandolo a 0xdEaD: non
+    // passa mai dal sub-wallet, quindi lo step 3 non lo vede e il contatore restava
+    // a zero mentre la supply calava davvero. Lo misuro dal delta di totalSupply,
+    // che e' l'unica fonte che comprende entrambi i canali di burn.
+    if (supplyBefore) {
+      const supplyAfter = await coinC.totalSupply().catch(() => null);
+      if (supplyAfter && supplyBefore.gt(supplyAfter)) {
+        const burnedByLocker = supplyBefore.sub(supplyAfter);
+        st.totalBurnedRaw = BN(st.totalBurnedRaw).add(burnedByLocker).toString();
+        console.log(`  [${coin.symbol}] burn del locker: ${ethers.utils.formatEther(burnedByLocker)} ${coin.symbol}`);
+      }
+    }
 
     // ── 2. SPLIT (resto al perp: somma esatta) ───────────────────────────────
     const creatorCut = realQuote.mul(config.SPLIT_BPS.creator).div(10000);
@@ -534,16 +654,48 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   const freeCollateralUsd = Number(acc.available_balance ?? acc.collateral ?? 0);
   let openedBaseThisTick = 0; // size aperta DOPO questa lettura di pos (vedi step 7)
 
+  // 5b) FUNDING. Il funding non passa dalle tranche (che misurano solo il prezzo)
+  //     ma e' gia' stato addebitato o accreditato sul collaterale: va portato nel
+  //     realizzato, altrimenti perpRealizedUsd e il conto divergono in silenzio e
+  //     il withdraw dello step 8 preleva margine invece di profitto.
+  //     Delta negativo = funding PAGATO: riduce il realizzato (fino a renderlo
+  //     negativo, cioe' un debito che il prossimo take-profit ripaga prima di
+  //     poter prelevare). Positivo = incassato: e' profitto del perp come un altro,
+  //     e segue la stessa strada verso il buyback&burn.
+  {
+    const f = fundingDelta(st.perpFundingSeen, acc.positions);
+    st.perpFundingSeen = f.seen;
+    if (Math.abs(f.delta) >= 0.000001) {
+      st.perpFundingUsd = Number(st.perpFundingUsd || 0) + f.delta;
+      st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + f.delta;
+      if (!sim) checkpoint();
+      console.log(`  [${coin.symbol}] ${tag}funding ${f.delta >= 0 ? '+' : ''}$${f.delta.toFixed(6)} (cumulato $${Number(st.perpFundingUsd).toFixed(6)}): realizzato ora $${Number(st.perpRealizedUsd).toFixed(2)}`);
+    }
+  }
+
   // 6) OPEN / TOPUP: deploya il collaterale libero al leverage scelto.
   //    Il profitto gia' REALIZZATO (perpRealizedUsd) resta fuori dal deployable:
   //    e' in coda per il withdraw (step 8) e non va ri-lockato in posizione —
   //    altrimenti dopo una chiusura totale (profilo safe) il withdraw fallirebbe.
-  const deployableUsd = Math.max(0, freeCollateralUsd - Number(st.perpRealizedUsd || 0));
-  if (deployableUsd >= 1) {
+  //    Si impiega solo COLLATERAL_HEADROOM del libero: Lighter valuta il margine al
+  //    prezzo di esecuzione, quindi senza buffer l'ordine viene scartato in silenzio
+  //    appena il prezzo si muove tra la lettura del mark e il fill.
+  //    La riserva si clampa a zero: un realizzato NEGATIVO (funding pagato piu' del
+  //    profitto, step 5b) e' un debito, non collaterale in piu' da impiegare.
+  const usableUsd = Math.max(0, freeCollateralUsd - Math.max(0, Number(st.perpRealizedUsd || 0)));
+  const deployableUsd = usableUsd * config.COLLATERAL_HEADROOM;
+  const minNotional = Math.max(mkt.minQuoteUsd || 0, 0);
+  if (deployableUsd >= config.MIN_DEPLOY_USD && deployableUsd * coin.leverage < minNotional) {
+    if (!st.perpBelowMinLogged) {
+      console.log(`  [${coin.symbol}] collaterale insufficiente per il minimo d'ordine: $${(deployableUsd * coin.leverage).toFixed(2)} di notional < $${minNotional.toFixed(2)} richiesti da ${coin.market} — accumulo`);
+      st.perpBelowMinLogged = true; if (!sim) checkpoint();
+    }
+  } else if (deployableUsd >= config.MIN_DEPLOY_USD) {
+    st.perpBelowMinLogged = false;
     const wasOpen = st.perpOpen;
     const notionalUsd = deployableUsd * coin.leverage;
     if (sim) {
-      console.log(`  [${coin.symbol}] ${tag}perp ${wasOpen ? 'topup' : 'open'}: aprirei notional $${notionalUsd.toFixed(2)} ${coin.side} ${coin.leverage}x (deployable $${deployableUsd.toFixed(2)}, riservato al withdraw $${Number(st.perpRealizedUsd || 0).toFixed(2)})`);
+      console.log(`  [${coin.symbol}] ${tag}perp ${wasOpen ? 'topup' : 'open'}: aprirei notional $${notionalUsd.toFixed(2)} ${coin.side} ${coin.leverage}x (deployable $${deployableUsd.toFixed(2)}, riservato al withdraw $${Math.max(0, Number(st.perpRealizedUsd || 0)).toFixed(2)})`);
     } else {
       const baseBefore = pos && pos.size != null ? Math.round(Math.abs(Number(pos.size)) * 10 ** mkt.sizeDec) : 0;
       const r = await lighter.open({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: Date.now() % 1000000, apiPrivKey, apiKeyIndex });
@@ -561,15 +713,16 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
         if (!Array.isArray(st.perpTranches)) st.perpTranches = [];
         // entry = mark usato dal sidecar per dimensionare; se manca, niente append:
         // la riconciliazione del tick dopo crea la sintetica.
+        let merged = false;
         if (r.mark) {
-          st.perpTranches.push({ base: filled, entryMark: Number(r.mark), collateralUsd: usedCollateralUsd, sizeDec: mkt.sizeDec, ts: Date.now() });
+          ({ merged } = addTranche(st.perpTranches, { base: filled, entryMark: Number(r.mark), collateralUsd: usedCollateralUsd, sizeDec: mkt.sizeDec, ts: Date.now() }, mkt.minBaseUnits));
           // la `pos` letta allo step 5 e' PRECEDENTE a quest'ordine: senza tenerne
           // conto la riconciliazione dello step 7 vedrebbe le tranche "in eccesso"
           // e le riscalerebbe tutte (proprio la diluizione che le tranche evitano).
           openedBaseThisTick += filled;
         }
         checkpoint();
-        console.log(`  [${coin.symbol}] perp ${wasOpen ? 'topup' : 'open'}: notional $${notionalUsd.toFixed(2)} ${coin.side} ${coin.leverage}x (fill ${filled}/${r.baseAmount} @ ${r.mark})`);
+        console.log(`  [${coin.symbol}] perp ${wasOpen ? 'topup' : 'open'}: notional $${notionalUsd.toFixed(2)} ${coin.side} ${coin.leverage}x (fill ${filled}/${r.baseAmount} @ ${r.mark})${merged ? ' — scheggia fusa nella tranche precedente' : ''}`);
       } else {
         console.log(`  [${coin.symbol}] perp open NON riempito (IOC senza controparte: book vuoto o mercato chiuso?): collaterale intatto, riprovo al tick dopo`);
       }
@@ -602,9 +755,19 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
       const rec = reconcileTranches(st.perpTranches, posBase, mark, mkt.sizeDec);
       if (rec.changed) {
         st.perpTranches = rec.tranches;
-        if (!rec.tranches.length) st.perpOpen = false;
         if (!sim) checkpoint();
         if (rec.note) console.log(`  [${coin.symbol}] ${tag}tranches: ${rec.note}`);
+      }
+      // perpOpen deve rispecchiare il venue, non essere una latch a senso unico.
+      // Veniva messo a true SOLO da un fill nostro: se il libro veniva ricostruito
+      // da una tranche sintetica (posizione viva scoperta in riconciliazione) il
+      // flag restava false per sempre. Conseguenze reali: lo step 6 sceglieva
+      // OPEN_GATE invece di TOPUP_STEP, e la home mostrava "Accumulating" su una
+      // coin col perp aperto (letto da `st.perpOpen` in web/lib/detail.ts).
+      if (!st.perpOpen) {
+        st.perpOpen = true;
+        if (!sim) checkpoint();
+        console.log(`  [${coin.symbol}] ${tag}perpOpen riallineato al venue: posizione viva (base ${posBase})`);
       }
       const { ready, keep } = matureTranches(st.perpTranches, mark, coin.side, coin.leverage, prof.triggerPct);
       const closeBase = Math.min(ready.reduce((a, t) => a + t.base, 0), posBase);
@@ -706,6 +869,30 @@ function validateSplit() {
   if (!Number.isInteger(tp) || tp < 0 || tp > 10000) throw new Error(`TP_MASTER_SHARE_BPS fuori range [0,10000]: ${tp}`);
 }
 
+/**
+ * Le soglie si abbassano per i test e ci si dimentica di rialzarle: e' l'errore
+ * banale che manda in produzione un motore che apre posizioni ogni $1.50. Qui il
+ * keeper confronta i valori attivi con i default di produzione e lo dice a voce
+ * alta all'avvio, invece di lasciare la verifica alla memoria di qualcuno.
+ */
+const PRODUCTION_DEFAULTS = {
+  OPEN_GATE_USD: 20,
+  TOPUP_STEP_USD: 20,
+  BUYBACK_FLOOR_USD: 25,
+  MIN_DEPLOY_USD: 2,
+};
+
+function warnIfNotProduction() {
+  const diff = Object.entries(PRODUCTION_DEFAULTS)
+    .filter(([k, v]) => Number(config[k]) !== v)
+    .map(([k, v]) => `${k}=${config[k]} (produzione: ${v})`);
+  if (!diff.length) return;
+  console.log('┌─ ATTENZIONE: soglie NON di produzione ────────────────────────');
+  for (const d of diff) console.log('│  ' + d);
+  console.log('│  Rimuovi gli override dal .env prima di andare live.');
+  console.log('└───────────────────────────────────────────────────────────────');
+}
+
 async function main() {
   validateSplit();
   if (!config.LOCKER) throw new Error('PERPSPAD_LOCKER mancante nel .env');
@@ -717,6 +904,7 @@ async function main() {
   const locker = new ethers.Contract(config.LOCKER, LOCKER_ABI, keeper);
   const only = arg('coin', null);
   console.log(`keeper ${keeper.address} | locker ${config.LOCKER} | tick ${config.TICK_MS}ms | lighter:${lighter.mode}${only ? ' | solo ' + only : ''}`);
+  warnIfNotProduction();
 
   do {
     const reg = registry.load();
@@ -730,6 +918,9 @@ async function main() {
       catch (e) { console.log(`  [${coin.symbol}] ERRORE tick: ${e.message.slice(0, 140)}`); }
       registry.save(reg);
     }
+    // estratto pubblico per il sito (senza chiavi API ne' stato interno):
+    // in produzione il frontend gira su un host remoto e non vede il file locale
+    publish.writeSnapshot(reg);
     if (!flag('once')) await sleep(config.TICK_MS);
   } while (!flag('once'));
 }
@@ -739,4 +930,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { trancheTargetMark, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, quoteExactInV3 };
+module.exports = { trancheTargetMark, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote };
