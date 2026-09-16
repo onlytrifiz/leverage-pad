@@ -10,9 +10,11 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {TickMath} from "@v4-core/libraries/TickMath.sol";
 
 import {IAirlock, IBundler, IDopplerHookInitializer, DopplerTypes} from "./interfaces/IDoppler.sol";
+import {MultiplyFeeSink} from "./MultiplyFeeSink.sol";
 
 /**
  * @title MultiplyLaunchRouter
@@ -27,6 +29,13 @@ import {IAirlock, IBundler, IDopplerHookInitializer, DopplerTypes} from "./inter
  * An optional first buy goes through Doppler's Bundler, which creates the market and swaps in
  * the same call frame so nothing can trade before it; the Rehype exempts that swap from the
  * non-protocol part of the fee.
+ *
+ * Where the fee lands is fixed per pool at initialization (the hook has no setter for its
+ * `buybackDst`), so with a sink configured the router clones a `MultiplyFeeSink` per launch and
+ * gives THAT to the hook and to the pool as the 95% beneficiary: every fee of a coin reaches a
+ * contract that splits it between the protocol treasury and the coin's own sub-wallet, and burns
+ * the coin. Without a sink configured (the state before the upgrade that added it) the policy's
+ * fee hub receives everything, as before.
  *
  * The router holds no funds (the first buy's numeraire only crosses it inside one call) and
  * never touches a pool after creation: the token, the pool and its lock are Doppler's and are
@@ -51,6 +60,11 @@ contract MultiplyLaunchRouter is
     /// Doppler's mandatory beneficiary share for the airlock owner (BeneficiaryData.MIN_PROTOCOL_OWNER_SHARES).
     uint256 public constant DOPPLER_MIN_PROTOCOL_SHARE = 0.05e18;
     int24 public constant MAX_TICK_SPACING = 32767;
+    uint16 public constant BPS = 10_000;
+    /// Doppler's slice of every Rehype hook fee, kept on the hook before anything reaches buybackDst.
+    uint16 public constant REHYPE_PROTOCOL_BPS = 500;
+    /// What a sink actually receives of the trading fee: the hook fee less Doppler's slice.
+    uint16 public constant SINK_RECEIVED_BPS = BPS - REHYPE_PROTOCOL_BPS;
 
     /// @notice Doppler modules the router launches with. All must be whitelisted on the Airlock.
     struct Modules {
@@ -82,18 +96,41 @@ contract MultiplyLaunchRouter is
     struct LaunchInput {
         string name;
         string symbol;
-        string tokenURI; // the engine settings live here, as a data URI
+        string tokenURI; // IPFS metadata (image, description) for terminals; not read by the keeper
         uint24 fee; // trading fee, 1e6-based, taken by the hook in numeraire
         bool antiSnipe; // decaying opening fee (schedule only; the hook is always attached)
         uint256 mcap; // 0 = policy default
         uint128 firstBuy; // numeraire raw, 0 = no first buy
         bytes32 salt; // namespaced per launcher below
+        // the engine: what the coin's fees will trade. On-chain so the keeper never depends on
+        // a gateway to learn it; validated here in the same ranges the keeper accepts.
+        string market; // Lighter perp symbol, 2-12 chars of A-Z 0-9 (existence is checked off-chain)
+        uint8 side; // 0 = long, 1 = short
+        uint8 leverage; // one of 2, 3, 5, 10, 20
+        uint8 risk; // 0 = safe (+20%), 1 = balanced (+50%), 2 = degen (+100%)
+    }
+
+    uint8 public constant SIDE_LONG = 0;
+    uint8 public constant SIDE_SHORT = 1;
+    uint8 public constant RISK_MAX = 2;
+    /// bit n set = leverage n allowed: 2, 3, 5, 10, 20
+    uint32 public constant LEVERAGE_MASK = (1 << 2) | (1 << 3) | (1 << 5) | (1 << 10) | (1 << 20);
+
+    /// @notice Per-coin fee sink. `implementation == 0` disables it (fees go to `policy.feeHub`).
+    struct SinkConfig {
+        address implementation; // MultiplyFeeSink built for this router (its ROUTER must be this proxy)
+        address keeper; // may set each sink's destination once, and sweep stray tokens
+        address treasury; // receives the protocol share of every flush
+        uint16 treasuryBps; // protocol share, in bps of the whole trading fee (1500 = 15%)
     }
 
     /// @custom:storage-location erc7201:multiply.launch-router
     struct RouterStorage {
         Modules modules;
         Policy policy;
+        // appended by the sink upgrade: the members above keep their slots
+        SinkConfig sink;
+        mapping(address asset => address sink) sinkOf;
     }
 
     // keccak256(abi.encode(uint256(keccak256("multiply.launch-router")) - 1)) & ~bytes32(uint256(0xff))
@@ -111,10 +148,16 @@ contract MultiplyLaunchRouter is
         uint128 firstBuyOut,
         string tokenURI
     );
+    event FeeSink(address indexed asset, address indexed sink);
+    /// @notice The coin's engine, fixed at launch. The keeper reads this, nothing else.
+    event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint8 risk);
     event ModulesSet(Modules modules);
     event PolicySet(Policy policy);
+    event SinkConfigSet(SinkConfig config);
 
     error FeeOutOfRange(uint24 fee, uint24 min, uint24 max);
+    error InvalidSinkConfig();
+    error InvalidEngine();
     error McapOutOfRange(uint256 mcap, uint256 min, uint256 max);
     error EmptyName();
     error TickOutOfRange(int24 tick);
@@ -155,12 +198,25 @@ contract MultiplyLaunchRouter is
         Modules memory m = $.modules;
 
         if (bytes(input.name).length == 0 || bytes(input.symbol).length == 0) revert EmptyName();
+        if (!validEngine(input.market, input.side, input.leverage, input.risk)) revert InvalidEngine();
         if (input.fee < p.minFee || input.fee > p.maxFee) revert FeeOutOfRange(input.fee, p.minFee, p.maxFee);
         uint256 mcap = input.mcap == 0 ? p.defaultMcap : input.mcap;
         if (mcap < p.minMcap || mcap > p.maxMcap) revert McapOutOfRange(mcap, p.minMcap, p.maxMcap);
 
         (int24 tick, int24 maxTick) = tickForMcap(mcap);
-        IAirlock.CreateParams memory params = _buildCreateParams(input, p, m, mcap, tick, maxTick);
+
+        // The sink must exist before the Airlock call: the hook reads `buybackDst` at
+        // initialization. Its address depends only on the launcher and salt, so the frontend can
+        // show it beforehand (`predictSink`). The clone is bound to the token afterwards.
+        address sink;
+        address hub = p.feeHub;
+        SinkConfig memory s = $.sink;
+        if (s.implementation != address(0)) {
+            sink = Clones.cloneDeterministic(s.implementation, saltFor(msg.sender, input.salt));
+            hub = sink;
+        }
+
+        IAirlock.CreateParams memory params = _buildCreateParams(input, p, m, hub, tick, maxTick);
 
         if (input.firstBuy == 0) {
             (asset,,,,) = IAirlock(m.airlock).create(params);
@@ -177,6 +233,34 @@ contract MultiplyLaunchRouter is
         emit MultiplyLaunch(
             asset, msg.sender, poolId, input.fee, input.antiSnipe, mcap, tick, input.firstBuy, firstBuyOut, input.tokenURI
         );
+
+        emit MultiplyEngine(asset, input.market, input.side, input.leverage, input.risk);
+
+        if (sink != address(0)) {
+            MultiplyFeeSink(sink).initialize(asset, p.numeraire, s.treasuryBps, SINK_RECEIVED_BPS);
+            $.sinkOf[asset] = sink;
+            emit FeeSink(asset, sink);
+        }
+    }
+
+    /// @notice The engine ranges the keeper serves: market 2-12 chars of [A-Z0-9], side 0/1,
+    /// leverage in {2,3,5,10,20}, risk 0-2.
+    function validEngine(string calldata market, uint8 side, uint8 leverage, uint8 risk) public pure returns (bool) {
+        bytes calldata m = bytes(market);
+        if (m.length < 2 || m.length > 12) return false;
+        for (uint256 i; i < m.length; i++) {
+            bytes1 c = m[i];
+            if (!((c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A))) return false;
+        }
+        if (side > SIDE_SHORT || risk > RISK_MAX) return false;
+        return leverage < 32 && (LEVERAGE_MASK >> leverage) & 1 == 1;
+    }
+
+    /// @notice The sink a launch by `launcher` with `salt` will get (zero when sinks are disabled).
+    function predictSink(address launcher, bytes32 salt) external view returns (address) {
+        address impl = _s().sink.implementation;
+        if (impl == address(0)) return address(0);
+        return Clones.predictDeterministicAddress(impl, saltFor(launcher, salt), address(this));
     }
 
     /**
@@ -205,11 +289,14 @@ contract MultiplyLaunchRouter is
         return keccak256(abi.encodePacked(launcher, salt));
     }
 
+    /// @dev `hub` is where every fee of this coin lands: its sink, or the policy fee hub when
+    /// sinks are disabled. It is the hook's `buybackDst`, the pool's 95% beneficiary and the
+    /// Airlock integrator, so nothing about the coin's fees ever points anywhere else.
     function _buildCreateParams(
         LaunchInput calldata input,
         Policy memory p,
         Modules memory m,
-        uint256,
+        address hub,
         int24 tick,
         int24 maxTick
     ) internal view returns (IAirlock.CreateParams memory params) {
@@ -231,7 +318,7 @@ contract MultiplyLaunchRouter is
         // shapes the schedule; without it the fee is flat from the first block.
         DopplerTypes.RehypeInitData memory r;
         r.numeraire = p.numeraire;
-        r.buybackDst = p.feeHub;
+        r.buybackDst = hub;
         r.startFee = input.antiSnipe ? p.snipeStartFee : input.fee;
         r.endFee = input.fee;
         r.durationSeconds = input.antiSnipe ? p.snipeSeconds : 0;
@@ -240,7 +327,7 @@ contract MultiplyLaunchRouter is
         r.feeDistributionInfo.numeraireFeesToNumeraireBuybackWad = WAD;
         bytes memory onInit = abi.encode(r);
 
-        DopplerTypes.BeneficiaryData[] memory bens = _beneficiaries(IAirlock(m.airlock).owner(), p);
+        DopplerTypes.BeneficiaryData[] memory bens = _beneficiaries(IAirlock(m.airlock).owner(), hub, p.protocolShareWad);
         DopplerTypes.Curve[] memory curves = new DopplerTypes.Curve[](1);
         curves[0] = DopplerTypes.Curve({tickLower: tick, tickUpper: maxTick, numPositions: 1, shares: WAD});
 
@@ -267,28 +354,28 @@ contract MultiplyLaunchRouter is
             poolInitializerData: abi.encode(init),
             liquidityMigrator: m.liquidityMigrator,
             liquidityMigratorData: "",
-            integrator: p.feeHub,
+            integrator: hub,
             salt: saltFor(msg.sender, input.salt)
         });
     }
 
     /// @dev Doppler requires beneficiaries sorted by address and summing to WAD, protocol owner included.
-    function _beneficiaries(address protocolOwner, Policy memory p)
+    function _beneficiaries(address protocolOwner, address hub, uint256 protocolShareWad)
         internal
         pure
         returns (DopplerTypes.BeneficiaryData[] memory bens)
     {
-        if (protocolOwner == p.feeHub) revert FeeHubIsProtocolOwner(p.feeHub);
+        if (protocolOwner == hub) revert FeeHubIsProtocolOwner(hub);
         bens = new DopplerTypes.BeneficiaryData[](2);
         DopplerTypes.BeneficiaryData memory proto =
-            DopplerTypes.BeneficiaryData({beneficiary: protocolOwner, shares: uint96(p.protocolShareWad)});
-        DopplerTypes.BeneficiaryData memory hub =
-            DopplerTypes.BeneficiaryData({beneficiary: p.feeHub, shares: uint96(WAD - p.protocolShareWad)});
-        if (protocolOwner < p.feeHub) {
+            DopplerTypes.BeneficiaryData({beneficiary: protocolOwner, shares: uint96(protocolShareWad)});
+        DopplerTypes.BeneficiaryData memory ours =
+            DopplerTypes.BeneficiaryData({beneficiary: hub, shares: uint96(WAD - protocolShareWad)});
+        if (protocolOwner < hub) {
             bens[0] = proto;
-            bens[1] = hub;
+            bens[1] = ours;
         } else {
-            bens[0] = hub;
+            bens[0] = ours;
             bens[1] = proto;
         }
     }
@@ -312,6 +399,20 @@ contract MultiplyLaunchRouter is
         _setPolicy(policy_);
     }
 
+    /// @notice Enables (or reconfigures) per-coin sinks for FUTURE launches. Sinks already
+    /// deployed keep their split; only the keeper and treasury addresses are read live.
+    function setSinkConfig(SinkConfig calldata config) external onlyOwner {
+        if (config.implementation == address(0) || config.keeper == address(0) || config.treasury == address(0)) {
+            revert ZeroAddress();
+        }
+        if (config.implementation.code.length == 0 || MultiplyFeeSink(config.implementation).ROUTER() != address(this)) {
+            revert InvalidSinkConfig();
+        }
+        if (config.treasuryBps > SINK_RECEIVED_BPS) revert InvalidSinkConfig();
+        _s().sink = config;
+        emit SinkConfigSet(config);
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -326,6 +427,25 @@ contract MultiplyLaunchRouter is
 
     function policy() external view returns (Policy memory) {
         return _s().policy;
+    }
+
+    function sinkConfig() external view returns (SinkConfig memory) {
+        return _s().sink;
+    }
+
+    /// @notice The fee sink of a coin launched here, zero if it predates sinks.
+    function sinkOf(address asset) external view returns (address) {
+        return _s().sinkOf[asset];
+    }
+
+    /// @notice Read by every sink at `setDestination` / `sweep`.
+    function keeper() external view returns (address) {
+        return _s().sink.keeper;
+    }
+
+    /// @notice Read by every sink at `flush`.
+    function treasury() external view returns (address) {
+        return _s().sink.treasury;
     }
 
     function _setModules(Modules calldata m) internal {

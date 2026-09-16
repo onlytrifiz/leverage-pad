@@ -196,7 +196,11 @@ contract MultiplyLaunchRouterFork is Test {
             antiSnipe: antiSnipe,
             mcap: mcap,
             firstBuy: firstBuy,
-            salt: salt
+            salt: salt,
+            market: "NVDA",
+            side: 0,
+            leverage: 3,
+            risk: 1
         });
     }
 
@@ -401,6 +405,41 @@ contract MultiplyLaunchRouterFork is Test {
         uint256 gross = out + a0 + a1;
         assertApproxEqRel(uint256(a0) + a1, gross * 15 / 10_000, 1e15, "Doppler slice = 0.15% of gross");
         assertEq(IERC20(USDG).balanceOf(address(router)), 0, "router holds nothing");
+    }
+
+    /// The engine is on-chain: validated in the keeper's ranges and emitted for it to read.
+    function test_engine_validatedAndEmitted() public {
+        MultiplyLaunchRouter.LaunchInput memory i = _input("Engine", "ENG", 30_000, false, 0, 0, keccak256("eng"));
+        i.market = "TSLA";
+        i.side = 1;
+        i.leverage = 5;
+        i.risk = 2;
+        vm.expectEmit(false, false, false, true, address(router));
+        emit MultiplyLaunchRouter.MultiplyEngine(address(0), "TSLA", 1, 5, 2);
+        vm.prank(launcher);
+        router.launch(i);
+
+        assertTrue(router.validEngine("BTC", 0, 2, 0));
+        assertTrue(router.validEngine("0G", 1, 20, 1));
+        assertFalse(router.validEngine("nvda", 0, 3, 1), "lowercase");
+        assertFalse(router.validEngine("NVDA/USDG", 0, 3, 1), "punctuation");
+        assertFalse(router.validEngine("X", 0, 3, 1), "too short");
+        assertFalse(router.validEngine("ABCDEFGHIJKLM", 0, 3, 1), "too long");
+        assertFalse(router.validEngine("NVDA", 2, 3, 1), "side");
+        assertFalse(router.validEngine("NVDA", 0, 7, 1), "leverage not in the set");
+        assertFalse(router.validEngine("NVDA", 0, 0, 1), "leverage zero");
+        assertFalse(router.validEngine("NVDA", 0, 3, 3), "risk");
+
+        vm.startPrank(launcher);
+        i.salt = keccak256("eng2");
+        i.leverage = 7;
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
+        router.launch(i);
+        i.leverage = 3;
+        i.market = "nvda";
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
+        router.launch(i);
+        vm.stopPrank();
     }
 
     function test_feeBounds_and_pause() public {

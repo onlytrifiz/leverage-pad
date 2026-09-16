@@ -29,6 +29,19 @@ module.exports = {
   // locker deployato (riempito da deployLocker.js — vuoto finche' non si deploya)
   LOCKER: process.env.PERPSPAD_LOCKER || '',
 
+  // ── Uniswap v4 / Doppler (coin lanciate dal router, docs.doppler.lol/reference/contract-addresses) ──
+  LAUNCH_ROUTER: process.env.PERPSPAD_LAUNCH_ROUTER || '0xB9De90F875FFE04D57cC90EE030c0DfB84F25Acd', // MultiplyLaunchRouter (proxy UUPS)
+  ROUTER_DEPLOY_BLOCK: Number(process.env.PERPSPAD_LAUNCH_ROUTER_BLOCK || 63095128),
+  V4_POOL_MANAGER: '0x8366a39CC670B4001A1121B8F6A443A643e40951',
+  V4_HOOK_INITIALIZER: '0x4e3468951D49f2EEa976eD0D6e75fFCb44a9a544', // DopplerHookInitializer = hook della PoolKey
+  V4_TICK_SPACING: 200,
+  V4_SUPPLY_RAW: '1000000000000000000000000000', // 1B × 1e18, fissato dal router
+  REHYPE: '0x5F9eB5f6726Fe88D5e39867967F5b833d2fA3215',
+  UNIVERSAL_ROUTER: '0x8876789976dEcBfCbBbe364623C63652db8C0904', // Universal Router di Doppler, encoding 2.1.1
+  PERMIT2: '0x000000000022D473030F116dDEE9F6B43aC78BA3',
+  V4_QUOTER: '0xce6cd4e35447e05a39a50a4bcf61f2dcd93a8f0d', // Doppler Quoter (hookless: la hook fee va scontata a parte)
+  PERMIT2_EXPIRY_S: 3600, // allowance Permit2 del sub-wallet verso l'Universal Router: per-buyback, un'ora
+
   // ── parametri di lancio ─────────────────────────────────────────────────────
   DEFAULT_SUPPLY: '1000000000',   // 1B, tutta in pool one-sided
   DEFAULT_POOL_FEE: 10000,        // 1%, spacing 200

@@ -257,6 +257,14 @@ export function metadataSignMessage(input: { name: string; symbol: string; creat
 // protection schedule, hub, modules) and namespaces the salt per launcher. The encoders above are
 // kept in sync with it so the browser can predict the token address before signing.
 
+/** Name and ticker are free-form; only a length cap, for gas and layout. Mirrors lib/launchParams.js. */
+export const NAME_MAX = 64;
+export const SYMBOL_MAX = 16;
+
+/** The router's enums for the engine, in the order the contract declares them. */
+export const ENGINE_SIDES = ["long", "short"] as const;
+export const ENGINE_RISKS = ["safe", "balanced", "degen"] as const;
+
 export type RouterInput = {
   name: string;
   symbol: string;
@@ -266,16 +274,63 @@ export type RouterInput = {
   mcap: ethers.BigNumberish; // 0 = policy default
   firstBuy: ethers.BigNumberish; // USDG raw, 0 = none
   salt: string;
+  // the engine, on-chain: the router validates it and emits MultiplyEngine for the keeper
+  market: string;
+  side: number; // index into ENGINE_SIDES
+  leverage: number;
+  risk: number; // index into ENGINE_RISKS
 };
 
+export function routerEngine(e: EngineParams): Pick<RouterInput, "market" | "side" | "leverage" | "risk"> {
+  return { market: e.market.toUpperCase(), side: ENGINE_SIDES.indexOf(e.side), leverage: e.leverage, risk: ENGINE_RISKS.indexOf(e.risk) };
+}
+
 export const ROUTER_IFACE = new ethers.utils.Interface([
-  "function launch((string name,string symbol,string tokenURI,uint24 fee,bool antiSnipe,uint256 mcap,uint128 firstBuy,bytes32 salt) input) returns (address asset,bytes32 poolId,uint128 firstBuyOut)",
+  "function launch((string name,string symbol,string tokenURI,uint24 fee,bool antiSnipe,uint256 mcap,uint128 firstBuy,bytes32 salt,string market,uint8 side,uint8 leverage,uint8 risk) input) returns (address asset,bytes32 poolId,uint128 firstBuyOut)",
+  "function validEngine(string market,uint8 side,uint8 leverage,uint8 risk) pure returns (bool)",
+  "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint8 risk)",
   "function saltFor(address launcher,bytes32 salt) pure returns (bytes32)",
   "function policy() view returns ((address numeraire,address feeHub,uint256 protocolShareWad,uint256 supply,uint256 defaultMcap,uint256 minMcap,uint256 maxMcap,uint24 minFee,uint24 maxFee,int24 tickSpacing,uint24 snipeStartFee,uint32 snipeSeconds))",
+  // per-coin fee sinks (router upgrade of 2026-09-15); absent on the pre-upgrade implementation
+  "function sinkConfig() view returns ((address implementation,address keeper,address treasury,uint16 treasuryBps))",
+  "function predictSink(address launcher,bytes32 salt) view returns (address)",
+  "function sinkOf(address asset) view returns (address)",
+  "event FeeSink(address indexed asset, address indexed sink)",
 ]);
 
 export function encodeRouterLaunch(input: RouterInput): string {
   return ROUTER_IFACE.encodeFunctionData("launch", [input]);
+}
+
+/**
+ * How a launch's fee is split, as the router will actually do it. `sink` is the coin's own
+ * fee contract (known before the launch: it depends on launcher and salt alone). `null` when
+ * the router has no sink configured, in which case every fee goes to the policy hub.
+ *
+ * Doppler keeps its slice on the hook before anything reaches the sink, so the engine's share
+ * is what is left after the treasury's: 100 − doppler − treasury.
+ */
+export type FeeSplit = { sink: string; treasuryBps: number; treasury: string; engineBps: number };
+
+/**
+ * The split as configured on the router at go-live, for copy that renders without a wallet
+ * (docs). The router's `sinkConfig()` is the source of truth; `readFeeSplit` reads it live.
+ */
+export const FEE_SPLIT_PCT = { doppler: 5, treasury: 15, engine: 80 } as const;
+
+const DOPPLER_HOOK_BPS = DOPPLER_HOOK_FEE_BPS; // 500: Doppler's slice of every hook fee
+
+export async function readFeeSplit(launcher: string, salt: string): Promise<FeeSplit | null> {
+  try {
+    const router = new ethers.Contract(LAUNCH_ROUTER, ROUTER_IFACE, readProvider);
+    const cfg = await router.sinkConfig();
+    if (!cfg.implementation || BN(cfg.implementation).isZero()) return null;
+    const sink = (await router.predictSink(launcher, salt)) as string;
+    const treasuryBps = Number(cfg.treasuryBps);
+    return { sink, treasuryBps, treasury: cfg.treasury as string, engineBps: 10_000 - DOPPLER_HOOK_BPS - treasuryBps };
+  } catch {
+    return null; // pre-upgrade router (no such functions) or RPC hiccup: show the hub
+  }
 }
 
 /** The salt the router actually sends to the Airlock: keccak(launcher, salt). */

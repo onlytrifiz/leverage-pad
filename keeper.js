@@ -8,6 +8,8 @@ const { encryptSecret, decryptSecret, isEncrypted } = require('./lib/secrets');
 const { buildSwapCalldata } = require('./lib/v3');
 const registry = require('./lib/registry');
 const publish = require('./lib/publish');
+const routerCoins = require('./lib/routerCoins');
+const v4 = require('./lib/v4');
 const lighter = require('./lighter/client');
 
 /**
@@ -37,6 +39,14 @@ const lighter = require('./lighter/client');
  *  - Cap su gasPrice per il funding dei sub-wallet (anti-drain da RPC ostile).
  *  - Timeout su wait(): una tx "stuck" non congela l'intero loop.
  *
+ * Due venue, stessa contabilita':
+ *  - `venue: 'v4'` (coin lanciate dal MultiplyLaunchRouter su Doppler/Uniswap v4): la coin
+ *    entra nel registry da sola dagli eventi del router; le fee arrivano in USDG sul suo
+ *    MultiplyFeeSink (fissato al lancio, senza setter), che il keeper ADOTTA puntandolo al
+ *    sub-wallet una volta sola e poi FLUSHA (15% treasury / 80% sub-wallet dentro il
+ *    contratto, coin bruciati). Il buyback compra sul pool v4 via Universal Router + Permit2.
+ *  - legacy V3 (le coin di test con LP nel locker): collect() e SwapRouter02, invariati.
+ *
  * Uso: node keeper.js [--once] [--coin 0x…]
  */
 
@@ -57,8 +67,22 @@ const POOL_ABI = [
   'function slot0() view returns (uint160 sqrtPriceX96,int24,uint16,uint16,uint16,uint8,bool)',
   'function liquidity() view returns (uint128)',
 ];
+const SINK_ABI = [
+  'function destination() view returns (address)',
+  'function pending() view returns (uint256 numeraireHeld, uint256 assetHeld)',
+  'function setDestination(address destination_)',
+  'function flush() returns (uint256 toTreasury, uint256 toDestination, uint256 burned)',
+  'event Flushed(uint256 toTreasury, uint256 toDestination, uint256 burned)',
+];
 const LOCKFILE = path.resolve(__dirname, 'state', 'keeper.lock');
 const Q96 = BN(2).pow(96);
+// un log che deve comparire una volta per coin, non a ogni tick
+function logOnce(st, key, checkpoint, msg) {
+  if (st[key]) return;
+  console.log(msg);
+  st[key] = true;
+  checkpoint();
+}
 
 function keeperWallet() {
   const key = process.env.PERPSPAD_KEEPER_KEY || config.DEPLOYER_KEY;
@@ -311,6 +335,16 @@ function coinValueInQuote(sqrtPriceX96, coinRaw, quoteIs0, pairDecimals) {
   return quoteRaw / 10 ** pairDecimals;
 }
 
+// Da dove arrivano le FEE sul sub-wallet, per venue: dal pool V3 (collect del locker) o dal
+// sink v4 (flush). Serve alla riconciliazione del withdraw (step 0a), che accredita come
+// profitto rientrato dal bridge ogni inflow di USDG che NON sia una fee. Senza il caso v4,
+// `coin.pool` e' undefined e il tick della coin esploderebbe a ogni giro dopo il primo
+// take-profit, cioe' esattamente quando il motore deve chiudere il cerchio.
+function isFeeInflow(coin, from) {
+  const source = coin.venue === 'v4' ? coin.sink : coin.pool;
+  return !!source && String(from).toLowerCase() === source.toLowerCase();
+}
+
 // valore in USD del lato coin delle fee, allo spot del pool: serve al gate del
 // claim per "vedere" anche la parte bruciabile
 async function coinSideUsd(coin, coinRaw, quoteIs0, unitUsd) {
@@ -327,6 +361,152 @@ async function buybackMinOut(coin, quoteIs0, spendRaw) {
   return out.mul(10000 - config.BUYBACK_MAX_SLIPPAGE_BPS).div(10000);
 }
 
+// ── piani di buyback per venue: approvazioni + quote + calldata, lo swap lo invia il tick ──
+
+// V3: approve del quote al SwapRouter02, minOut dalla formula chiusa sul range one-sided
+async function buybackPlanV3(sub, coin, quote, quoteIs0, spendRaw) {
+  const allowance = await quote.allowance(sub.address, config.SWAP_ROUTER);
+  if (allowance.lt(spendRaw)) {
+    await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('approve', [config.SWAP_ROUTER, ethers.constants.MaxUint256]), gasLimit: 80000 }, 'approve router');
+  }
+  const minOut = await buybackMinOut(coin, quoteIs0, spendRaw);
+  const data = buildSwapCalldata({ tokenIn: coin.pair, tokenOut: coin.token, fee: coin.fee, recipient: sub.address, amountIn: spendRaw, amountOutMinimum: minOut });
+  return { to: config.SWAP_ROUTER, data, minOut, gasLimit: 400000 };
+}
+
+// v4: USDG → Permit2 (una volta, max), Permit2 → Universal Router (allowance ampia ma a
+// scadenza), quote dal Doppler Quoter al netto della hook fee corrente, poi V4_SWAP exact-in.
+async function buybackPlanV4(sub, coin, quote, spendRaw) {
+  const erc20ToPermit2 = await quote.allowance(sub.address, config.PERMIT2);
+  if (erc20ToPermit2.lt(spendRaw)) {
+    await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('approve', [config.PERMIT2, ethers.constants.MaxUint256]), gasLimit: 80000 }, 'approve Permit2');
+  }
+  // allowance Permit2 → router limitata a QUESTO buyback e a un'ora: il sub-wallet tiene tutte
+  // le fee della coin in USDG, e una allowance ampia sarebbe il raggio d'azione di un bug altrui
+  const now = Math.floor(Date.now() / 1000);
+  const p2 = await v4.permit2Allowance(provider, sub.address, coin.pair);
+  if (p2.amount.lt(spendRaw) || p2.expiration < now + 600) {
+    await send(sub, { to: config.PERMIT2, data: v4.encodePermit2Approve(coin.pair, spendRaw, now + config.PERMIT2_EXPIRY_S), gasLimit: 80000 }, 'Permit2 approve router');
+  }
+  const q = await v4.quoteExactInV4(provider, { asset: coin.token, numeraire: coin.pair, tokenIn: coin.pair, amountIn: spendRaw, nowSec: now });
+  // il pool quotato DEVE essere quello che il router ha emesso al lancio
+  if (q.poolId.toLowerCase() !== String(coin.poolId).toLowerCase()) throw new Error(`pool id ricalcolato ${q.poolId} diverso da quello del lancio ${coin.poolId}: buyback fermato`);
+  if (q.out.isZero()) throw new Error('quote v4 a zero: nessuna liquidita dall altra parte della scala');
+  const minOut = q.out.mul(10000 - config.BUYBACK_MAX_SLIPPAGE_BPS).div(10000);
+  const data = v4.buildV4SwapCalldata({ poolKey: q.poolKey, tokenIn: coin.pair, tokenOut: coin.token, amountIn: spendRaw, amountOutMinimum: minOut, nowSec: now });
+  return { to: config.UNIVERSAL_ROUTER, data, minOut, gasLimit: 500000, hookFee: q.hookFee };
+}
+
+// ── incasso fee per venue ───────────────────────────────────────────────────
+
+// V3: collect() del locker. Il gate valuta ENTRAMBI i lati (il lato coin e' bruciabile e
+// altrimenti resterebbe invisibile con pressione in vendita); gli importi REALI si misurano
+// dal delta di saldo, la static predice soltanto. Il lato coin lo brucia il locker dentro la
+// collect (0xdEaD), quindi si misura dal delta di totalSupply.
+async function claimV3(keeper, locker, coin, st, checkpoint, sub, unitUsd, quote, coinC, quoteIs0) {
+  let est, estCoin;
+  try {
+    const [a0, a1] = await locker.callStatic.collect(coin.lpTokenId);
+    est = quoteIs0 ? a0 : a1;
+    estCoin = quoteIs0 ? a1 : a0;
+  }
+  catch (e) { console.log(`  [${coin.symbol}] static collect fallita: ${e.message.slice(0, 80)}`); return false; }
+
+  let claimableUsd = usdOf(est, coin.pairDecimals, unitUsd);
+  if (claimableUsd < config.CLAIM_MIN_USD && estCoin.gt(0)) {
+    claimableUsd += await coinSideUsd(coin, estCoin, quoteIs0, unitUsd).catch(() => 0);
+  }
+  if (claimableUsd < config.CLAIM_MIN_USD) return true;
+
+  const quoteBefore = await quote.balanceOf(sub.address);
+  const supplyBefore = await coinC.totalSupply().catch(() => null);
+  await send(keeper, { to: config.LOCKER, data: locker.interface.encodeFunctionData('collect', [coin.lpTokenId]), gasLimit: 300000 }, 'collect');
+  const realQuote = (await quote.balanceOf(sub.address)).sub(quoteBefore);
+  if (supplyBefore) {
+    const supplyAfter = await coinC.totalSupply().catch(() => null);
+    if (supplyAfter && supplyBefore.gt(supplyAfter)) {
+      const burnedByLocker = supplyBefore.sub(supplyAfter);
+      st.totalBurnedRaw = BN(st.totalBurnedRaw).add(burnedByLocker).toString();
+      console.log(`  [${coin.symbol}] burn del locker: ${ethers.utils.formatEther(burnedByLocker)} ${coin.symbol}`);
+    }
+  }
+  bookFeeIncome(st, realQuote);
+  checkpoint();
+  console.log(`  [${coin.symbol}] claim: ${ethers.utils.formatUnits(realQuote, coin.pairDecimals)} ${coin.pairSymbol} ($${usdOf(realQuote, coin.pairDecimals, unitUsd).toFixed(2)})`);
+  return true;
+}
+
+// v4: il sink della coin. Prima l'ADOZIONE (destination = sub-wallet, una volta, dal keeper
+// autorizzato sul router), poi il flush quando vale il gas. I coin eventualmente parcheggiati
+// sul hook (swap interno non eseguibile, audit M2) si liberano con collectFees() e il flush li
+// brucia. Gli importi vengono dall'evento Flushed: esatti, non stimati.
+async function claimV4(keeper, coin, st, checkpoint, sub, unitUsd) {
+  if (!coin.sink) {
+    logOnce(st, 'sinkMissingLogged', checkpoint, `  [${coin.symbol}] nessun sink sul router per questa coin (router pre-upgrade?): fee sull'hub, niente da incassare`);
+    return;
+  }
+  const sink = new ethers.Contract(coin.sink, SINK_ABI, provider);
+
+  if (!coin.sinkAdopted) {
+    const dst = await sink.destination();
+    if (BN(dst).isZero()) {
+      const router = new ethers.Contract(config.LAUNCH_ROUTER, routerCoins.ROUTER_IFACE, provider);
+      const allowed = await router.keeper().catch(() => null);
+      if (allowed && allowed.toLowerCase() !== keeper.address.toLowerCase()) {
+        logOnce(st, 'sinkKeeperMismatchLogged', checkpoint, `  [${coin.symbol}] il router autorizza ${allowed} come keeper del sink, non ${keeper.address}: adozione impossibile con questa chiave`);
+        return;
+      }
+      await send(keeper, { to: coin.sink, data: sink.interface.encodeFunctionData('setDestination', [sub.address]), gasLimit: 80000 }, 'sink setDestination');
+      coin.sinkAdopted = true; checkpoint();
+      console.log(`  [${coin.symbol}] sink ${coin.sink} adottato: destination = sub-wallet ${sub.address}`);
+    } else if (dst.toLowerCase() === sub.address.toLowerCase()) {
+      coin.sinkAdopted = true; checkpoint();
+    } else {
+      // il flush manderebbe l'USDG a un indirizzo che non e' nostro: mai chiamarlo
+      logOnce(st, 'sinkForeignDestinationLogged', checkpoint, `  [${coin.symbol}] ATTENZIONE: il sink punta a ${dst}, non al sub-wallet ${sub.address}: coin NON servita`);
+      return;
+    }
+  }
+
+  const hf = await v4.hookFees(provider, coin.poolId).catch(() => null);
+  if (hf && (hf.beneficiaryFees0.gt(0) || hf.beneficiaryFees1.gt(0))) {
+    await send(keeper, { to: config.REHYPE, data: v4.REHYPE_IFACE.encodeFunctionData('collectFees', [coin.token]), gasLimit: 300000 }, 'rehype collectFees');
+    console.log(`  [${coin.symbol}] fee parcheggiate sul hook liberate verso il sink`);
+  }
+
+  const [held, coinHeld] = await sink.pending();
+  const heldUsd = usdOf(held, coin.pairDecimals, unitUsd);
+  if (heldUsd < config.CLAIM_MIN_USD && coinHeld.isZero()) return;
+
+  const rc = await send(keeper, { to: coin.sink, data: sink.interface.encodeFunctionData('flush'), gasLimit: 250000 }, 'sink flush');
+  let toTreasury = ethers.constants.Zero, toDestination = ethers.constants.Zero, burned = ethers.constants.Zero;
+  for (const l of rc.logs) {
+    if (l.address.toLowerCase() !== coin.sink.toLowerCase()) continue;
+    try {
+      const ev = sink.interface.parseLog(l);
+      if (ev.name === 'Flushed') { toTreasury = ev.args.toTreasury; toDestination = ev.args.toDestination; burned = ev.args.burned; }
+    } catch { /* altro evento */ }
+  }
+  st.sinkTreasuryRaw = BN(st.sinkTreasuryRaw || '0').add(toTreasury).toString();
+  if (burned.gt(0)) st.totalBurnedRaw = BN(st.totalBurnedRaw).add(burned).toString();
+  bookFeeIncome(st, toDestination);
+  checkpoint();
+  console.log(`  [${coin.symbol}] flush: $${usdOf(toDestination, coin.pairDecimals, unitUsd).toFixed(2)} al sub-wallet, $${usdOf(toTreasury, coin.pairDecimals, unitUsd).toFixed(2)} alla treasury${burned.gt(0) ? `, ${ethers.utils.formatEther(burned)} ${coin.symbol} bruciati dal sink` : ''}`);
+}
+
+// ── 2. SPLIT dell'incasso in bucket (resto al perp: somma esatta al wei) ────
+function bookFeeIncome(st, realQuote) {
+  st.totalCollected0 = BN(st.totalCollected0).add(realQuote).toString();
+  const creatorCut = realQuote.mul(config.SPLIT_BPS.creator).div(10000);
+  const treasuryCut = realQuote.mul(config.SPLIT_BPS.treasury).div(10000);
+  const buybackCut = realQuote.mul(config.SPLIT_BPS.buyback).div(10000);
+  const perpCut = realQuote.sub(creatorCut).sub(treasuryCut).sub(buybackCut);
+  st.perpReserveRaw = BN(st.perpReserveRaw).add(perpCut).toString();
+  st.creatorOwedRaw = BN(st.creatorOwedRaw).add(creatorCut).toString();
+  st.treasuryOwedRaw = BN(st.treasuryOwedRaw).add(treasuryCut).toString();
+  st.buybackReserveRaw = BN(st.buybackReserveRaw).add(buybackCut).toString();
+}
+
 async function tickCoin(keeper, locker, coin, st, checkpoint) {
   const token = coin.token;
   const sub = deriveSubWallet(token, provider);
@@ -334,6 +514,13 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   const unitUsd = priceUsd(coin.pair, coin.pairSymbol);
   const quote = erc20(coin.pair);
   const coinC = erc20(token);
+
+  // una coin lanciata con metadata non validi non ha un motore: le sue fee restano
+  // visibili nel sink e nessuna posizione viene mai aperta (niente da servire)
+  if (coin.engineError) {
+    logOnce(st, 'engineErrorLogged', checkpoint, `  [${coin.symbol}] motore non configurabile (${coin.engineError}): coin non servita`);
+    return;
+  }
 
   // ── 0-pre. WITHDRAW con esito ambiguo da un run precedente: promuovi a pending ─
   // Il write-ahead dello step 8 lascia perpWithdrawIntentUsd > 0 se il processo e'
@@ -367,7 +554,7 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
       let bridgedRaw = ethers.constants.Zero;
       for (const l of logs) {
         const ev = quote.interface.parseLog(l);
-        if (String(ev.args.from).toLowerCase() !== coin.pool.toLowerCase()) bridgedRaw = bridgedRaw.add(ev.args.value);
+        if (!isFeeInflow(coin, ev.args.from)) bridgedRaw = bridgedRaw.add(ev.args.value);
       }
       const pendingRaw = rawFromUsd(Number(st.perpWithdrawPendingUsd), coin.pairDecimals, unitUsd);
       const creditRaw = bridgedRaw.lt(pendingRaw) ? bridgedRaw : pendingRaw;
@@ -400,57 +587,11 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
     }
   }
 
-  // ── 1. CLAIM: decidi con la static, misura col delta reale ──────────────────
-  let est, estCoin;
-  try {
-    const [a0, a1] = await locker.callStatic.collect(coin.lpTokenId);
-    est = quoteIs0 ? a0 : a1;
-    estCoin = quoteIs0 ? a1 : a0;
-  }
-  catch (e) { console.log(`  [${coin.symbol}] static collect fallita: ${e.message.slice(0, 80)}`); return; }
-
-  // Il gate valuta ENTRAMBI i lati. Guardare solo il quote rendeva invisibili le fee
-  // lato coin, che sono gia' bruciabili: una coin con pressione in vendita accumula
-  // burn mai riscossi finche' non arriva abbastanza volume in ACQUISTO. Misurato dal
-  // vivo: $84 di volume avevano prodotto $0.49 di quote e 119k di coin, e il gate
-  // restava chiuso. Lo spot del pool si legge solo quando il quote da solo non basta,
-  // per non aggiungere una lettura per coin a ogni tick.
-  let claimableUsd = usdOf(est, coin.pairDecimals, unitUsd);
-  if (claimableUsd < config.CLAIM_MIN_USD && estCoin.gt(0)) {
-    claimableUsd += await coinSideUsd(coin, estCoin, quoteIs0, unitUsd).catch(() => 0);
-  }
-
-  if (claimableUsd >= config.CLAIM_MIN_USD) {
-    const quoteBefore = await quote.balanceOf(sub.address);
-    const supplyBefore = await coinC.totalSupply().catch(() => null);
-    await send(keeper, { to: config.LOCKER, data: locker.interface.encodeFunctionData('collect', [coin.lpTokenId]), gasLimit: 300000 }, 'collect');
-    const realQuote = (await quote.balanceOf(sub.address)).sub(quoteBefore); // fee quote REALMENTE incassate
-    st.totalCollected0 = BN(st.totalCollected0).add(realQuote).toString();
-
-    // Il lato coin lo brucia il LOCKER dentro la collect, mandandolo a 0xdEaD: non
-    // passa mai dal sub-wallet, quindi lo step 3 non lo vede e il contatore restava
-    // a zero mentre la supply calava davvero. Lo misuro dal delta di totalSupply,
-    // che e' l'unica fonte che comprende entrambi i canali di burn.
-    if (supplyBefore) {
-      const supplyAfter = await coinC.totalSupply().catch(() => null);
-      if (supplyAfter && supplyBefore.gt(supplyAfter)) {
-        const burnedByLocker = supplyBefore.sub(supplyAfter);
-        st.totalBurnedRaw = BN(st.totalBurnedRaw).add(burnedByLocker).toString();
-        console.log(`  [${coin.symbol}] burn del locker: ${ethers.utils.formatEther(burnedByLocker)} ${coin.symbol}`);
-      }
-    }
-
-    // ── 2. SPLIT (resto al perp: somma esatta) ───────────────────────────────
-    const creatorCut = realQuote.mul(config.SPLIT_BPS.creator).div(10000);
-    const treasuryCut = realQuote.mul(config.SPLIT_BPS.treasury).div(10000);
-    const buybackCut = realQuote.mul(config.SPLIT_BPS.buyback).div(10000);
-    const perpCut = realQuote.sub(creatorCut).sub(treasuryCut).sub(buybackCut);
-    st.perpReserveRaw = BN(st.perpReserveRaw).add(perpCut).toString();
-    st.creatorOwedRaw = BN(st.creatorOwedRaw).add(creatorCut).toString();
-    st.treasuryOwedRaw = BN(st.treasuryOwedRaw).add(treasuryCut).toString();
-    st.buybackReserveRaw = BN(st.buybackReserveRaw).add(buybackCut).toString();
-    checkpoint(); // stato coerente con la collect gia' avvenuta
-    console.log(`  [${coin.symbol}] claim: ${ethers.utils.formatUnits(realQuote, coin.pairDecimals)} ${coin.pairSymbol} ($${usdOf(realQuote, coin.pairDecimals, unitUsd).toFixed(2)})`);
+  // ── 1+2. CLAIM e SPLIT, per venue (v4: sink; V3: locker) ────────────────────
+  if (coin.venue === 'v4') {
+    await claimV4(keeper, coin, st, checkpoint, sub, unitUsd);
+  } else if (!(await claimV3(keeper, locker, coin, st, checkpoint, sub, unitUsd, quote, coinC, quoteIs0))) {
+    return; // la static collect non risponde: il tick di questa coin si ferma qui, come prima
   }
 
   // ── 3. BURN lato coin: brucia l'INTERO saldo coin del sub-wallet ───────────
@@ -494,11 +635,10 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
     let spendRaw = rawFromUsd(spendUsd, coin.pairDecimals, unitUsd);
     if (spendRaw.gt(BN(st.buybackReserveRaw))) spendRaw = BN(st.buybackReserveRaw);
     await ensureGas(keeper, sub.address);
-    const allowance = await quote.allowance(sub.address, config.SWAP_ROUTER);
-    if (allowance.lt(spendRaw)) {
-      await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('approve', [config.SWAP_ROUTER, ethers.constants.MaxUint256]), gasLimit: 80000 }, 'approve router');
-    }
-    const minOut = await buybackMinOut(coin, quoteIs0, spendRaw);
+    const plan = coin.venue === 'v4'
+      ? await buybackPlanV4(sub, coin, quote, spendRaw)
+      : await buybackPlanV3(sub, coin, quote, quoteIs0, spendRaw);
+    const minOut = plan.minOut;
     const before = await coinC.balanceOf(sub.address);
     st.buybackReserveRaw = BN(st.buybackReserveRaw).sub(spendRaw).toString(); checkpoint(); // decremento prima dell'invio
     // Il try copre SOLO lo swap: se fallisce lui, gli USDG non sono usciti e la
@@ -507,8 +647,7 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
     // saldo coin resta nel sub-wallet e lo brucia lo step 3 al tick dopo).
     let swapped = false;
     try {
-      const data = buildSwapCalldata({ tokenIn: coin.pair, tokenOut: token, fee: coin.fee, recipient: sub.address, amountIn: spendRaw, amountOutMinimum: minOut });
-      await send(sub, { to: config.SWAP_ROUTER, data, gasLimit: 400000 }, 'buyback swap');
+      await send(sub, { to: plan.to, data: plan.data, gasLimit: plan.gasLimit }, 'buyback swap');
       swapped = true;
     } catch (e) {
       if (!isStuck(e)) {
@@ -909,6 +1048,11 @@ async function main() {
   do {
     const reg = registry.load();
     const checkpoint = () => registry.save(reg);
+    // coin nuove dal router (eventi MultiplyLaunch + metadata IPFS + sink): entrano da sole
+    try {
+      if (await routerCoins.syncRouterCoins(provider, reg) > 0) registry.save(reg);
+      else if (reg.routerScanBlock) registry.save(reg); // persiste comunque il cursore di scansione
+    } catch (e) { console.log(`  sync router: ${e.message.slice(0, 120)}`); }
     const coins = reg.coins.filter((c) => !only || c.token.toLowerCase() === only.toLowerCase());
     if (!coins.length) console.log(ts() + ' nessuna coin nel registry');
     for (const coin of coins) {
@@ -930,4 +1074,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { trancheTargetMark, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote };
+module.exports = { trancheTargetMark, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow };

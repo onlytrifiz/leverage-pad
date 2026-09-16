@@ -379,9 +379,10 @@ test('validateLaunchParams: nulla di non validato arriva a un deploy', async (t)
     creator: '0x23bf247b662efadf114642a65dbbb0cb7d0ebac0',
   };
 
-  await t.test('normalizza maiuscole, minuscole e checksum', () => {
+  await t.test('normalizza mercato, lato, profilo e checksum; nome e ticker restano come digitati', () => {
     const p = validateLaunchParams(ok);
-    assert.equal(p.symbol, 'MYCOIN');
+    assert.equal(p.symbol, 'mycoin');
+    assert.equal(p.name, 'My Coin');
     assert.equal(p.market, 'NVDA');
     assert.equal(p.side, 'long');
     assert.equal(p.riskProfile, 'degen');
@@ -390,10 +391,10 @@ test('validateLaunchParams: nulla di non validato arriva a un deploy', async (t)
 
   const rifiutati = [
     ['nome vuoto', { name: '' }],
-    ['nome troppo lungo', { name: 'x'.repeat(41) }],
+    ['nome troppo lungo', { name: 'x'.repeat(65) }],
     ['nome con a capo', { name: 'riga1\nriga2' }],
-    ['ticker con simboli', { symbol: 'AB$C' }],
-    ['ticker troppo lungo', { symbol: 'ABCDEFGHIJK' }],
+    ['ticker con spazi', { symbol: 'AB C' }],
+    ['ticker troppo lungo', { symbol: 'A'.repeat(17) }],
     ['direzione inventata', { side: 'pippo' }],
     ['leva fuori scala', { leverage: 999 }],
     ['leva non ammessa', { leverage: 4 }],
@@ -410,5 +411,29 @@ test('validateLaunchParams: nulla di non validato arriva a un deploy', async (t)
 
   await t.test('campi mancanti non diventano default silenziosi', () => {
     assert.throws(() => validateLaunchParams({}), LaunchParamError);
+  });
+
+  await t.test('nome e ticker sono liberi: emoji, simboli, minuscole, fino ai tetti di lunghezza', () => {
+    const p = validateLaunchParams({ ...ok, name: '🚀 Moon $oon (v2) — "the" coin!', symbol: 'moon-🚀$' });
+    assert.equal(p.name, '🚀 Moon $oon (v2) — "the" coin!');
+    assert.equal(p.symbol, 'moon-🚀$');
+    assert.equal(validateLaunchParams({ ...ok, name: 'x'.repeat(64), symbol: 'y'.repeat(16) }).symbol, 'y'.repeat(16));
+  });
+});
+
+test('isFeeInflow: fees come from the pool on V3 and from the sink on v4, never from an undefined field', async (t) => {
+  const { isFeeInflow } = require('../keeper');
+  const v3 = { pool: '0x7D071Dc1A3A92Fae95D87d9420D0f0426EFCcB1F' };
+  const v4 = { venue: 'v4', sink: '0x1111111111111111111111111111111111111111', poolId: '0xabc' };
+  await t.test('V3: the pool is the fee source', () => {
+    assert.equal(isFeeInflow(v3, v3.pool.toLowerCase()), true);
+    assert.equal(isFeeInflow(v3, '0x2222222222222222222222222222222222222222'), false);
+  });
+  await t.test('v4: the sink is the fee source; the (absent) pool field is never touched', () => {
+    assert.equal(isFeeInflow(v4, v4.sink.toUpperCase().replace('0X', '0x')), true);
+    assert.equal(isFeeInflow(v4, '0x2222222222222222222222222222222222222222'), false);
+  });
+  await t.test('v4 coin without a sink yet: nothing is a fee inflow (everything counts as bridge credit, as for an unknown source)', () => {
+    assert.equal(isFeeInflow({ venue: 'v4', sink: null }, '0x1111111111111111111111111111111111111111'), false);
   });
 });

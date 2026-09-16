@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { PinataSDK } from "pinata";
 import { ethers } from "ethers";
 import { sealSvg } from "@/lib/seal";
+import { NAME_MAX, SYMBOL_MAX } from "@/lib/doppler";
 import { metadataSignMessage, type EngineParams } from "@/lib/doppler";
 
 /**
@@ -23,7 +24,7 @@ import { metadataSignMessage, type EngineParams } from "@/lib/doppler";
  */
 export const runtime = "nodejs";
 
-const MAX = { name: 40, symbol: 10, description: 280, link: 200 };
+const MAX = { name: NAME_MAX, symbol: SYMBOL_MAX, description: 280, link: 200 };
 const SIDES = new Set(["long", "short"]);
 const RISKS = new Set(["safe", "balanced", "degen"]);
 const LEVERAGES = new Set([2, 3, 5, 10, 20]);
@@ -69,7 +70,8 @@ export async function POST(req: Request) {
   }
 
   const name = clean(body.name, MAX.name);
-  const symbol = clean(body.symbol, MAX.symbol).replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  // the ticker is free-form, as typed on the form; only whitespace is dropped
+  const symbol = clean(body.symbol, MAX.symbol).replace(/\s/g, "");
   const description = clean(body.description, MAX.description);
   const creator = clean(body.creator, 42);
   const e = body.engine ?? {};
@@ -108,7 +110,7 @@ export async function POST(req: Request) {
   try {
     const svg = sealSvg({ leverage, side: side as "long" | "short", risk, symbol });
     const image = await pinata.upload.public
-      .file(new File([svg], `${symbol.toLowerCase()}-seal.svg`, { type: "image/svg+xml" }))
+      .file(new File([svg], `${symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "coin"}-seal.svg`, { type: "image/svg+xml" }))
       .name(`${symbol} seal`);
     const imageUri = `ipfs://${image.cid}`;
 

@@ -27,11 +27,16 @@ import {
   buildCreateParams,
   simulateBundle,
   simulateRouterLaunch,
+  readFeeSplit,
+  type FeeSplit,
   encodeRouterLaunch,
   routerSalt,
   readProtocolOwner,
   metadataSignMessage,
   type RouterInput,
+  routerEngine,
+  NAME_MAX,
+  SYMBOL_MAX,
   launchTicks,
   randomSalt,
   readProvider,
@@ -128,6 +133,8 @@ export default function LaunchForm() {
   const [salt, setSalt] = useState<string>(() => randomSalt());
 
   const [predicted, setPredicted] = useState<{ asset: string; gas: ethers.BigNumber | null; firstBuyOut: ethers.BigNumber | null } | null>(null);
+  /** the coin's own fee sink and the split the router will lock in; null = fees go to the hub */
+  const [feeSplit, setFeeSplit] = useState<FeeSplit | null>(null);
   const [protocolOwner, setProtocolOwner] = useState<string | undefined>(undefined);
   const [simError, setSimError] = useState<string | null>(null);
   const [acct, setAcct] = useState<{ usdg: ethers.BigNumber; allowance: ethers.BigNumber } | null>(null);
@@ -161,8 +168,8 @@ export default function LaunchForm() {
 
   const routerInput = useMemo<RouterInput | null>(() => {
     if (!address || !ready) return null;
-    return { name: name.trim(), symbol, tokenURI: "", fee: feeBps * 100, antiSnipe, mcap: 0, firstBuy: firstBuyIn, salt };
-  }, [address, ready, name, symbol, feeBps, antiSnipe, firstBuyIn, salt]);
+    return { name: name.trim(), symbol, tokenURI: "", fee: feeBps * 100, antiSnipe, mcap: 0, firstBuy: firstBuyIn, salt, ...routerEngine(engine) };
+  }, [address, ready, name, symbol, feeBps, antiSnipe, firstBuyIn, salt, engine]);
   /** mirror of what the router builds, for the bundle simulator before the USDG approval */
   const params = useMemo(() => {
     if (!address || !ready) return null;
@@ -202,6 +209,30 @@ export default function LaunchForm() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     refresh(address).catch(() => {});
   }, [address, refresh]);
+
+  /*
+   * The sink address depends on launcher and salt alone, so it can be shown before signing.
+   * Read from the router, never assumed: a router without sinks configured answers null and
+   * the form says "hub", which is then also what the launch will do.
+   */
+  useEffect(() => {
+    if (!address) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setFeeSplit(null);
+      return;
+    }
+    let live = true;
+    readFeeSplit(address, salt).then((s) => live && setFeeSplit(s));
+    return () => {
+      live = false;
+    };
+  }, [address, salt]);
+
+  const enginePct = feeSplit ? feeSplit.engineBps / 100 : 95;
+  const treasuryPct = feeSplit ? feeSplit.treasuryBps / 100 : 0;
+  const feeWords = feeSplit
+    ? `${enginePct}% feeds the coin's engine, ${treasuryPct}% is the protocol's share, 5% is the Doppler protocol fee.`
+    : "95% feeds the coin's engine; 5% is the Doppler protocol fee.";
 
   /*
    * Dry-run on every change, debounced: the token address depends on the salt
@@ -449,9 +480,8 @@ export default function LaunchForm() {
           <p className="mt-2.5 text-sm leading-relaxed text-ink-3">
             Charged on every swap, both ways, for the life of the pool, and always collected in
             USDG: a buy pays it in the coin and the pool converts it in the same transaction, so
-            the engine is fed in full, never in coins to sell later. 95% feeds the coin&apos;s
-            engine; 5% is the Doppler protocol fee. A higher fee fuels the position faster and
-            slows trading down.
+            the engine is fed in full, never in coins to sell later. {feeWords} A higher fee
+            fuels the position faster and slows trading down.
           </p>
         </section>
 
@@ -508,17 +538,18 @@ export default function LaunchForm() {
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
             <Input
               value={name}
-              onChange={(e) => setName(e.target.value.slice(0, 40))}
+              onChange={(e) => setName(e.target.value.slice(0, NAME_MAX))}
               placeholder="Coin name"
               aria-label="Coin name"
               className="h-11 text-base"
             />
+            {/* the ticker is the creator's, as typed: any characters, no forced case; only spaces and a length cap */}
             <Input
               value={symbol}
-              onChange={(e) => setSymbol(e.target.value.replace(/[^a-zA-Z0-9]/g, "").toUpperCase().slice(0, 10))}
+              onChange={(e) => setSymbol(e.target.value.replace(/\s/g, "").slice(0, SYMBOL_MAX))}
               placeholder="TICKER"
               aria-label="Ticker"
-              className="num h-11 text-base uppercase"
+              className="num h-11 text-base"
             />
           </div>
           <div className="mt-3 rounded-xl border border-border bg-void px-4 py-3.5">
@@ -586,11 +617,23 @@ export default function LaunchForm() {
               <dd className="num text-ink">≈ ${mcapUsd.toFixed(0)} market cap, 1B supply, all in the pool</dd>
               <dt className="text-ink-3">Fee routing</dt>
               <dd className="min-w-0 truncate text-ink">
-                all in USDG · 95% engine hub{" "}
-                <a className="num text-ink-2 underline underline-offset-2" href={explorerAddr(LAUNCH_FEE_HUB)} target="_blank" rel="noreferrer">
-                  {short(LAUNCH_FEE_HUB)}
-                </a>{" "}
-                · 5% Doppler
+                {feeSplit ? (
+                  <>
+                    all in USDG · {enginePct}% engine · {treasuryPct}% treasury · 5% Doppler · via the
+                    coin&apos;s sink{" "}
+                    <a className="num text-ink-2 underline underline-offset-2" href={explorerAddr(feeSplit.sink)} target="_blank" rel="noreferrer">
+                      {short(feeSplit.sink)}
+                    </a>
+                  </>
+                ) : (
+                  <>
+                    all in USDG · 95% engine hub{" "}
+                    <a className="num text-ink-2 underline underline-offset-2" href={explorerAddr(LAUNCH_FEE_HUB)} target="_blank" rel="noreferrer">
+                      {short(LAUNCH_FEE_HUB)}
+                    </a>{" "}
+                    · 5% Doppler
+                  </>
+                )}
               </dd>
               {withFirstBuy && (
                 <>
@@ -746,7 +789,9 @@ export default function LaunchForm() {
             {[
               `The token deploys with a 1B fixed supply and no owner, all of it seeded one-sided into a Uniswap v4 pool at roughly $${mcapUsd.toFixed(0)} mcap, through Doppler's Airlock.`,
               "The pool is locked by its fee beneficiaries. Nobody can pull the liquidity, not you, not us, not Doppler.",
-              `Every swap pays ${feeLabel}, always collected in USDG: 95% into the coin's engine, 5% to Doppler. Small fees pool on the hook until they pass ${HOOK_FLUSH_EPSILON_USDG} USDG, then flush. The protocol earns only 25% of realized profits.`,
+              feeSplit
+                ? `Every swap pays ${feeLabel}, always collected in USDG, into a fee contract that is the coin's alone: ${enginePct}% to its engine, ${treasuryPct}% to the protocol, 5% to Doppler. Small fees pool on the hook until they pass ${HOOK_FLUSH_EPSILON_USDG} USDG, then flush. On top, the protocol takes 25% of realized profits.`
+                : `Every swap pays ${feeLabel}, always collected in USDG: 95% into the coin's engine, 5% to Doppler. Small fees pool on the hook until they pass ${HOOK_FLUSH_EPSILON_USDG} USDG, then flush. The protocol earns only 25% of realized profits.`,
               `At ${OPEN_GATE_LABEL} the engine opens the ${lev}× ${side} on ${market}; profits are withdrawn on your risk profile, bought back and burned.`,
             ].map((step, i) => (
               <li key={i} className="flex min-w-0 gap-3 text-sm leading-relaxed text-ink-2">

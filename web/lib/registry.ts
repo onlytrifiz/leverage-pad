@@ -31,6 +31,8 @@ export type CoinState = {
   creatorOwedRaw: string;
   totalCollected0: string;
   totalBurnedRaw: string;
+  /** (v4) protocol share the coin's sink has already paid to the treasury at flush */
+  sinkTreasuryRaw?: string;
   perpOpen: boolean;
   perpDepositedUsd: number;
   perpRealizedUsd: number;

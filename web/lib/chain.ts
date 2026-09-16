@@ -53,6 +53,10 @@ const POOL_MANAGER_ABI = [
 ];
 const ROUTER_ABI = [
   "event MultiplyLaunch(address indexed asset, address indexed launcher, bytes32 indexed poolId, uint24 fee, bool antiSnipe, uint256 mcap, int24 tick, uint128 firstBuy, uint128 firstBuyOut, string tokenURI)",
+  // the engine, validated and emitted by the router: the source of truth (metadata is for the image)
+  "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint8 risk)",
+  // the coin's fee sink: zero for coins launched before the sink upgrade (their fees went to the hub)
+  "function sinkOf(address asset) view returns (address)",
 ];
 
 const ERC20_IFACE = new ethers.utils.Interface(ERC20_ABI);
@@ -149,7 +153,8 @@ const COINS_TTL_MS = 10_000;
 export async function loadRouterCoins(): Promise<Coin[]> {
   if (coinsCache && Date.now() - coinsCache.at < COINS_TTL_MS) return coinsCache.coins;
   const latest = await provider.getBlockNumber();
-  const topic = ROUTER_IFACE.getEventTopic("MultiplyLaunch");
+  const launchTopic = ROUTER_IFACE.getEventTopic("MultiplyLaunch");
+  const engineTopic = ROUTER_IFACE.getEventTopic("MultiplyEngine");
   const logs: ethers.providers.Log[] = [];
   // walk forward in chunks the public RPC accepts; the router is young, so this is short
   const STEP = 400_000;
@@ -157,29 +162,49 @@ export async function loadRouterCoins(): Promise<Coin[]> {
     const to = Math.min(latest, from + STEP - 1);
     let chunk: ethers.providers.Log[] = [];
     try {
-      chunk = await provider.getLogs({ address: LAUNCH_ROUTER, topics: [topic], fromBlock: from, toBlock: to });
+      chunk = await provider.getLogs({ address: LAUNCH_ROUTER, topics: [[launchTopic, engineTopic]], fromBlock: from, toBlock: to });
     } catch (e) {
       console.error(`[loadRouterCoins] getLogs ${from}-${to}: ${(e as Error).message?.slice(0, 120)}`);
     }
     logs.push(...chunk);
   }
-  if (logs.length === 0) {
+  // the engine event of each asset, emitted in the same transaction as its launch
+  const engines = new Map<string, { market: string; side: "long" | "short"; leverage: number; risk: Coin["riskProfile"] }>();
+  for (const l of logs) {
+    if (l.topics[0] !== engineTopic) continue;
+    const a = ROUTER_IFACE.parseLog(l).args;
+    engines.set(String(a.asset).toLowerCase(), {
+      market: String(a.market),
+      side: Number(a.side) === 1 ? "short" : "long",
+      leverage: Number(a.leverage),
+      risk: (["safe", "balanced", "degen"] as const)[Number(a.risk)],
+    });
+  }
+  const launches = logs.filter((l) => l.topics[0] === launchTopic).map((l) => ({ log: l, ev: ROUTER_IFACE.parseLog(l).args }));
+  if (launches.length === 0) {
     coinsCache = { at: Date.now(), coins: [] };
     return [];
   }
-  const launches = logs.map((l) => ({ log: l, ev: ROUTER_IFACE.parseLog(l).args }));
   const tOf = await blockTimeEstimator(launches[0].log.blockNumber, latest);
   const names = await multicallPerItem(provider, launches, ({ ev }) => [
     { target: ev.asset, iface: ERC20_IFACE, fn: "name" },
     { target: ev.asset, iface: ERC20_IFACE, fn: "symbol" },
-  ]).catch(() => launches.map(() => [null, null]));
+    // `sinkOf` reverts as a whole on the pre-upgrade router (no such selector): per-call
+    // failure tolerance turns that into a null, and the hub is shown instead
+    { target: LAUNCH_ROUTER, iface: ROUTER_IFACE, fn: "sinkOf", args: [ev.asset] },
+  ]).catch(() => launches.map(() => [null, null, null]));
   const metas = await Promise.all(launches.map(({ ev }) => fetchMetadata(String(ev.tokenURI))));
 
   const coins: Coin[] = launches.map(({ log, ev }, i) => {
     const m = metas[i];
+    // the router's event is the engine; the metadata is only consulted for coins launched
+    // before the event existed (none on this router) and for the image
+    const onChain = engines.get(String(ev.asset).toLowerCase());
     const eng = m?.multiply ?? {};
-    const side = SIDES.has(String(eng.side)) ? (eng.side as "long" | "short") : "long";
-    const risk = RISKS.has(String(eng.risk)) ? (eng.risk as Coin["riskProfile"]) : undefined;
+    const side = onChain?.side ?? (SIDES.has(String(eng.side)) ? (eng.side as "long" | "short") : "long");
+    const risk = onChain?.risk ?? (RISKS.has(String(eng.risk)) ? (eng.risk as Coin["riskProfile"]) : undefined);
+    const sink: string | undefined = names[i]?.[2]?.[0];
+    const feeDestination = sink && !ethers.BigNumber.from(sink).isZero() ? sink : LAUNCH_FEE_HUB;
     return {
       token: ev.asset,
       name: names[i]?.[0]?.[0] ?? m?.name ?? "",
@@ -192,11 +217,11 @@ export async function loadRouterCoins(): Promise<Coin[]> {
       antiSnipe: Boolean(ev.antiSnipe),
       openingMcapUsd: Number(ethers.utils.formatUnits(ev.mcap, PAIR_DECIMALS)),
       launcher: ev.launcher,
-      subWallet: LAUNCH_FEE_HUB,
+      subWallet: feeDestination,
       creator: eng.creator && /^0x[0-9a-fA-F]{40}$/.test(eng.creator) ? eng.creator : ev.launcher,
-      market: String(eng.market ?? "").toUpperCase() || "?",
+      market: onChain?.market ?? (String(eng.market ?? "").toUpperCase() || "?"),
       side,
-      leverage: Number(eng.leverage) || 0,
+      leverage: onChain?.leverage ?? (Number(eng.leverage) || 0),
       riskProfile: risk,
       tokenURI: String(ev.tokenURI),
       image: m?.image,

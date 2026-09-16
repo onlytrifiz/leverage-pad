@@ -8,7 +8,7 @@ import {
   fmtThreshold,
 } from "@/lib/config";
 import { DOPPLER, LAUNCH_ROUTER, V4_POOL_MANAGER, explorerAddr } from "@/lib/clientConfig";
-import { SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG } from "@/lib/doppler";
+import { SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG, FEE_SPLIT_PCT } from "@/lib/doppler";
 
 export const metadata = { title: "Docs" };
 
@@ -79,7 +79,7 @@ const PARAMS = [
   { label: "opening mcap", value: "~$4,000" },
   { label: "trading fee", value: `${FEE_RANGE}, creator's choice` },
   { label: "fee currency", value: "USDG, always" },
-  { label: "protocol fee", value: "5% of the fee, to Doppler" },
+  { label: "fee split", value: `${FEE_SPLIT_PCT.engine}% engine · ${FEE_SPLIT_PCT.treasury}% protocol · ${FEE_SPLIT_PCT.doppler}% Doppler` },
   { label: "launch protection", value: `${SNIPE.startFee / 10_000}% → fee in ${SNIPE.seconds}s, opt-in` },
   { label: "perp opens at", value: fmtThreshold(OPEN_GATE_USD) },
   { label: "top-up step", value: fmtThreshold(TOPUP_STEP_USD) },
@@ -152,10 +152,12 @@ export default function DocsPage() {
               <pre className="num text-xs leading-[1.7] text-ink-2">{`swap (fee ${FEE_RANGE}, taken by the pool's hook)
   ├─ buys pay it in the coin  → swapped to USDG inside the same swap
   └─ sells pay it in USDG     → passed straight through
-        └─ 5% to Doppler · 95% to the coin's fee destination, in USDG
-              └─ deposits to Lighter at the ${fmtThreshold(OPEN_GATE_USD)} gate
-                 opens/tops-up the position chosen at launch
-                 (market · direction · leverage · risk profile)
+        └─ ${FEE_SPLIT_PCT.doppler}% to Doppler · the rest to the coin's own fee sink, in USDG
+              ├─ ${FEE_SPLIT_PCT.treasury}% protocol treasury
+              └─ ${FEE_SPLIT_PCT.engine}% the coin's sub-wallet
+                    └─ deposits to Lighter at the ${fmtThreshold(OPEN_GATE_USD)} gate
+                       opens/tops-up the position chosen at launch
+                       (market · direction · leverage · risk profile)
 
 realized profit → withdrawn on-chain
   ├─ 75% buys the coin from the pool and burns it
@@ -237,9 +239,13 @@ realized profit → withdrawn on-chain
               of coins waiting to be sold.
             </p>
             <p>
-              <K>Where it goes.</K> Doppler keeps <N>5%</N> of every fee, its protocol
-              fee for the launch stack. The remaining <N>95%</N> is transferred to the
-              coin&apos;s fee destination in USDG. Two mechanical details: USDG fees below{" "}
+              <K>Where it goes.</K> Doppler keeps <N>{FEE_SPLIT_PCT.doppler}%</N> of every fee, its
+              protocol fee for the launch stack. The remaining <N>95%</N> is transferred in
+              USDG to the coin&apos;s fee sink, a small contract created in the launch
+              transaction for that coin alone. Its <N>flush()</N> is public and does one
+              thing: <N>{FEE_SPLIT_PCT.treasury}%</N> of the trading fee to the protocol
+              treasury, <N>{FEE_SPLIT_PCT.engine}%</N> to the coin&apos;s sub-wallet, and any
+              coins that ever reached it burned. Two mechanical details: USDG fees below{" "}
               <N>{HOOK_FLUSH_EPSILON_USDG} USDG</N> wait on the hook until the next swap
               pushes them over, so small sells arrive in batches; and because the coin-side
               fee is sold back into the pool, every buy carries a small sell of its own fee.
@@ -312,11 +318,14 @@ realized profit → withdrawn on-chain
               coin&apos;s position, and every sub-wallet is public on the explorer.
             </p>
             <p>
-              <K>Adoption.</K> At launch the fees are routed to the engine hub, a single
-              public address; the keeper then re-points the coin&apos;s share to its own
-              sub-wallet with a beneficiary update the contracts allow only from the
-              current beneficiary. The coin&apos;s page shows where its fees are going at
-              any time.
+              <K>Adoption.</K> The hook fixes where a pool&apos;s fees go at initialization
+              and has no setter, so the launch gives it the coin&apos;s fee sink, cloned in
+              the same transaction. The keeper then points the sink at the coin&apos;s
+              sub-wallet. After that first step the keeper key cannot move it: only the
+              router&apos;s owner can, the recovery path for a sub-wallet that became
+              unusable, and the sink exposes no way to touch the fee matrix the launch
+              set. Until it is pointed, fees simply accumulate in the sink. The coin&apos;s
+              page shows its sink and where its fees are going at any time.
             </p>
             <p>
               <K>Who holds the keys.</K> Sub-wallet keys are derived deterministically
@@ -360,9 +369,11 @@ realized profit → withdrawn on-chain
                 <>credits any perp withdrawal that landed since the last tick, bridge
                   settlements are recognized from the on-chain transfer itself and split
                   25% treasury / 75% buyback;</>,
-                <>reads the USDG the pool&apos;s hook has forwarded since the last tick
-                  and moves it into the perp reserve; any coins that reach the sub-wallet
-                  (bought back, or sent by holders) are burned, entirely, every tick;</>,
+                <>flushes the coin&apos;s fee sink when it holds enough to be worth the
+                  gas ({FEE_SPLIT_PCT.treasury}% to the treasury, {FEE_SPLIT_PCT.engine}% to
+                  the sub-wallet, coins burned) and moves what arrived into the perp
+                  reserve; any coins that reach the sub-wallet (bought back, or sent by
+                  holders) are burned, entirely, every tick;</>,
                 <>runs the buyback when the reserve clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>;</>,
                 <>marks the perp to market and decides: deposit, top up, or take
                   profit.</>,
@@ -479,12 +490,13 @@ realized profit → withdrawn on-chain
 
           <Section id="economics" title="Economics">
             <p>
-              Full degen split: <K>every trading fee funds the perp treasury</K>, in USDG.
-              No creator cut, no fee skim beyond Doppler&apos;s 5% for the market
-              infrastructure. The protocol earns only when the engine wins: 25% of
-              realized profits, with the other 75% buying and burning supply. If the
-              position never profits, the protocol earns nothing, incentives point the
-              same way as holders&apos;. No launch fee either, beyond gas.
+              Of every trading fee, in USDG: <K>{FEE_SPLIT_PCT.engine}% funds the coin&apos;s
+              perp treasury</K>, {FEE_SPLIT_PCT.treasury}% goes to the protocol and{" "}
+              {FEE_SPLIT_PCT.doppler}% to Doppler for the market infrastructure. No creator
+              cut. The split is enforced by the coin&apos;s fee sink, not by the keeper. On
+              the way back the protocol takes 25% of realized profits, with the other 75%
+              buying and burning supply: the larger part of what the protocol earns still
+              only arrives when the engine wins. No launch fee, beyond gas.
             </p>
             <p>
               Worst case is bounded by design: isolated margin means a liquidation costs
