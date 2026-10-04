@@ -155,19 +155,22 @@ export async function loadRouterCoins(): Promise<Coin[]> {
   const latest = await provider.getBlockNumber();
   const launchTopic = ROUTER_IFACE.getEventTopic("MultiplyLaunch");
   const engineTopic = ROUTER_IFACE.getEventTopic("MultiplyEngine");
-  const logs: ethers.providers.Log[] = [];
-  // walk forward in chunks the public RPC accepts; the router is young, so this is short
+  // The router's logs by ADDRESS only, topics filtered here: the node allows 400k blocks for a
+  // plain query but only 100k with an OR on topic0 (blocks are ~0.1 s, so that is under three
+  // hours). Windows are fetched in parallel: the scan starts at the first real launch, not at
+  // the router's deploy, but it still grows with the chain.
   const STEP = 400_000;
-  for (let from = ROUTER_DEPLOY_BLOCK; from <= latest; from += STEP) {
-    const to = Math.min(latest, from + STEP - 1);
-    let chunk: ethers.providers.Log[] = [];
-    try {
-      chunk = await provider.getLogs({ address: LAUNCH_ROUTER, topics: [[launchTopic, engineTopic]], fromBlock: from, toBlock: to });
-    } catch (e) {
-      console.error(`[loadRouterCoins] getLogs ${from}-${to}: ${(e as Error).message?.slice(0, 120)}`);
-    }
-    logs.push(...chunk);
-  }
+  const windows: [number, number][] = [];
+  for (let from = ROUTER_DEPLOY_BLOCK; from <= latest; from += STEP) windows.push([from, Math.min(latest, from + STEP - 1)]);
+  const chunks = await Promise.all(
+    windows.map(([from, to]) =>
+      provider.getLogs({ address: LAUNCH_ROUTER, fromBlock: from, toBlock: to }).catch((e) => {
+        console.error(`[loadRouterCoins] getLogs ${from}-${to}: ${(e as Error).message?.slice(0, 120)}`);
+        return [] as ethers.providers.Log[];
+      })
+    )
+  );
+  const logs = chunks.flat().filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic);
   // the engine event of each asset, emitted in the same transaction as its launch
   const engines = new Map<string, { market: string; side: "long" | "short"; leverage: number; risk: Coin["riskProfile"] }>();
   for (const l of logs) {

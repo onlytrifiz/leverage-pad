@@ -31,7 +31,9 @@ module.exports = {
 
   // ── Uniswap v4 / Doppler (coin lanciate dal router, docs.doppler.lol/reference/contract-addresses) ──
   LAUNCH_ROUTER: process.env.PERPSPAD_LAUNCH_ROUTER || '0xB9De90F875FFE04D57cC90EE030c0DfB84F25Acd', // MultiplyLaunchRouter (proxy UUPS)
-  ROUTER_DEPLOY_BLOCK: Number(process.env.PERPSPAD_LAUNCH_ROUTER_BLOCK || 63095128),
+  // first block worth scanning for launches: TEST8, the first coin through the sink-enabled router
+  // (block 80,058,837). Earlier router history is only test launches and is skipped on purpose.
+  ROUTER_DEPLOY_BLOCK: Number(process.env.PERPSPAD_LAUNCH_ROUTER_BLOCK || 80058837),
   V4_POOL_MANAGER: '0x8366a39CC670B4001A1121B8F6A443A643e40951',
   V4_HOOK_INITIALIZER: '0x4e3468951D49f2EEa976eD0D6e75fFCb44a9a544', // DopplerHookInitializer = hook della PoolKey
   V4_TICK_SPACING: 200,

@@ -65,7 +65,8 @@ export const LAUNCH_FEE_HUB =
 export const LAUNCH_ROUTER =
   process.env.NEXT_PUBLIC_LAUNCH_ROUTER || "0xB9De90F875FFE04D57cC90EE030c0DfB84F25Acd";
 /** block the router was deployed in: launch logs start here */
-export const ROUTER_DEPLOY_BLOCK = Number(process.env.NEXT_PUBLIC_LAUNCH_ROUTER_BLOCK || 63095128);
+/** First block scanned for launches: TEST8, the first coin through the sink-enabled router. */
+export const ROUTER_DEPLOY_BLOCK = Number(process.env.NEXT_PUBLIC_LAUNCH_ROUTER_BLOCK || 80058837);
 
 /** Canonical Multicall3 — verified deployed at this address on chain 4663. */
 export const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";

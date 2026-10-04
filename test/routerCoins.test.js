@@ -108,6 +108,36 @@ test('scanLaunches: pairs each launch with the engine event of the same asset', 
   assert.equal((await rc.scanLaunches(none, 1, 1))[0].engine, null);
 });
 
+test('scanLaunches: queries by address only, and halves the window when the node refuses a span', async (t) => {
+  // the live RPC on 2026-10-04: 400k blocks per plain query, 100k with an OR on topic0
+  const calls = [];
+  const strict = {
+    getLogs: async (f) => {
+      calls.push(f);
+      if (f.topics) throw new Error('topics must not be sent');
+      if (f.toBlock - f.fromBlock + 1 > 100_000) {
+        const e = new Error('processing response error'); e.body = '{"error":{"message":"query spans 400000 blocks (1 to 400000), but only 100000 are allowed for this request"}}'; throw e;
+      }
+      return f.fromBlock <= 250_000 && 250_000 <= f.toBlock ? [launchLog(), engineLog('BTC', 0, 2, 0)] : [];
+    },
+  };
+  const found = await rc.scanLaunches(strict, 1, 1_000_000);
+  await t.test('the launch in the middle of the range is found, with its engine', () => {
+    assert.equal(found.length, 1);
+    assert.equal(found[0].engine.market, 'BTC');
+  });
+  await t.test('every window was contiguous and the whole range was covered exactly once', () => {
+    const ok = calls.filter((c) => c.toBlock - c.fromBlock + 1 <= 100_000).sort((a, b) => a.fromBlock - b.fromBlock);
+    assert.equal(ok[0].fromBlock, 1);
+    assert.equal(ok[ok.length - 1].toBlock, 1_000_000);
+    for (let i = 1; i < ok.length; i++) assert.equal(ok[i].fromBlock, ok[i - 1].toBlock + 1);
+  });
+  await t.test('an error that is not about the span is not swallowed', async () => {
+    const down = { getLogs: async () => { throw new Error('missing response'); } };
+    await assert.rejects(() => rc.scanLaunches(down, 1, 10), /missing response/);
+  });
+});
+
 test('a coin is never refused for its name or ticker: only the engine is validated', async (t) => {
   const launch = rc.parseLaunchLog(launchLog());
   const engine = rc.engineFor(launch, rc.parseEngineLog(engineLog()));

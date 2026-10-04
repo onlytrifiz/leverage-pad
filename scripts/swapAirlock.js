@@ -45,8 +45,11 @@ async function main() {
   const s0 = ethers.BigNumber.from(await pm.extsload(base));
   const sqrtP = s0.and(ethers.BigNumber.from(1).shl(160).sub(1));
   const lpFee = s0.shr(208).and(0xffffff).toNumber();
+  // Active liquidity can be zero at the launch price and the pool still trades: when the coin
+  // sorts after USDG the curve is flipped and the price sits exactly on the range's upper bound,
+  // which the range [lower, upper) excludes. A buy crosses into it. The Quoter below is the truth;
+  // the closed form is only a sanity print, and is skipped when there is no L to compute it from.
   const L = ethers.BigNumber.from(await pm.extsload(ethers.BigNumber.from(base).add(3).toHexString())); // slot0 + 3 = liquidity
-  if (L.isZero()) throw new Error('pool has no active liquidity at current tick');
 
   const w20 = new ethers.Contract(token, ['function balanceOf(address) view returns (uint256)', 'function allowance(address,address) view returns (uint256)', 'function approve(address,uint256) returns (bool)'], w);
   let amountIn = usdgIn, tokenIn = config.USDG, tokenOut = token;
@@ -62,17 +65,18 @@ async function main() {
   const recs = fs.existsSync(path.resolve(__dirname, '..', 'state', 'airlock-launches.json')) ? JSON.parse(fs.readFileSync(path.resolve(__dirname, '..', 'state', 'airlock-launches.json'), 'utf8')) : [];
   const rec = recs.find((r) => r.token.toLowerCase() === token.toLowerCase());
   const floorTick = rec ? (tokenIs0 ? rec.tick : -rec.tick) : null; // price is token1/token0; the flipped curve mirrors the tick
-  let out;
-  if (zeroForOne) { // input = currency0: price falls; 1/sqrtP' = 1/sqrtP + in/L
-    let sqrtPNew = L.mul(sqrtP).div(L.add(amountInNet.mul(sqrtP).div(Q96)));
-    if (floorTick !== null && tokenIs0) { const f = getSqrtRatioAtTick(floorTick); if (sqrtPNew.lt(f)) sqrtPNew = f; }
-    out = L.mul(sqrtP.sub(sqrtPNew)).div(Q96);
-  } else {          // input = currency1: sqrtP' = sqrtP + in*Q96/L; out0 = L*(sqrtP'-sqrtP)*Q96/(sqrtP*sqrtP')
-    let sqrtPNew = sqrtP.add(amountInNet.mul(Q96).div(L));
-    if (floorTick !== null && !tokenIs0) { const f = getSqrtRatioAtTick(floorTick); if (sqrtPNew.gt(f)) sqrtPNew = f; }
-    out = L.mul(sqrtPNew.sub(sqrtP)).mul(Q96).div(sqrtP).div(sqrtPNew);
+  let out = null;
+  if (!L.isZero()) {
+    if (zeroForOne) { // input = currency0: price falls; 1/sqrtP' = 1/sqrtP + in/L
+      let sqrtPNew = L.mul(sqrtP).div(L.add(amountInNet.mul(sqrtP).div(Q96)));
+      if (floorTick !== null && tokenIs0) { const f = getSqrtRatioAtTick(floorTick); if (sqrtPNew.lt(f)) sqrtPNew = f; }
+      out = L.mul(sqrtP.sub(sqrtPNew)).div(Q96);
+    } else {          // input = currency1: sqrtP' = sqrtP + in*Q96/L; out0 = L*(sqrtP'-sqrtP)*Q96/(sqrtP*sqrtP')
+      let sqrtPNew = sqrtP.add(amountInNet.mul(Q96).div(L));
+      if (floorTick !== null && !tokenIs0) { const f = getSqrtRatioAtTick(floorTick); if (sqrtPNew.gt(f)) sqrtPNew = f; }
+      out = L.mul(sqrtPNew.sub(sqrtP)).mul(Q96).div(sqrtP).div(sqrtPNew);
+    }
   }
-  if (out.isZero()) throw new Error('projected output is zero: nothing on the other side of the ladder');
   const fmtOutRaw = (v) => sell ? ethers.utils.formatUnits(v, 6) + ' USDG' : ethers.utils.formatEther(v) + ' tokens';
   // Doppler Quoter: exact-in (negative amountSpecified), no price limit
   const quoter = new ethers.Contract(QUOTER, ['function quoteSingle((address currency0,address currency1,uint24 fee,int24 tickSpacing,address hooks) key,(bool zeroForOne,int256 amountSpecified,uint160 sqrtPriceLimitX96) params) view returns (int256 amount0,int256 amount1,uint160 sqrtPriceAfter,uint32 initializedTicksCrossed)'], provider);
@@ -94,7 +98,8 @@ async function main() {
   const quotedGross = (zeroForOne ? q.amount1 : q.amount0).abs();
   const quoted = quotedGross.mul(1_000_000 - hookFee).div(1_000_000);
   console.log(` hook fee now ${hookFee / 1e4}%${sch.startFee !== sch.endFee ? ' (decaying schedule)' : ''} · gross ${fmtOutRaw(quotedGross)}`);
-  console.log(` closed-form estimate ${fmtOutRaw(out)} · quoter net of hook fee ${fmtOutRaw(quoted)} (ticks crossed ${q.initializedTicksCrossed})`);
+  console.log(` closed-form estimate ${out ? fmtOutRaw(out) : 'n/a (no active liquidity at the current tick)'} · quoter net of hook fee ${fmtOutRaw(quoted)} (ticks crossed ${q.initializedTicksCrossed})`);
+  if (quoted.isZero()) throw new Error('quoted output is zero: nothing on the other side of the ladder');
   out = quoted;
   const minOut = out.mul(10_000 - slippageBps).div(10_000);
   const fmtOut = fmtOutRaw;
