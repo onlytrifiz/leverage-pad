@@ -52,6 +52,13 @@ const POOL_MANAGER_ABI = [
   "function extsload(bytes32 slot) view returns (bytes32)",
   "event Swap(bytes32 indexed id, address indexed sender, int128 amount0, int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick, uint24 fee)",
 ];
+// the engine event of the router before the engine upgrade: a risk profile (0 safe, 1 balanced,
+// 2 degen) instead of a take-profit. Kept apart from ROUTER_ABI, where an overloaded event name
+// would make getEventTopic ambiguous.
+const LEGACY_ENGINE_IFACE = new ethers.utils.Interface([
+  "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint8 risk)",
+]);
+const LEGACY_RISKS = ["safe", "balanced", "degen"];
 const ROUTER_ABI = [
   "event MultiplyLaunch(address indexed asset, address indexed launcher, bytes32 indexed poolId, uint24 fee, bool antiSnipe, uint256 mcap, int24 tick, uint128 firstBuy, uint128 firstBuyOut, string tokenURI)",
   // the engine at launch, validated and emitted by the router (metadata is for the image)
@@ -166,6 +173,7 @@ export async function loadRouterCoins(): Promise<Coin[]> {
   const latest = await provider.getBlockNumber();
   const launchTopic = ROUTER_IFACE.getEventTopic("MultiplyLaunch");
   const engineTopic = ROUTER_IFACE.getEventTopic("MultiplyEngine");
+  const legacyEngineTopic = LEGACY_ENGINE_IFACE.getEventTopic("MultiplyEngine");
   // The router's logs by ADDRESS only, topics filtered here: the node allows 400k blocks for a
   // plain query but only 100k with an OR on topic0 (blocks are ~0.1 s, so that is under three
   // hours). Windows are fetched in parallel: the scan starts at the first real launch, not at
@@ -181,13 +189,27 @@ export async function loadRouterCoins(): Promise<Coin[]> {
       })
     )
   );
-  const logs = chunks.flat().filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic);
+  const logs = chunks
+    .flat()
+    .filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic || l.topics[0] === legacyEngineTopic);
   // the engine event of each asset, emitted in the same transaction as its launch
   const engines = new Map<
     string,
     { market: string; side: "long" | "short"; leverage: number; takeProfitPct: number; managed: boolean; creator: string }
   >();
   for (const l of logs) {
+    if (l.topics[0] === legacyEngineTopic) {
+      const a = LEGACY_ENGINE_IFACE.parseLog(l).args;
+      engines.set(String(a.asset).toLowerCase(), {
+        market: String(a.market),
+        side: Number(a.side) === 1 ? "short" : "long",
+        leverage: Number(a.leverage),
+        takeProfitPct: LEGACY_TP[LEGACY_RISKS[Number(a.risk)]] ?? 50,
+        managed: false,
+        creator: "",
+      });
+      continue;
+    }
     if (l.topics[0] !== engineTopic) continue;
     const a = ROUTER_IFACE.parseLog(l).args;
     engines.set(String(a.asset).toLowerCase(), {
@@ -248,7 +270,7 @@ export async function loadRouterCoins(): Promise<Coin[]> {
       openingMcapUsd: Number(ethers.utils.formatUnits(ev.mcap, PAIR_DECIMALS)),
       launcher: ev.launcher,
       subWallet: feeDestination,
-      creator: onChain?.creator ?? (eng.creator && /^0x[0-9a-fA-F]{40}$/.test(eng.creator) ? eng.creator : ev.launcher),
+      creator: onChain?.creator || (eng.creator && /^0x[0-9a-fA-F]{40}$/.test(eng.creator) ? eng.creator : ev.launcher),
       market: onChain?.market ?? (String(eng.market ?? "").toUpperCase() || "?"),
       side,
       leverage: (live ? Number(live.leverage) : undefined) ?? onChain?.leverage ?? (Number(eng.leverage) || 0),

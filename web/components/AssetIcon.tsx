@@ -23,13 +23,16 @@ const CDN = "https://assets.lighter.xyz/fe/token";
 export default function AssetIcon({ symbol, size = 18 }: { symbol: string; size?: number }) {
   const logos = useTokenLogos();
   const [failed, setFailed] = useState(false);
-  const entry = logos[symbol];
+  // only a ticker can become a CDN path: anything else ("?" for an unknown engine) would turn
+  // into a query string, which next/image rejects by throwing during render
+  const valid = /^[A-Za-z0-9._-]+$/.test(symbol ?? "");
+  const entry = valid ? logos[symbol] : undefined;
   const src = entry
     ? `${CDN}/${entry.logo}.${entry.ext}`
     : `${CDN}/${symbol.toLowerCase()}.png`;
 
   // simbolo sconosciuto al CDN: cerchio con l'iniziale, mai un riquadro rotto
-  if (failed || !symbol) {
+  if (failed || !valid) {
     return (
       <span
         className="inline-flex shrink-0 items-center justify-center rounded-full border border-line-2 bg-panel-2 font-bold text-ink-2"
