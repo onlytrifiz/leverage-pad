@@ -8,7 +8,7 @@ export const metadata = { title: "Page not found" };
 
 /**
  * The 404 gets the same frame as the rest of the site. It is the screen most
- * likely to be somebody's first impression — you arrive at it from a broken
+ * likely to be somebody's first impression: you arrive at it from a broken
  * link or a mistyped address — so it explains what tends to go wrong in this
  * particular domain, and offers both ways out: back to the market, and the
  * product's primary action.
@@ -24,7 +24,7 @@ export default function NotFound() {
         on the way.
       </p>
       <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
-        <Button size="xl" nativeButton={false} render={<Link href="/" />}>
+        <Button size="xl" nativeButton={false} render={<Link href="/market" />}>
           Back to the market
         </Button>
         <Button size="xl" variant="outline" nativeButton={false} render={<Link href="/launch" />}>

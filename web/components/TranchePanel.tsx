@@ -36,7 +36,8 @@ export default function TranchePanel({ detail }: { detail: CoinDetail }) {
   }, [detail.tranches, mark, coin.side]);
 
   if (!tranches.length) return null;
-  const trigger = tranches[0].neededPct * coin.leverage;
+  // the lowest target on the ladder: below the coin's take-profit once old deposits decay
+  const trigger = Math.min(...tranches.map((t) => t.takeProfitPct));
 
   return (
     <Panel>
@@ -46,7 +47,7 @@ export default function TranchePanel({ detail }: { detail: CoinDetail }) {
           Tranches · take-profit ladder
         </PanelTitle>
         <PanelMeta>
-          Each banks fully at +{trigger.toFixed(0)}% ({coin.riskProfile ?? "balanced"})
+          Each banks fully at +{coin.takeProfitPct}%{trigger < coin.takeProfitPct ? ", lower for old deposits" : ""}
         </PanelMeta>
       </PanelHeader>
       <div className="flex flex-col gap-1 p-2.5">

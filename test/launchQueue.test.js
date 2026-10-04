@@ -14,7 +14,7 @@ const q = require('../lib/launchQueue');
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'lq-'));
 const HASH_A = '0x' + 'a'.repeat(64);
 const HASH_B = '0x' + 'b'.repeat(64);
-const params = { name: 'My Coin', symbol: 'MYC', market: 'NVDA', side: 'long', leverage: 3, riskProfile: 'degen', creator: '0x23Bf247B662EFADf114642A65DbbB0CB7D0EBAc0' };
+const params = { name: 'My Coin', symbol: 'MYC', market: 'NVDA', side: 'long', leverage: 3, takeProfitPct: 100, managed: false, creator: '0x23Bf247B662EFADf114642A65DbbB0CB7D0EBAc0' };
 
 test('launchQueue: un pagamento, una registrazione', async (t) => {
   await t.test('accoda e rilegge', () => {

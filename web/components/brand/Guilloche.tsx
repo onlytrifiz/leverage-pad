@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { motion, useReducedMotion } from "motion/react";
+import { cn } from "cn";
 
 /**
  * The guilloché rosette: the engine, drawn the way a banknote is drawn.
@@ -26,8 +26,8 @@ import { motion, useReducedMotion } from "motion/react";
  * the whole look, and it is why the first attempt (d ≈ r) came out as a plain
  * scalloped circle.
  *
- * Cost: paths are computed once per parameter change, and only a `rotate` on the
- * group animates, so the whole figure lives on the compositor.
+ * Cost: paths are computed once per parameter change; the turning is a CSS
+ * transform on each <svg> element, so it lives on the compositor (see below).
  */
 
 type Props = {
@@ -65,7 +65,6 @@ export function Guilloche({
   spin = 120,
   direction = 1,
 }: Props) {
-  const reduced = useReducedMotion();
 
   const { outer, inner } = useMemo(() => {
     const R = 100;
@@ -85,21 +84,33 @@ export function Guilloche({
     return { outer, inner };
   }, [teethProp, reach, rings]);
 
-  const turning = !reduced && spin > 0;
+  /*
+   * Not gated on `reduced` in the markup: the server cannot know the visitor's
+   * preference, so a class that depended on it would mismatch at hydration.
+   * `.guilloche-spin` only animates under prefers-reduced-motion: no-preference.
+   */
+  const turning = spin > 0;
 
+  /*
+   * Each direction is its own <svg>, and the rotation is a CSS transform on
+   * that element, not on a <g> inside it. A transformed <g> makes the browser
+   * re-rasterise every path on every frame (thousands of points per ring);
+   * a transformed element is painted once and then turned by the compositor.
+   * Three large rosettes on one page took the frame rate to 2 fps the other
+   * way.
+   */
+  const layer = "absolute inset-0 h-full w-full will-change-transform";
   return (
-    <svg
-      viewBox="-112 -112 224 224"
-      width={size}
-      height={size}
-      className={className}
+    <div
       aria-hidden
-      focusable="false"
+      className={cn("relative aspect-square max-w-full", className)}
+      style={{ width: size }}
     >
-      <motion.g
-        animate={turning ? { rotate: 360 * direction } : undefined}
-        transition={{ duration: spin, repeat: Infinity, ease: "linear" }}
-        style={{ transformOrigin: "center" }}
+      <svg
+        viewBox="-112 -112 224 224"
+        className={cn(layer, turning && "guilloche-spin")}
+        style={turning ? ({ "--spin": `${spin}s`, "--turn": `${360 * direction}deg` } as React.CSSProperties) : undefined}
+        focusable="false"
       >
         {outer.map((p, i) => (
           <path
@@ -112,11 +123,12 @@ export function Guilloche({
             vectorEffect="non-scaling-stroke"
           />
         ))}
-      </motion.g>
-      <motion.g
-        animate={turning ? { rotate: -360 * direction } : undefined}
-        transition={{ duration: spin * 1.7, repeat: Infinity, ease: "linear" }}
-        style={{ transformOrigin: "center" }}
+      </svg>
+      <svg
+        viewBox="-112 -112 224 224"
+        className={cn(layer, turning && "guilloche-spin")}
+        style={turning ? ({ "--spin": `${spin * 1.7}s`, "--turn": `${-360 * direction}deg` } as React.CSSProperties) : undefined}
+        focusable="false"
       >
         <path
           d={inner}
@@ -126,7 +138,7 @@ export function Guilloche({
           opacity={0.3}
           vectorEffect="non-scaling-stroke"
         />
-      </motion.g>
-    </svg>
+      </svg>
+    </div>
   );
 }

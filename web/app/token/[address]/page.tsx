@@ -1,28 +1,21 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { coinDetail } from "@/lib/detail";
-import {
-  OPEN_GATE_LABEL,
-  BUYBACK_FLOOR_LABEL,
-  CREATOR_MIN_PAYOUT_LABEL,
-} from "@/lib/thresholds";
-import { explorerAddr } from "@/lib/clientConfig";
 import { dexscreenerPool } from "@/lib/doppler";
 import { Container } from "@/components/ui/container";
 import { Panel, PanelHeader, PanelTitle, PanelBody } from "@/components/ui/panel";
-import { StatGrid, Stat } from "@/components/ui/stat";
-import Chart from "@/components/Chart";
+import { Stat } from "@/components/ui/stat";
+import { isIndexed, dexEmbed, dexPage } from "@/components/Chart";
+import { MarketsProvider } from "@/components/markets-provider";
 import LiveFeed from "@/components/LiveFeed";
 import SwapPanel from "@/components/SwapPanel";
-import BurnOdometer from "@/components/BurnOdometer";
-import HedgeCard from "@/components/HedgeCard";
 import TranchePanel from "@/components/TranchePanel";
 import VerifySection from "@/components/VerifySection";
 import AutoRefresh from "@/components/AutoRefresh";
-import { AnimatedNumber, LivePulse } from "@/components/motion";
-import { HedgeBadge, DemoBadge, LiveBadge } from "@/components/Badge";
-import { CopyChip, LinkChip } from "@/components/CopyChip";
-import { CoinSeal } from "@/components/brand/CoinSeal";
+import TokenHero from "@/components/token/TokenHero";
+import CoinChart from "@/components/token/CoinChart";
+import EngineCockpit from "@/components/token/EngineCockpit";
+import EngineFlow from "@/components/token/EngineFlow";
+import ManageEngine from "@/components/token/ManageEngine";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +33,12 @@ export async function generateMetadata({
   };
 }
 
+/**
+ * A coin's page, in the order someone reads it: the note and the price, the
+ * chart with the engine's buybacks on it, the engine itself live, where the
+ * fees went, then the detail (tranches, feed). Trading stays in reach in a
+ * sticky column on desktop, and right after the chart on a phone.
+ */
 export default async function TokenPage({
   params,
 }: {
@@ -48,172 +47,84 @@ export default async function TokenPage({
   const { address } = await params;
   const detail = await coinDetail(address);
   if (!detail) notFound();
-  const { coin, stats, demo } = detail;
+  const { coin } = detail;
+  const indexed = await isIndexed(coin.poolId);
+  const launchPrice = coin.openingMcapUsd > 0 ? coin.openingMcapUsd / (coin.initialSupply ?? 1e9) : null;
 
   return (
-    <Container className="pt-6">
-      <Link href="/" className="text-sm text-ink-3 transition-colors hover:text-ink">
-        ← All coins
-      </Link>
+    <MarketsProvider>
+      <TokenHero detail={detail} poolHref={dexscreenerPool(coin.poolId)} />
 
       {/*
-        The coin's page opens as the instrument it is: its own seal on the left,
-        struck from the leverage, side and risk profile fixed at launch.
+        One trade column, rendered once. On a phone the main column dissolves
+        (`contents`) so the trade panel can sit right after the chart; on
+        desktop it is a sticky column beside the long read.
       */}
-      <section className="frame-engraved hatch mt-4 rounded-[16px] px-5 py-6 sm:px-7">
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-5">
-          <div className="flex min-w-0 items-center gap-5">
-            <CoinSeal
-              leverage={coin.leverage}
-              side={coin.side}
-              riskProfile={coin.riskProfile}
-              size={104}
-              rings={4}
-              className="hidden shrink-0 text-brand sm:block"
+      <Container width="landing" className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="flex min-w-0 flex-col gap-6 max-lg:contents">
+          <div className="min-w-0 max-lg:order-1">
+            <CoinChart
+              address={coin.token}
+              symbol={coin.symbol}
+              launchPrice={launchPrice}
+              launchedAt={Math.floor(new Date(coin.createdAt).getTime() / 1000) || null}
+              dexSrc={indexed ? dexEmbed(coin.poolId) : null}
+              dexPage={dexPage(coin.poolId)}
             />
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                <h1 className="text-4xl font-bold leading-none">
-                  ${coin.symbol}
-                  <span className="text-ink-3"> / {coin.pairSymbol}</span>
-                </h1>
-                <HedgeBadge side={coin.side} market={coin.market} leverage={coin.leverage} />
-                {demo ? <DemoBadge /> : <LiveBadge />}
-              </div>
-              <p className="mt-2 text-md text-ink-2">{coin.name}</p>
-              <div className="mt-3.5 flex min-w-0 flex-wrap items-center gap-2">
-                <CopyChip label="CA" value={coin.token} />
-                <LinkChip label="Pool" href={dexscreenerPool(coin.poolId)} />
-                <LinkChip label="Fees to" href={explorerAddr(coin.subWallet)} />
-              </div>
-            </div>
           </div>
-          <div className="min-w-0 text-left sm:text-right">
-            <div className="text-xs text-ink-3">Market cap</div>
-            <div className="num mt-1 text-4xl font-semibold leading-none text-ink">
-              <AnimatedNumber value={stats.marketCapUsd} format="usd" countOnMount />
-            </div>
-            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3 sm:justify-end">
-              <LivePulse />
-              <span>
-                Price <AnimatedNumber value={stats.priceUsd} format="price" className="num" />
-              </span>
-              <span aria-hidden>·</span>
-              <AutoRefresh />
-            </div>
+          <div className="min-w-0 max-lg:order-3">
+            <EngineCockpit detail={detail} />
+          </div>
+          <div className="min-w-0 empty:hidden max-lg:order-3">
+            <ManageEngine coin={coin} />
+          </div>
+          <div className="min-w-0 max-lg:order-3">
+            <EngineFlow detail={detail} />
+          </div>
+          <div className="min-w-0 max-lg:order-3">
+            <TranchePanel detail={detail} />
+          </div>
+          <div className="min-w-0 max-lg:order-3">
+            <LiveFeed address={coin.token} demo={detail.demo} />
+          </div>
+          <div className="min-w-0 max-lg:order-3">
+            <VerifySection coin={coin} />
           </div>
         </div>
-      </section>
 
-      {/* ── body: main column + trade/addresses column ──────────────────── */}
-      <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="flex min-w-0 flex-col gap-4">
-          <Chart pool={coin.poolId} symbol={coin.symbol} />
+        <aside className="flex min-w-0 flex-col gap-4 max-lg:order-2 lg:sticky lg:top-[calc(var(--nav-h)+16px)] lg:self-start">
+          <TradeColumn detail={detail} />
+        </aside>
+      </Container>
+    </MarketsProvider>
+  );
+}
 
-          <StatGrid>
-            <Stat label="Market cap" amount={stats.marketCapUsd} format="usd" size="sm" />
-            <Stat label="Price" amount={stats.priceUsd} format="price" size="sm" />
-            <Stat
-              label="Underlying"
-              value={<span className="capitalize">{coin.side} {coin.market}</span>}
-              mono={false}
-              size="sm"
-            />
-            <Stat label="Paired with" value={coin.pairSymbol} mono={false} size="sm" />
-          </StatGrid>
-
-          <HedgeCard detail={detail} />
-
-          <TranchePanel detail={detail} />
-
-          {/* the engine: fees → burn → perp */}
-          <StatGrid cols={3}>
-            <Stat
-              label="Fees collected"
-              amount={stats.feesCollectedUsd}
-              format="usd"
-              size="lg"
-              hint="Always in USDG. 100% perp treasury, full degen"
-            />
-            <Stat label="Burned">
-              <BurnOdometer burned={stats.burnedTokens} burnedPct={stats.burnedPct} />
-            </Stat>
-            <Stat
-              label="Perp funded"
-              amount={stats.perpFundedUsd}
-              format="usd"
-              size="lg"
-              hint="USDG sent to Lighter as collateral"
-            />
-          </StatGrid>
-
-          {/* buckets waiting on their gate */}
-          <StatGrid>
-            <Stat
-              label="Perp reserve"
-              amount={stats.perpReserveUsd}
-              format="usd"
-              size="sm"
-              hint={`Opens at ${OPEN_GATE_LABEL}`}
-            />
-            <Stat
-              label="Buyback reserve"
-              amount={stats.buybackReserveUsd}
-              format="usd"
-              size="sm"
-              hint={`Burns at ${BUYBACK_FLOOR_LABEL}`}
-            />
-            <Stat
-              label="Creator owed"
-              amount={stats.creatorOwedUsd}
-              format="usd"
-              size="sm"
-              hint={`Pays at ${CREATOR_MIN_PAYOUT_LABEL}`}
-            />
-            <Stat
-              label="Treasury owed"
-              amount={stats.treasuryOwedUsd}
-              format="usd"
-              size="sm"
-              hint={`Pays at ${CREATOR_MIN_PAYOUT_LABEL}`}
-            />
-          </StatGrid>
-
-          <LiveFeed address={coin.token} demo={demo} />
-        </div>
-
-        <div className="flex min-w-0 flex-col gap-4">
-          <SwapPanel detail={detail} />
-
-          <Panel>
-            <PanelHeader>
-              <PanelTitle>Fee destination balance</PanelTitle>
-            </PanelHeader>
-            <div className="grid grid-cols-2 gap-px bg-border">
-              <Stat
-                label={coin.pairSymbol}
-                amount={detail.subWallet.quoteBalanceUsd}
-                format="usd"
-                size="sm"
-              />
-              <Stat
-                label={coin.symbol}
-                amount={detail.subWallet.coinBalance}
-                format="int"
-                size="sm"
-              />
-            </div>
-            <PanelBody className="pt-3.5">
-              <p className="text-xs leading-relaxed text-ink-3">
-                Every fee arrives here in USDG, converted by the pool&apos;s hook in the same
-                swap. From here it funds the perp; buybacks are burned.
-              </p>
-            </PanelBody>
-          </Panel>
-
-          <VerifySection coin={coin} />
-        </div>
+function TradeColumn({ detail }: { detail: NonNullable<Awaited<ReturnType<typeof coinDetail>>> }) {
+  const { coin } = detail;
+  return (
+    <>
+      <div className="flex items-center justify-end">
+        <AutoRefresh />
       </div>
-    </Container>
+      <div id="trade" className="scroll-mt-[calc(var(--nav-h)+16px)]">
+        <SwapPanel detail={detail} />
+      </div>
+      <Panel>
+        <PanelHeader>
+          <PanelTitle>Fee wallet</PanelTitle>
+        </PanelHeader>
+        <div className="grid grid-cols-2 gap-px bg-border">
+          <Stat label={coin.pairSymbol} amount={detail.subWallet.quoteBalanceUsd} format="usd" size="sm" />
+          <Stat label={coin.symbol} amount={detail.subWallet.coinBalance} format="int" size="sm" />
+        </div>
+        <PanelBody className="pt-3.5">
+          <p className="text-xs leading-relaxed text-ink-3">
+            Every fee lands here in USDG, converted by the pool&apos;s hook in the same swap. From here it funds the
+            position; coins that arrive are burned.
+          </p>
+        </PanelBody>
+      </Panel>
+    </>
   );
 }

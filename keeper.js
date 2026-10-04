@@ -10,6 +10,7 @@ const { buildSwapCalldata } = require('./lib/v3');
 const registry = require('./lib/registry');
 const publish = require('./lib/publish');
 const routerCoins = require('./lib/routerCoins');
+const { legacyTakeProfitPct } = require('./lib/launchParams');
 const v4 = require('./lib/v4');
 const lighter = require('./lighter/client');
 
@@ -160,7 +161,9 @@ async function burnCoin(sub, coinToken, amount, st) {
 }
 
 // ── logica tranche del take-profit (helper puri, testabili a secco) ──────────
-// Ogni deposito/topup e' una tranche {base, entryMark, collateralUsd, sizeDec, ts}.
+// Ogni deposito/topup e' una tranche {base, entryMark, collateralUsd, sizeDec, ts, leverage}.
+// `leverage` is the leverage set on the venue when the tranche was opened (absent on tranches
+// recorded before the engine could change: they fall back to the coin's leverage).
 // Su Lighter la posizione resta UNA (nettata): le tranche sono contabilita' del
 // keeper e decidono solo QUANTO chiudere e QUANDO.
 
@@ -221,20 +224,46 @@ function addTranche(tranches, t, minBaseUnits) {
   if (last && t.base < (minBaseUnits || 1)) {
     const total = last.base + t.base;
     last.entryMark = (last.entryMark * last.base + t.entryMark * t.base) / total;
-    last.base = total;
     last.collateralUsd = (last.collateralUsd || 0) + (t.collateralUsd || 0);
-    last.ts = t.ts;
+    // age weighted like the entry: a splinter must not restart the take-profit decay clock of
+    // the tranche it joins. The leverage stays the existing tranche's.
+    if (last.ts != null && t.ts != null) last.ts = Math.round((last.ts * last.base + t.ts * t.base) / total);
+    else last.ts = last.ts ?? t.ts;
+    last.base = total;
     return { tranches, merged: true };
   }
   tranches.push(t);
   return { tranches, merged: false };
 }
 
-// separa le tranche mature (target raggiunto) da quelle ancora in corsa
-function matureTranches(tranches, mark, side, leverage, triggerPct) {
+const DAY_MS = 86_400_000;
+
+/**
+ * The take-profit of a tranche of age `ageMs`, as a fraction (0.5 = +50% on its collateral).
+ * Unchanged for TP_DECAY_START_DAYS, then lowered linearly to the floor at TP_DECAY_END_DAYS,
+ * and held there. A trigger already at or below the floor never moves: the decay only ever
+ * makes a target easier to reach, never harder.
+ */
+function effectiveTrigger(triggerFrac, ageMs, cfg = config) {
+  const floor = Math.min(triggerFrac, cfg.TP_DECAY_FLOOR_PCT / 100);
+  if (!(triggerFrac > floor)) return triggerFrac;
+  const start = cfg.TP_DECAY_START_DAYS * DAY_MS, end = cfg.TP_DECAY_END_DAYS * DAY_MS;
+  if (!(ageMs > start)) return triggerFrac;
+  if (ageMs >= end || end <= start) return floor;
+  return triggerFrac - (triggerFrac - floor) * (ageMs - start) / (end - start);
+}
+
+// the coin's take-profit as a fraction: the on-chain percent, or the legacy profile's
+const coinTrigger = (coin) => (coin.takeProfitPct ?? legacyTakeProfitPct(coin.riskProfile)) / 100;
+
+// separa le tranche mature (target raggiunto) da quelle ancora in corsa. Each tranche runs at
+// its own leverage and its own (decayed) trigger; `leverage` is the fallback for tranches that
+// predate per-tranche leverage.
+function matureTranches(tranches, mark, side, leverage, triggerPct, nowMs = Date.now()) {
   const ready = [], keep = [];
   for (const t of tranches) {
-    const target = trancheTargetMark(t.entryMark, side, leverage, triggerPct);
+    const trigger = effectiveTrigger(triggerPct, nowMs - (t.ts ?? nowMs));
+    const target = trancheTargetMark(t.entryMark, side, t.leverage ?? leverage, trigger);
     const hit = side === 'short' ? mark <= target : mark >= target;
     (hit ? ready : keep).push(t);
   }
@@ -725,6 +754,22 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   const marketIndex = mkt.index;
   const isAsk = coin.side === 'short'; // long = buy (is_ask false)
 
+  // The router checks leverage against its own list, not against the venue: a coin can ask for
+  // more than Lighter allows on its market (at launch, or after an engine change). Such an
+  // engine takes no new exposure: no leverage update, no open or top-up. Deposits, take-profit,
+  // reconciliation and withdraw keep running, so the tranches already open are still managed.
+  {
+    const blocked = mkt.maxLeverage != null && coin.leverage > mkt.maxLeverage
+      ? `${coin.leverage}x is above ${coin.market}'s ${mkt.maxLeverage}x cap on Lighter` : null;
+    if (blocked !== (st.engineBlocked ?? null)) {
+      st.engineBlocked = blocked;
+      if (!sim) checkpoint();
+      console.log(blocked
+        ? `  [${coin.symbol}] ${tag}engine blocked: ${blocked}. No new positions until the engine fits the venue`
+        : `  [${coin.symbol}] ${tag}engine unblocked: ${coin.leverage}x fits ${coin.market} on Lighter`);
+    }
+  }
+
   // 1) DEPOSITO: manda la riserva accumulata all'intent-address (tx reale su 4663)
   const perpUsd = usdOf(BN(st.perpReserveRaw), coin.pairDecimals, unitUsd);
   const gate = st.perpOpen ? config.TOPUP_STEP_USD : config.OPEN_GATE_USD;
@@ -776,15 +821,40 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   }
   const apiPrivKey = decryptSecret(st.lighterApiPrivKey), apiKeyIndex = st.lighterApiKeyIndex;
 
-  // 4) leva isolata, una volta
-  if (!st.lighterLeverageSet) {
-    if (sim) { console.log(`  [${coin.symbol}] ${tag}imposterei leva ${coin.leverage}x ${config.LIGHTER_ISOLATED ? 'isolated' : 'cross'}`); }
-    else {
-      await lighter.setLeverage({ accountIndex, marketIndex, leverage: coin.leverage, isolated: config.LIGHTER_ISOLATED, apiPrivKey, apiKeyIndex });
-      st.lighterLeverageSet = true; checkpoint();
-      console.log(`  [${coin.symbol}] leva ${coin.leverage}x ${config.LIGHTER_ISOLATED ? 'isolated' : 'cross'} impostata su ${coin.market}`);
+  // 4) LEVERAGE on the venue: set at launch, and again whenever the engine changes.
+  //    `lighterLeverage` is what Lighter actually has; everything sized below uses it, not the
+  //    desired value, so a change the venue refuses never produces a position sized for a
+  //    leverage it does not have.
+  if (st.lighterLeverage == null && st.lighterLeverageSet === true) {
+    // state from before leverage could change: the flag meant "set to the launch leverage"
+    st.lighterLeverage = coin.leverage;
+    if (!sim) checkpoint();
+  }
+  const marginMode = config.LIGHTER_ISOLATED ? 'isolated' : 'cross';
+  if (!st.engineBlocked && st.lighterLeverage !== coin.leverage) {
+    if (sim) {
+      console.log(`  [${coin.symbol}] ${tag}would set leverage ${coin.leverage}x ${marginMode}${st.lighterLeverage != null ? ` (venue has ${st.lighterLeverage}x)` : ''}`);
+    } else {
+      try {
+        await lighter.setLeverage({ accountIndex, marketIndex, leverage: coin.leverage, isolated: config.LIGHTER_ISOLATED, apiPrivKey, apiKeyIndex });
+        const prev = st.lighterLeverage;
+        st.lighterLeverage = coin.leverage; st.lighterLeverageRejected = null; checkpoint();
+        console.log(`  [${coin.symbol}] leverage ${prev != null ? `${prev}x → ` : ''}${coin.leverage}x ${marginMode} set on ${coin.market}`);
+      } catch (e) {
+        // ambiguous (timeout, crash): as before, the tick stops here and the next one retries
+        if (!(e && e.definitive)) throw e;
+        // refused by Lighter: nothing changed on the venue. Keep trading at the leverage it
+        // has (if any); the refusal is logged once per target, not every tick.
+        if (st.lighterLeverageRejected !== coin.leverage) {
+          st.lighterLeverageRejected = coin.leverage; checkpoint();
+          console.log(`  [${coin.symbol}] leverage ${coin.leverage}x refused by Lighter (${e.message.slice(0, 100)}): ${st.lighterLeverage != null ? `staying at ${st.lighterLeverage}x` : 'no position is opened until it is accepted'}`);
+        }
+      }
     }
   }
+  // the leverage new exposure is sized at: the venue's. In simulate nothing is ever set, so
+  // the dry run sizes at the desired one, as it always has.
+  const venueLeverage = st.lighterLeverage ?? (sim ? coin.leverage : null);
 
   // 5) stato conto/posizione. Il saldo LIBERO e' available_balance: `collateral`
   //    in modalita' cross INCLUDE il margine delle posizioni (verificato su API) e
@@ -825,17 +895,19 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   const usableUsd = Math.max(0, freeCollateralUsd - Math.max(0, Number(st.perpRealizedUsd || 0)));
   const deployableUsd = usableUsd * config.COLLATERAL_HEADROOM;
   const minNotional = Math.max(mkt.minQuoteUsd || 0, 0);
-  if (deployableUsd >= config.MIN_DEPLOY_USD && deployableUsd * coin.leverage < minNotional) {
+  if (st.engineBlocked || venueLeverage == null) {
+    // no new exposure: the engine does not fit the venue, or Lighter has no leverage set for it
+  } else if (deployableUsd >= config.MIN_DEPLOY_USD && deployableUsd * venueLeverage < minNotional) {
     if (!st.perpBelowMinLogged) {
-      console.log(`  [${coin.symbol}] collaterale insufficiente per il minimo d'ordine: $${(deployableUsd * coin.leverage).toFixed(2)} di notional < $${minNotional.toFixed(2)} richiesti da ${coin.market} — accumulo`);
+      console.log(`  [${coin.symbol}] collaterale insufficiente per il minimo d'ordine: $${(deployableUsd * venueLeverage).toFixed(2)} di notional < $${minNotional.toFixed(2)} richiesti da ${coin.market} — accumulo`);
       st.perpBelowMinLogged = true; if (!sim) checkpoint();
     }
   } else if (deployableUsd >= config.MIN_DEPLOY_USD) {
     st.perpBelowMinLogged = false;
     const wasOpen = st.perpOpen;
-    const notionalUsd = deployableUsd * coin.leverage;
+    const notionalUsd = deployableUsd * venueLeverage;
     if (sim) {
-      console.log(`  [${coin.symbol}] ${tag}perp ${wasOpen ? 'topup' : 'open'}: aprirei notional $${notionalUsd.toFixed(2)} ${coin.side} ${coin.leverage}x (deployable $${deployableUsd.toFixed(2)}, riservato al withdraw $${Math.max(0, Number(st.perpRealizedUsd || 0)).toFixed(2)})`);
+      console.log(`  [${coin.symbol}] ${tag}perp ${wasOpen ? 'topup' : 'open'}: aprirei notional $${notionalUsd.toFixed(2)} ${coin.side} ${venueLeverage}x (deployable $${deployableUsd.toFixed(2)}, riservato al withdraw $${Math.max(0, Number(st.perpRealizedUsd || 0)).toFixed(2)})`);
     } else {
       const baseBefore = pos && pos.size != null ? Math.round(Math.abs(Number(pos.size)) * 10 ** mkt.sizeDec) : 0;
       const r = await lighter.open({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: Date.now() % 1000000, apiPrivKey, apiKeyIndex });
@@ -855,14 +927,14 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
         // la riconciliazione del tick dopo crea la sintetica.
         let merged = false;
         if (r.mark) {
-          ({ merged } = addTranche(st.perpTranches, { base: filled, entryMark: Number(r.mark), collateralUsd: usedCollateralUsd, sizeDec: mkt.sizeDec, ts: Date.now() }, mkt.minBaseUnits));
+          ({ merged } = addTranche(st.perpTranches, { base: filled, entryMark: Number(r.mark), collateralUsd: usedCollateralUsd, sizeDec: mkt.sizeDec, ts: Date.now(), leverage: venueLeverage }, mkt.minBaseUnits));
           // la `pos` letta allo step 5 e' PRECEDENTE a quest'ordine: senza tenerne
           // conto la riconciliazione dello step 7 vedrebbe le tranche "in eccesso"
           // e le riscalerebbe tutte (proprio la diluizione che le tranche evitano).
           openedBaseThisTick += filled;
         }
         checkpoint();
-        console.log(`  [${coin.symbol}] perp ${wasOpen ? 'topup' : 'open'}: notional $${notionalUsd.toFixed(2)} ${coin.side} ${coin.leverage}x (fill ${filled}/${r.baseAmount} @ ${r.mark})${merged ? ' — scheggia fusa nella tranche precedente' : ''}`);
+        console.log(`  [${coin.symbol}] perp ${wasOpen ? 'topup' : 'open'}: notional $${notionalUsd.toFixed(2)} ${coin.side} ${venueLeverage}x (fill ${filled}/${r.baseAmount} @ ${r.mark})${merged ? ' — scheggia fusa nella tranche precedente' : ''}`);
       } else {
         console.log(`  [${coin.symbol}] perp open NON riempito (IOC senza controparte: book vuoto o mercato chiuso?): collaterale intatto, riprovo al tick dopo`);
       }
@@ -873,7 +945,10 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   //    poi chiude (reduce-only) le tranche il cui target e' stato raggiunto.
   //    Ogni tranche corre verso il SUO entry × (1 ± trigger/leva): i topup non
   //    diluiscono il progresso delle tranche vecchie.
-  const prof = config.RISK_PROFILES[coin.riskProfile] || config.RISK_PROFILES[config.DEFAULT_RISK];
+  //    The trigger decays with each tranche's age (effectiveTrigger); tranches without their own
+  //    leverage were opened at the one the venue had, the best fallback there is.
+  const triggerFrac = coinTrigger(coin);
+  const tpLabel = `+${Math.round(triggerFrac * 100)}%`;
   if (!Array.isArray(st.perpTranches)) st.perpTranches = [];
   {
     // size on-chain al netto di cio' che abbiamo aperto DOPO la lettura di pos.
@@ -909,12 +984,12 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
         if (!sim) checkpoint();
         console.log(`  [${coin.symbol}] ${tag}perpOpen riallineato al venue: posizione viva (base ${posBase})`);
       }
-      const { ready, keep } = matureTranches(st.perpTranches, mark, coin.side, coin.leverage, prof.triggerPct);
+      const { ready, keep } = matureTranches(st.perpTranches, mark, coin.side, st.lighterLeverage ?? coin.leverage, triggerFrac);
       const closeBase = Math.min(ready.reduce((a, t) => a + t.base, 0), posBase);
       if (ready.length && closeBase >= (mkt.minBaseUnits || 1)) {
         const wantRealized = realizedFromTranches(ready, mark, coin.side, mkt.sizeDec);
         if (sim) {
-          console.log(`  [${coin.symbol}] ${tag}TAKE-PROFIT (${coin.riskProfile || config.DEFAULT_RISK}): chiuderei ${ready.length} tranche (base ${closeBase}), realizzerei ~$${wantRealized.toFixed(2)}`);
+          console.log(`  [${coin.symbol}] ${tag}TAKE-PROFIT (${tpLabel}): chiuderei ${ready.length} tranche (base ${closeBase}), realizzerei ~$${wantRealized.toFixed(2)}`);
         } else {
           await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, apiPrivKey, apiKeyIndex });
           // Il market order e' IOC: "accettato" NON significa "riempito". Rileggo la
@@ -928,7 +1003,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
           if (!st.perpTranches.length) st.perpOpen = false;
           st.perpRealizedUsd += Math.max(0, realized); checkpoint();
           const pct = Math.round(fillFrac * 100);
-          console.log(`  [${coin.symbol}] TAKE-PROFIT (${coin.riskProfile || config.DEFAULT_RISK}): chiusa base ${filledBase}/${closeBase} (fill ${pct}%), realizzato ~$${realized.toFixed(2)}`);
+          console.log(`  [${coin.symbol}] TAKE-PROFIT (${tpLabel}): chiusa base ${filledBase}/${closeBase} (fill ${pct}%), realizzato ~$${realized.toFixed(2)}`);
           if (fillFrac < 0.99) console.log(`  [${coin.symbol}] fill parziale: le tranche residue restano in lista e ritentano al tick dopo`);
         }
       } else if (ready.length && !sim) {
@@ -1100,4 +1175,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { trancheTargetMark, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

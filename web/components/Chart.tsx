@@ -22,7 +22,7 @@ import { Panel, PanelHeader, PanelTitle } from "@/components/ui/panel";
  * in doubt (API down, slow network) still try the embed — better to attempt it
  * than to hide the chart of a live coin.
  */
-async function isIndexed(pool: string): Promise<boolean> {
+export async function isIndexed(pool: string): Promise<boolean> {
   try {
     const r = await fetch(`https://api.dexscreener.com/latest/dex/pairs/robinhood/${pool}`, {
       next: { revalidate: 300 },
@@ -35,12 +35,15 @@ async function isIndexed(pool: string): Promise<boolean> {
   }
 }
 
+export const dexPage = (pool: string) => `https://dexscreener.com/robinhood/${pool}`;
+export const dexEmbed = (pool: string) =>
+  `${dexPage(pool)}?embed=1&loadChartSettings=0&theme=light&chartTheme=light` +
+  `&info=0&trades=0&tabs=0&chartLeftToolbar=0&chartDefaultOnMobile=1&interval=15`;
+
 export default async function Chart({ pool, symbol }: { pool: string; symbol: string }) {
-  const page = `https://dexscreener.com/robinhood/${pool}`;
+  const page = dexPage(pool);
   const indexed = await isIndexed(pool);
-  const src =
-    `${page}?embed=1&loadChartSettings=0&theme=light&chartTheme=light` +
-    `&info=0&trades=0&tabs=0&chartLeftToolbar=0&chartDefaultOnMobile=1&interval=15`;
+  const src = dexEmbed(pool);
 
   return (
     <Panel className="overflow-hidden">

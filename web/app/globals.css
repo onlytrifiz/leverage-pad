@@ -53,6 +53,21 @@
   --color-step-4: #3fae70;
   --color-mint: #8ce8b0;
 
+  /*
+   * Night: the intro is the same banknote seen under a lamp. The ink becomes
+   * the paper and the mint becomes the ink, so the story reads as this brand
+   * at night, not as a second product.
+   *
+   * Contrast on night: night-ink 15.1:1 · night-ink-2 7.4:1 · mint 11.6:1
+   */
+  --color-night: #061a10;
+  --color-night-2: #0b2a1a;
+  --color-night-line: #1d4430;
+  --color-night-ink: #e9f6ee;
+  --color-night-ink-2: #9fc4ad;
+  --color-night-up: #6fe3a1;
+  --color-night-down: #ff8a7a;
+
   --font-display: var(--font-familjen), ui-sans-serif, system-ui, sans-serif;
   --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
@@ -317,6 +332,185 @@
       inset 0 0 0 2px var(--color-line);
   }
 
+  /*
+   * The intro's night: a lamp-lit pool of mint over deep forest, and the same
+   * fibre grain as the paper, so it reads as the banknote seen in the dark.
+   */
+  .intro-night {
+    background-color: var(--color-night);
+    background-image:
+      radial-gradient(1100px 620px at 78% 18%, rgba(140, 232, 176, 0.13), transparent 62%),
+      radial-gradient(800px 520px at 8% 100%, rgba(46, 138, 87, 0.18), transparent 60%);
+  }
+  .intro-night::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0.12;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23g)' opacity='0.5'/%3E%3C/svg%3E");
+  }
+
+  /*
+   * The certificate's border band: two crossing engraved line sets, the
+   * pattern printed around the face of a share certificate so it cannot be
+   * photocopied cleanly.
+   */
+  .certificate {
+    border: 1px solid var(--color-line-2);
+    background-image:
+      repeating-linear-gradient(45deg, rgba(15, 107, 63, 0.11) 0 1px, transparent 1px 5px),
+      repeating-linear-gradient(-45deg, rgba(15, 107, 63, 0.11) 0 1px, transparent 1px 5px);
+  }
+
+  /* range inputs in the brand ink, native so keyboard and screen readers keep working */
+  .range-brand {
+    accent-color: var(--color-brand);
+    height: 22px;
+    cursor: pointer;
+  }
+
+  /*
+   * Engine loop stations. `--lit` runs 0 → 1, scrubbed by GSAP from the scroll
+   * position; every colour is a mix on it, so a station switches on as one
+   * continuous change instead of a class flipping.
+   */
+  .loop-station {
+    --lit: 0;
+  }
+  .loop-node {
+    border-color: color-mix(in oklch, var(--color-line-2), var(--color-brand) calc(var(--lit) * 100%));
+    background: color-mix(in oklch, var(--color-panel), var(--color-brand) calc(var(--lit) * 100%));
+    color: color-mix(in oklch, var(--color-ink-3), #ffffff calc(var(--lit) * 100%));
+    box-shadow: 0 0 0 calc(var(--lit) * 6px) color-mix(in oklch, var(--color-brand-soft), transparent 20%);
+  }
+  .loop-title {
+    color: color-mix(in oklch, var(--color-ink-3), var(--color-ink) calc(var(--lit) * 100%));
+  }
+
+  /* the rosette's turn: an element transform, so the compositor does it (see Guilloche.tsx) */
+  @keyframes guilloche-turn {
+    to { transform: rotate(var(--turn, 360deg)); }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .guilloche-spin {
+      animation: guilloche-turn var(--spin, 120s) linear infinite;
+    }
+  }
+
+  /*
+   * The banknote (components/brand/Banknote.tsx). Paper: two sets of
+   * concentric hairline rings centred left and right, whose interference is
+   * the moire every printed note carries, over a mint wash.
+   */
+  .banknote {
+    background-color: #eef6f0;
+    background-image:
+      repeating-radial-gradient(circle at 23% 50%, rgba(15, 107, 63, 0.075) 0 0.6px, transparent 0.6px 5px),
+      repeating-radial-gradient(circle at 84% 44%, rgba(15, 107, 63, 0.075) 0 0.6px, transparent 0.6px 5px),
+      linear-gradient(115deg, #f5fbf6 0%, #e2f1e6 46%, #eef7f0 100%);
+    box-shadow:
+      0 50px 90px -40px rgba(0, 0, 0, 0.6),
+      0 0 0 1px rgba(12, 52, 32, 0.22),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.65);
+  }
+  .note-sunburst {
+    background: repeating-conic-gradient(from 0deg, rgba(12, 52, 32, 0.2) 0deg 0.55deg, transparent 0.55deg 3.6deg);
+    mask-image: radial-gradient(closest-side, transparent 16%, #000 30%, #000 72%, transparent 100%);
+  }
+  /* an iridescent foil: hologram hairlines over a pastel spectrum that slides with the tilt */
+  .note-foil {
+    background-image:
+      repeating-linear-gradient(-30deg, rgba(255, 255, 255, 0.4) 0 1px, transparent 1px 4px),
+      linear-gradient(180deg, #a7f0cc, #f3e6a4, #b9dcf7, #d9c8f0, #a7f0cc, #f3e6a4, #b9dcf7);
+    background-size: 100% 100%, 100% 300%;
+    box-shadow:
+      inset 1px 0 0 rgba(255, 255, 255, 0.75),
+      inset -1px 0 0 rgba(12, 52, 32, 0.22);
+    opacity: 0.82;
+  }
+  /* engraved type: an outline filled with hatching instead of a flat ink */
+  .note-hatch {
+    color: transparent;
+    -webkit-text-stroke: 0.16cqw var(--color-ink);
+    background-image: repeating-linear-gradient(-45deg, var(--color-ink) 0 0.12cqw, transparent 0.12cqw 0.5cqw);
+    -webkit-background-clip: text;
+    background-clip: text;
+  }
+
+  /*
+   * Engraved display type: an outline filled with hatching in `--ink-c`. The
+   * hatching drifts slowly, so the word reads as freshly cut rather than
+   * printed; still under reduced motion.
+   */
+  .type-engraved {
+    color: transparent;
+    -webkit-text-stroke: 0.018em var(--ink-c, currentColor);
+    background-image: repeating-linear-gradient(-45deg, var(--ink-c, currentColor) 0 0.028em, transparent 0.028em 0.1em);
+    background-size: 0.1414em 0.1414em;
+    -webkit-background-clip: text;
+    background-clip: text;
+  }
+  @keyframes engraved-drift {
+    to { background-position: 0.1414em 0; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .type-engraved {
+      animation: engraved-drift 2.4s linear infinite;
+    }
+  }
+
+  /* the engine rail: red on the liquidation side, green toward the take-profit */
+  .engine-rail {
+    background: linear-gradient(
+      90deg,
+      rgba(179, 38, 30, 0.6),
+      rgba(179, 38, 30, 0.14) 32%,
+      var(--color-panel-2) 50%,
+      rgba(15, 107, 63, 0.22) 68%,
+      rgba(15, 107, 63, 0.75)
+    );
+  }
+  .engine-rail[data-short] {
+    background: linear-gradient(
+      270deg,
+      rgba(179, 38, 30, 0.6),
+      rgba(179, 38, 30, 0.14) 32%,
+      var(--color-panel-2) 50%,
+      rgba(15, 107, 63, 0.22) 68%,
+      rgba(15, 107, 63, 0.75)
+    );
+  }
+  /* money in transit: a dashed connector whose dashes flow toward the next station */
+  @keyframes flow-dash {
+    to { stroke-dashoffset: -24; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .flow-dash {
+      animation: flow-dash 1.1s linear infinite;
+    }
+  }
+
+  /* a market card: the banknote's paper, and a lamp that follows the cursor (two CSS vars) */
+  .coin-card {
+    background-color: #f5faf6;
+    background-image:
+      repeating-radial-gradient(circle at 100% 0%, rgba(15, 107, 63, 0.06) 0 0.6px, transparent 0.6px 6px),
+      linear-gradient(165deg, #fbfefc, #eef6f0);
+  }
+  .coin-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.3s;
+    background: radial-gradient(280px circle at var(--mx, 50%) var(--my, 50%), rgba(140, 232, 176, 0.3), transparent 62%);
+  }
+  .coin-card:hover::after {
+    opacity: 1;
+  }
+
   /* price tape: travels half its width (the list is duplicated) */
   @keyframes tape {
     from { transform: translateX(0); }
@@ -397,6 +591,83 @@ input:focus-visible,
   outline: 2px solid var(--color-brand);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/*
+ * Painted before React runs for a first-time visitor to the home page (see
+ * INTRO_BOOT_SCRIPT): the night colour, so the market does not flash up and
+ * vanish under the intro. Just below the overlay, which lifts it on mount.
+ */
+html.intro-pending::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 59;
+  background: var(--color-night);
+}
+
+/* Lenis: the documented minimum so native and smooth scrolling agree */
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+.lenis:not(.lenis-autoToggle).lenis-stopped {
+  overflow: clip;
+}
+.lenis [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+
+/*
+ * The short side of the launch page: the whole palette turns from forest to
+ * oxblood. Scoped with :has() on the launch form's root, so the server-rendered
+ * attribute decides it before the first paint (a link that opens on short never
+ * flashes green), and it ends the moment the form unmounts. Unlayered and more
+ * specific than the theme's :root, so it wins over the Tailwind tokens.
+ */
+html:has([data-side="short"]) {
+  --color-void: #f5f2f1;
+  --color-panel: #ffffff;
+  --color-panel-2: #f3ecea;
+  --color-line: #ebdfdd;
+  --color-line-2: #dcc3bf;
+  --color-ink: #3b0f0d;
+  --color-ink-2: #6e3c37;
+  --color-ink-3: #80544e;
+  --color-brand: #b3261e;
+  --color-brand-strong: #8f1d17;
+  --color-brand-soft: #f9e1de;
+  --color-step-1: #3b0f0d;
+  --color-step-2: #8f1d17;
+  --color-step-3: #c2412f;
+  --color-step-4: #e0705e;
+  --color-mint: #ff9d8a;
+  --color-night: #170807;
+  --color-night-2: #261210;
+  --color-night-line: #4e1b17;
+  --color-night-ink: #fcefed;
+  --color-night-ink-2: #dca9a2;
+}
+html:has([data-side="short"]) body {
+  transition: background-color 0.5s;
+}
+html:has([data-side="short"]) body::before {
+  background: radial-gradient(900px 460px at 88% -120px, rgba(255, 157, 138, 0.12), transparent 62%);
+}
+html:has([data-side="short"]) .intro-night {
+  background-image:
+    radial-gradient(1100px 620px at 78% 18%, rgba(255, 157, 138, 0.09), transparent 62%),
+    radial-gradient(800px 520px at 8% 100%, rgba(194, 65, 47, 0.12), transparent 60%);
+}
+html:has([data-side="short"]) .banknote {
+  background-color: #f8eeec;
+  background-image:
+    repeating-radial-gradient(circle at 23% 50%, rgba(143, 29, 23, 0.075) 0 0.6px, transparent 0.6px 5px),
+    repeating-radial-gradient(circle at 84% 44%, rgba(143, 29, 23, 0.075) 0 0.6px, transparent 0.6px 5px),
+    linear-gradient(115deg, #fdf6f5 0%, #f4e2df 46%, #faf0ee 100%);
+}
+html:has([data-side="short"]) .hatch-brand {
+  background-image: repeating-linear-gradient(-45deg, rgba(59, 15, 13, 0.11) 0 1px, transparent 1px 5px);
 }
 
 @media (prefers-reduced-motion: reduce) {

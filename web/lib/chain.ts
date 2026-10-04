@@ -3,6 +3,7 @@ import { RPC_URL, PINATA_GATEWAY } from "./config";
 import { USDG, DOPPLER, V4_POOL_MANAGER, LAUNCH_ROUTER, LAUNCH_FEE_HUB, ROUTER_DEPLOY_BLOCK } from "./clientConfig";
 import type { Candle, Coin, FeedItem } from "./types";
 import { multicallPerItem, type Call } from "./multicall";
+import { LEGACY_TP } from "./doppler";
 
 /**
  * On-chain reads for coins launched through the multiply router (Uniswap v4 via
@@ -13,7 +14,7 @@ import { multicallPerItem, type Call } from "./multicall";
  *   - the router's `MultiplyLaunch` events: which coins exist, their pool ids
  *     and launch settings;
  *   - the token's IPFS metadata: name, image and the engine parameters
- *     (`multiply{market, side, leverage, risk, creator}`);
+ *     (`multiply{market, side, leverage, takeProfitPct, managed, creator}`);
  *   - the PoolManager: price and liquidity (`extsload` of the pool's slots);
  *   - the PoolManager `Swap` log per pool id: candles, trades and the hook's
  *     own fee conversions.
@@ -53,8 +54,10 @@ const POOL_MANAGER_ABI = [
 ];
 const ROUTER_ABI = [
   "event MultiplyLaunch(address indexed asset, address indexed launcher, bytes32 indexed poolId, uint24 fee, bool antiSnipe, uint256 mcap, int24 tick, uint128 firstBuy, uint128 firstBuyOut, string tokenURI)",
-  // the engine, validated and emitted by the router: the source of truth (metadata is for the image)
-  "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint8 risk)",
+  // the engine at launch, validated and emitted by the router (metadata is for the image)
+  "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint16 takeProfitPct, bool managed, address indexed creator)",
+  // the engine now: a managed coin's change, or the owner's override, after the launch event
+  "function engineOf(address asset) view returns ((string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed,address creator,uint8 pendingLeverage,uint16 pendingTakeProfitPct,uint64 pendingAt))",
   // the coin's fee sink: zero for coins launched before the sink upgrade (their fees went to the hub)
   "function sinkOf(address asset) view returns (address)",
 ];
@@ -105,7 +108,16 @@ type Metadata = {
   name?: string;
   symbol?: string;
   image?: string;
-  multiply?: { market?: string; side?: string; leverage?: number; risk?: string; creator?: string | null };
+  multiply?: {
+    market?: string;
+    side?: string;
+    leverage?: number;
+    takeProfitPct?: number;
+    managed?: boolean;
+    /** coins launched before custom take-profits */
+    risk?: string;
+    creator?: string | null;
+  };
 };
 
 const metadataCache = new Map<string, Promise<Metadata | null>>();
@@ -139,7 +151,6 @@ function fetchMetadata(uri: string): Promise<Metadata | null> {
 }
 
 const SIDES = new Set(["long", "short"]);
-const RISKS = new Set(["safe", "balanced", "degen"]);
 
 let coinsCache: { at: number; coins: Coin[] } | null = null;
 const COINS_TTL_MS = 10_000;
@@ -172,7 +183,10 @@ export async function loadRouterCoins(): Promise<Coin[]> {
   );
   const logs = chunks.flat().filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic);
   // the engine event of each asset, emitted in the same transaction as its launch
-  const engines = new Map<string, { market: string; side: "long" | "short"; leverage: number; risk: Coin["riskProfile"] }>();
+  const engines = new Map<
+    string,
+    { market: string; side: "long" | "short"; leverage: number; takeProfitPct: number; managed: boolean; creator: string }
+  >();
   for (const l of logs) {
     if (l.topics[0] !== engineTopic) continue;
     const a = ROUTER_IFACE.parseLog(l).args;
@@ -180,7 +194,9 @@ export async function loadRouterCoins(): Promise<Coin[]> {
       market: String(a.market),
       side: Number(a.side) === 1 ? "short" : "long",
       leverage: Number(a.leverage),
-      risk: (["safe", "balanced", "degen"] as const)[Number(a.risk)],
+      takeProfitPct: Number(a.takeProfitPct),
+      managed: Boolean(a.managed),
+      creator: String(a.creator),
     });
   }
   const launches = logs.filter((l) => l.topics[0] === launchTopic).map((l) => ({ log: l, ev: ROUTER_IFACE.parseLog(l).args }));
@@ -195,7 +211,9 @@ export async function loadRouterCoins(): Promise<Coin[]> {
     // `sinkOf` reverts as a whole on the pre-upgrade router (no such selector): per-call
     // failure tolerance turns that into a null, and the hub is shown instead
     { target: LAUNCH_ROUTER, iface: ROUTER_IFACE, fn: "sinkOf", args: [ev.asset] },
-  ]).catch(() => launches.map(() => [null, null, null]));
+    // the engine as it stands now; null on a router without stored engines
+    { target: LAUNCH_ROUTER, iface: ROUTER_IFACE, fn: "engineOf", args: [ev.asset] },
+  ]).catch(() => launches.map(() => [null, null, null, null]));
   const metas = await Promise.all(launches.map(({ ev }) => fetchMetadata(String(ev.tokenURI))));
 
   const coins: Coin[] = launches.map(({ log, ev }, i) => {
@@ -205,7 +223,16 @@ export async function loadRouterCoins(): Promise<Coin[]> {
     const onChain = engines.get(String(ev.asset).toLowerCase());
     const eng = m?.multiply ?? {};
     const side = onChain?.side ?? (SIDES.has(String(eng.side)) ? (eng.side as "long" | "short") : "long");
-    const risk = onChain?.risk ?? (RISKS.has(String(eng.risk)) ? (eng.risk as Coin["riskProfile"]) : undefined);
+    // engineOf is the current engine; the launch event is the fallback, metadata the last resort
+    const now = names[i]?.[3]?.[0] as
+      | { creator: string; leverage: number; takeProfitPct: number; managed: boolean; pendingLeverage: number; pendingTakeProfitPct: number; pendingAt: ethers.BigNumber }
+      | undefined;
+    const live = now && !ethers.BigNumber.from(now.creator).isZero() ? now : undefined;
+    const takeProfitPct =
+      (live ? Number(live.takeProfitPct) : undefined) ??
+      onChain?.takeProfitPct ??
+      (Number(eng.takeProfitPct) || LEGACY_TP[String(eng.risk)] || 50);
+    const pendingAt = live ? Number(live.pendingAt) : 0;
     const sink: string | undefined = names[i]?.[2]?.[0];
     const feeDestination = sink && !ethers.BigNumber.from(sink).isZero() ? sink : LAUNCH_FEE_HUB;
     return {
@@ -221,11 +248,16 @@ export async function loadRouterCoins(): Promise<Coin[]> {
       openingMcapUsd: Number(ethers.utils.formatUnits(ev.mcap, PAIR_DECIMALS)),
       launcher: ev.launcher,
       subWallet: feeDestination,
-      creator: eng.creator && /^0x[0-9a-fA-F]{40}$/.test(eng.creator) ? eng.creator : ev.launcher,
+      creator: onChain?.creator ?? (eng.creator && /^0x[0-9a-fA-F]{40}$/.test(eng.creator) ? eng.creator : ev.launcher),
       market: onChain?.market ?? (String(eng.market ?? "").toUpperCase() || "?"),
       side,
-      leverage: onChain?.leverage ?? (Number(eng.leverage) || 0),
-      riskProfile: risk,
+      leverage: (live ? Number(live.leverage) : undefined) ?? onChain?.leverage ?? (Number(eng.leverage) || 0),
+      takeProfitPct,
+      managed: live ? Boolean(live.managed) : (onChain?.managed ?? false),
+      pendingEngine:
+        pendingAt > 0 && live
+          ? { leverage: Number(live.pendingLeverage), takeProfitPct: Number(live.pendingTakeProfitPct), effectiveAt: pendingAt }
+          : null,
       tokenURI: String(ev.tokenURI),
       image: m?.image,
       initialSupply: INITIAL_SUPPLY,

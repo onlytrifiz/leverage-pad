@@ -98,6 +98,18 @@ async def cmd_markets(p):
                         "min_base": md.get("min_base_amount"),
                         "min_quote": md.get("min_quote_amount"),
                         "status": md.get("status")}
+        # Max leverage per market: order_book_details carries min_initial_margin_fraction (basis
+        # points of 1e4, 200 = 50x). Best effort: if the call or a field fails, the markets still
+        # come back without `min_imf` and the keeper simply has no venue cap to check against.
+        try:
+            det = d(await lighter.OrderApi(c).order_book_details())
+            for ob in (det.get("order_book_details") or []):
+                obd = d(ob)
+                sym, imf = obd.get("symbol"), obd.get("min_initial_margin_fraction")
+                if sym in res and imf is not None and int(imf) > 0:
+                    res[sym]["min_imf"] = int(imf)
+        except Exception:
+            pass
         return {"ok": True, "markets": res}
     finally:
         await c.close()

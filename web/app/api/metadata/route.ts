@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { PinataSDK } from "pinata";
 import { ethers } from "ethers";
 import { sealSvg } from "@/lib/seal";
-import { NAME_MAX, SYMBOL_MAX } from "@/lib/doppler";
+import { NAME_MAX, SYMBOL_MAX, ROUTER_LEVERAGES, TP_MIN_PCT, TP_MAX_PCT } from "@/lib/doppler";
 import { metadataSignMessage, type EngineParams } from "@/lib/doppler";
 
 /**
@@ -26,8 +26,7 @@ export const runtime = "nodejs";
 
 const MAX = { name: NAME_MAX, symbol: SYMBOL_MAX, description: 280, link: 200 };
 const SIDES = new Set(["long", "short"]);
-const RISKS = new Set(["safe", "balanced", "degen"]);
-const LEVERAGES = new Set([2, 3, 5, 10, 20]);
+const LEVERAGES = new Set<number>(ROUTER_LEVERAGES);
 const SIGNATURE_MAX_AGE_S = 300;
 const RATE = { perCreator: 6, windowMs: 10 * 60_000 };
 /** best-effort limiter; per serverless instance, so a hard cap still belongs at the edge */
@@ -46,7 +45,7 @@ type Body = {
   symbol?: string;
   description?: string;
   creator?: string;
-  engine?: { market?: string; side?: string; leverage?: number; risk?: string };
+  engine?: { market?: string; side?: string; leverage?: number; takeProfitPct?: number; managed?: boolean };
   socials?: { x?: string; telegram?: string; website?: string };
   ts?: number;
   signature?: string;
@@ -78,9 +77,11 @@ export async function POST(req: Request) {
   const market = clean(e.market, 16).toUpperCase();
   const side = clean(e.side, 5);
   const leverage = Number(e.leverage);
-  const risk = clean(e.risk, 8);
+  const takeProfitPct = Number(e.takeProfitPct);
+  const managed = e.managed === true;
   if (!name || !symbol) return NextResponse.json({ error: "Name and ticker are required." }, { status: 400 });
-  if (!market || !SIDES.has(side) || !RISKS.has(risk) || !LEVERAGES.has(leverage)) {
+  const tpOk = Number.isInteger(takeProfitPct) && takeProfitPct >= TP_MIN_PCT && takeProfitPct <= TP_MAX_PCT;
+  if (!market || !SIDES.has(side) || !tpOk || !LEVERAGES.has(leverage)) {
     return NextResponse.json({ error: "Engine settings are incomplete." }, { status: 400 });
   }
   if (!/^0x[0-9a-fA-F]{40}$/.test(creator)) {
@@ -92,7 +93,7 @@ export async function POST(req: Request) {
   if (!Number.isInteger(ts) || Math.abs(nowS - ts) > SIGNATURE_MAX_AGE_S) {
     return NextResponse.json({ error: "Signature expired, try again." }, { status: 401 });
   }
-  const engine: EngineParams = { market, side: side as "long" | "short", leverage, risk: risk as EngineParams["risk"] };
+  const engine: EngineParams = { market, side: side as "long" | "short", leverage, takeProfitPct, managed };
   let signer = "";
   try {
     signer = ethers.utils.verifyMessage(metadataSignMessage({ name, symbol, creator, engine, ts }), String(body.signature ?? ""));
@@ -108,7 +109,7 @@ export async function POST(req: Request) {
 
   const pinata = new PinataSDK({ pinataJwt: jwt, pinataGateway: gateway });
   try {
-    const svg = sealSvg({ leverage, side: side as "long" | "short", risk, symbol });
+    const svg = sealSvg({ leverage, side: side as "long" | "short", takeProfitPct, symbol });
     const image = await pinata.upload.public
       .file(new File([svg], `${symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "coin"}-seal.svg`, { type: "image/svg+xml" }))
       .name(`${symbol} seal`);
@@ -124,7 +125,7 @@ export async function POST(req: Request) {
       x: httpsOnly(clean(body.socials?.x, MAX.link)),
       telegram: httpsOnly(clean(body.socials?.telegram, MAX.link)),
       website: httpsOnly(clean(body.socials?.website, MAX.link)),
-      multiply: { v: 1, market, side, leverage, risk, creator },
+      multiply: { v: 2, market, side, leverage, takeProfitPct, managed, creator },
     };
     const json = await pinata.upload.public.json(metadata).name(`${symbol} metadata`);
     return NextResponse.json({

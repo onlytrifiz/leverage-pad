@@ -1,21 +1,21 @@
 import { Guilloche } from "./Guilloche";
+import { sealReach } from "@/lib/seal";
 
 /**
  * A coin's seal.
  *
  * Every launch is an instrument, so every coin gets its own engraved rosette,
  * derived from the configuration that will never change after launch: leverage
- * sets the lobe count, the risk profile sets how far the lobes reach, and a
+ * sets the lobe count, the take-profit sets how far the lobes reach, and a
  * short position's seal turns anticlockwise. Two coins with the same setup share
  * a seal, which is correct - the seal describes the engine, not the ticker.
  */
 
-const RISK_REACH: Record<string, number> = { safe: 0.25, balanced: 0.55, degen: 0.95 };
 
 export function CoinSeal({
   leverage,
   side,
-  riskProfile,
+  takeProfitPct,
   size = 200,
   rings = 4,
   spin = 150,
@@ -23,7 +23,7 @@ export function CoinSeal({
 }: {
   leverage: number;
   side: "long" | "short";
-  riskProfile?: string | null;
+  takeProfitPct: number;
   size?: number;
   rings?: number;
   spin?: number;
@@ -32,7 +32,7 @@ export function CoinSeal({
   return (
     <Guilloche
       teeth={17 + leverage}
-      reach={RISK_REACH[riskProfile ?? "balanced"] ?? 0.55}
+      reach={sealReach(takeProfitPct)}
       direction={side === "short" ? -1 : 1}
       rings={rings}
       size={size}

@@ -7,7 +7,6 @@
  * the image pinned to IPFS is the seal people see on the site, frozen.
  */
 
-const RISK_REACH: Record<string, number> = { safe: 0.25, balanced: 0.55, degen: 0.95 };
 const BRAND = "#0f6b3f";
 const PAPER = "#f2f6f2";
 
@@ -23,17 +22,27 @@ function hypotrochoid(R: number, r: number, d: number, phase: number, steps: num
   return path + "Z";
 }
 
+/**
+ * How far a seal's lobes reach, from the coin's take-profit: on a log scale, so +20% / +50% /
+ * +100% land close to the shapes the old safe / balanced / degen profiles had, and anything past
+ * +150% reaches all the way.
+ */
+export function sealReach(takeProfitPct: number) {
+  const t = (Math.log(Math.max(10, takeProfitPct)) - Math.log(10)) / (Math.log(150) - Math.log(10));
+  return Math.max(0.15, Math.min(1, t));
+}
+
 export function sealSvg({
   leverage,
   side,
-  risk,
+  takeProfitPct,
   symbol,
   rings = 4,
   size = 512,
 }: {
   leverage: number;
   side: "long" | "short";
-  risk: string;
+  takeProfitPct: number;
   symbol: string;
   rings?: number;
   size?: number;
@@ -41,7 +50,7 @@ export function sealSvg({
   const R = 100;
   const teeth = Math.max(13, Math.min(47, Math.round(17 + leverage)));
   const r = R / teeth;
-  const d = r * (3.0 + Math.max(0, Math.min(1, RISK_REACH[risk] ?? 0.55)) * 1.1);
+  const d = r * (3.0 + sealReach(takeProfitPct) * 1.1);
   // a short's seal runs anticlockwise on the page; frozen, that is a mirrored rosette
   const flip = side === "short" ? "scale(-1,1)" : "";
   const outer = Array.from({ length: rings }, (_, i) => {

@@ -44,7 +44,7 @@ export default function PositionsSidebar() {
   return (
     <div className="rail">
       <RailHead title="Open perp positions" meta="Live" />
-      <div className="rail-body">
+      <div className="rail-body" data-lenis-prevent>
         {rows == null &&
           Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="flex flex-col gap-2 px-2 py-2.5">

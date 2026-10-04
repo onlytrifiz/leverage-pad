@@ -16,7 +16,7 @@ export default function MarketsSidebar() {
   return (
     <div className="rail">
       <RailHead title="Markets" meta="Lighter" />
-      <div className="rail-body">
+      <div className="rail-body" data-lenis-prevent>
         {!loaded &&
           Array.from({ length: 8 }).map((_, i) => (
             <div key={i} className="flex items-center justify-between gap-2 px-2 py-2">

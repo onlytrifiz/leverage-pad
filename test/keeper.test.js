@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const { ethers } = require('ethers');
 const {
   trancheTargetMark,
+  effectiveTrigger,
+  coinTrigger,
   markFromPosition,
   reconcileTranches,
   addTranche,
@@ -27,8 +29,10 @@ const {
 const near = (a, b, eps = 1e-6) =>
   assert.ok(Math.abs(a - b) <= eps, `atteso ~${b}, ottenuto ${a} (delta ${Math.abs(a - b)})`);
 
+const T0 = 1_700_000_000_000;
+const DAY = 86_400_000;
 const tr = (base, entryMark, collateralUsd = 0, sizeDec = 4) => ({
-  base, entryMark, collateralUsd, sizeDec, ts: 1_700_000_000_000,
+  base, entryMark, collateralUsd, sizeDec, ts: T0,
 });
 
 // ── trancheTargetMark ────────────────────────────────────────────────────────
@@ -162,6 +166,19 @@ test('addTranche: i fill-scheggia si fondono invece di creare tranche inchiudibi
     near(tranches[0].collateralUsd, 12.75);
   });
 
+  await t.test('a merged splinter keeps the leverage and (nearly) the age of the tranche it joins', () => {
+    const tranches = [{ ...tr(100, 50), leverage: 10, ts: T0 }];
+    addTranche(tranches, { ...tr(10, 55), leverage: 20, ts: T0 + 11 * DAY }, 100);
+    assert.equal(tranches[0].leverage, 10);
+    assert.equal(tranches[0].ts, T0 + DAY, 'base-weighted: the take-profit decay clock is not restarted');
+  });
+
+  await t.test('a new tranche carries its own leverage', () => {
+    const tranches = [{ ...tr(100, 50), leverage: 10 }];
+    addTranche(tranches, { ...tr(150, 60), leverage: 20 }, 100);
+    assert.equal(tranches[1].leverage, 20);
+  });
+
   // riproduzione dell'incidente TEST5: 594 + sei schegge = 621 @ 57.497
   await t.test('TEST5 — le sette tranche reali collassano in una sola, invariante intatta', () => {
     const tranches = [tr(594, 57.574)];
@@ -177,28 +194,99 @@ test('addTranche: i fill-scheggia si fondono invece di creare tranche inchiudibi
 // ── matureTranches ───────────────────────────────────────────────────────────
 test('matureTranches: matura solo chi ha raggiunto il proprio target', async (t) => {
   await t.test('long: separa chi e sopra il target', () => {
-    const { ready, keep } = matureTranches([tr(10, 100), tr(10, 200)], 130, 'long', 2, 0.5);
+    const { ready, keep } = matureTranches([tr(10, 100), tr(10, 200)], 130, 'long', 2, 0.5, T0);
     assert.equal(ready.length, 1); // target 125 raggiunto
     assert.equal(keep.length, 1);  // target 250 no
   });
 
   await t.test('short: matura scendendo', () => {
-    const { ready, keep } = matureTranches([tr(10, 100), tr(10, 50)], 70, 'short', 2, 0.5);
+    const { ready, keep } = matureTranches([tr(10, 100), tr(10, 50)], 70, 'short', 2, 0.5, T0);
     assert.equal(ready.length, 1); // target 75, mark 70 → maturo
     assert.equal(keep.length, 1);  // target 37.5 → no
   });
 
   await t.test('il target esatto conta come raggiunto (long e short)', () => {
-    assert.equal(matureTranches([tr(10, 100)], 125, 'long', 2, 0.5).ready.length, 1);
-    assert.equal(matureTranches([tr(10, 100)], 75, 'short', 2, 0.5).ready.length, 1);
+    assert.equal(matureTranches([tr(10, 100)], 125, 'long', 2, 0.5, T0).ready.length, 1);
+    assert.equal(matureTranches([tr(10, 100)], 75, 'short', 2, 0.5, T0).ready.length, 1);
   });
 
   await t.test('una tranche nuova non matura per il progresso di una vecchia', () => {
     // e' il punto del design a tranche: niente diluizione, ognuna corre dalla SUA entry
-    const { ready, keep } = matureTranches([tr(10, 100), tr(10, 129)], 130, 'long', 2, 0.5);
+    const { ready, keep } = matureTranches([tr(10, 100), tr(10, 129)], 130, 'long', 2, 0.5, T0);
     assert.equal(ready.length, 1);
     assert.equal(keep[0].entryMark, 129);
   });
+});
+
+test('matureTranches: per-tranche leverage and take-profit decay', async (t) => {
+  await t.test('each tranche runs at its own leverage; the argument is only the fallback', () => {
+    // +50% at 10x needs +5%, at 2x +25%: at mark 106 only the 10x tranche is there
+    const ten = { ...tr(10, 100), leverage: 10 };
+    const legacy = tr(10, 100);
+    const { ready, keep } = matureTranches([ten, legacy], 106, 'long', 2, 0.5, T0);
+    assert.deepEqual(ready, [ten]);
+    assert.deepEqual(keep, [legacy]);
+    assert.equal(matureTranches([legacy], 106, 'long', 10, 0.5, T0).ready.length, 1, 'fallback leverage used when the tranche has none');
+  });
+
+  await t.test('an old tranche matures at a lower move than a fresh one', () => {
+    const fresh = { ...tr(10, 100), ts: T0, leverage: 2 };
+    const old = { ...tr(10, 100), ts: T0 - 40 * DAY, leverage: 2 };
+    // +100% at 2x: fresh needs +50% (mark 150); the 40-day-old one sits at the +10% floor (mark 105)
+    const { ready, keep } = matureTranches([fresh, old], 110, 'long', 2, 1.0, T0);
+    assert.deepEqual(ready, [old]);
+    assert.deepEqual(keep, [fresh]);
+    assert.equal(matureTranches([fresh], 110, 'long', 2, 1.0, T0 + 40 * DAY).ready.length, 1, 'the same tranche, 40 days later');
+  });
+
+  await t.test('short side decays the same way', () => {
+    const old = { ...tr(10, 100), ts: T0 - 30 * DAY, leverage: 5 };
+    // +200% at 5x would need -40%; at the floor (+10%) it needs -2%
+    assert.equal(matureTranches([old], 97.9, 'short', 5, 2.0, T0).ready.length, 1);
+    assert.equal(matureTranches([old], 98.1, 'short', 5, 2.0, T0).ready.length, 0);
+  });
+
+  await t.test('a tranche without a timestamp is treated as fresh', () => {
+    const noTs = { base: 10, entryMark: 100, leverage: 2 };
+    assert.equal(matureTranches([noTs], 110, 'long', 2, 1.0, T0).ready.length, 0);
+  });
+});
+
+test('effectiveTrigger: flat, then linear down to the floor, then flat', async (t) => {
+  const cfg = { TP_DECAY_START_DAYS: 7, TP_DECAY_END_DAYS: 30, TP_DECAY_FLOOR_PCT: 10 };
+  await t.test('before the start: unchanged', () => {
+    near(effectiveTrigger(2.0, 0, cfg), 2.0);
+    near(effectiveTrigger(2.0, 7 * DAY, cfg), 2.0);
+  });
+  await t.test('mid-decay: linear between start and end', () => {
+    near(effectiveTrigger(2.0, 18.5 * DAY, cfg), 2.0 - (2.0 - 0.1) * 0.5);
+    near(effectiveTrigger(0.5, 7 * DAY + 23 * DAY / 4, cfg), 0.5 - 0.4 * 0.25);
+  });
+  await t.test('after the end: the floor', () => {
+    near(effectiveTrigger(2.0, 30 * DAY, cfg), 0.1);
+    near(effectiveTrigger(2.0, 365 * DAY, cfg), 0.1);
+  });
+  await t.test('a trigger at or below the floor never moves', () => {
+    near(effectiveTrigger(0.1, 100 * DAY, cfg), 0.1);
+    near(effectiveTrigger(0.08, 100 * DAY, { ...cfg, TP_DECAY_FLOOR_PCT: 10 }), 0.08);
+  });
+  await t.test('negative or missing age: unchanged', () => {
+    near(effectiveTrigger(1.0, -5 * DAY, cfg), 1.0);
+    near(effectiveTrigger(1.0, NaN, cfg), 1.0);
+  });
+  await t.test('defaults come from config (7 → 30 days, floor 10%)', () => {
+    near(effectiveTrigger(1.0, 6 * DAY), 1.0);
+    near(effectiveTrigger(1.0, 31 * DAY), 0.1);
+  });
+});
+
+test('coinTrigger: the on-chain percent, or the legacy profile of an old record', () => {
+  near(coinTrigger({ takeProfitPct: 250 }), 2.5);
+  near(coinTrigger({ riskProfile: 'safe' }), 0.2);
+  near(coinTrigger({ riskProfile: 'balanced' }), 0.5);
+  near(coinTrigger({ riskProfile: 'degen' }), 1.0);
+  near(coinTrigger({}), 0.5);
+  near(coinTrigger({ takeProfitPct: 30, riskProfile: 'degen' }), 0.3, 1e-9);
 });
 
 // ── removeClosedBase ─────────────────────────────────────────────────────────
@@ -375,18 +463,43 @@ const { validateLaunchParams, LaunchParamError } = require('../lib/launchParams'
 test('validateLaunchParams: nulla di non validato arriva a un deploy', async (t) => {
   const ok = {
     name: 'My Coin', symbol: 'mycoin', market: 'nvda', side: 'LONG',
-    leverage: 3, riskProfile: 'Degen',
+    leverage: 3, takeProfitPct: 100,
     creator: '0x23bf247b662efadf114642a65dbbb0cb7d0ebac0',
   };
 
-  await t.test('normalizza mercato, lato, profilo e checksum; nome e ticker restano come digitati', () => {
+  await t.test('normalizza mercato, lato, take-profit e checksum; nome e ticker restano come digitati', () => {
     const p = validateLaunchParams(ok);
     assert.equal(p.symbol, 'mycoin');
     assert.equal(p.name, 'My Coin');
     assert.equal(p.market, 'NVDA');
     assert.equal(p.side, 'long');
-    assert.equal(p.riskProfile, 'degen');
+    assert.equal(p.takeProfitPct, 100);
+    assert.equal(p.managed, false, 'managed defaults to false');
+    assert.equal(p.riskProfile, undefined);
     assert.equal(p.creator, '0x23Bf247B662EFADf114642A65DbbB0CB7D0EBAc0');
+  });
+
+  await t.test('the new leverage stops 25x and 50x are accepted', () => {
+    assert.equal(validateLaunchParams({ ...ok, leverage: 25 }).leverage, 25);
+    assert.equal(validateLaunchParams({ ...ok, leverage: 50 }).leverage, 50);
+  });
+
+  await t.test('take-profit bounds are inclusive, a numeric string is accepted', () => {
+    assert.equal(validateLaunchParams({ ...ok, takeProfitPct: 10 }).takeProfitPct, 10);
+    assert.equal(validateLaunchParams({ ...ok, takeProfitPct: 500 }).takeProfitPct, 500);
+    assert.equal(validateLaunchParams({ ...ok, takeProfitPct: '75' }).takeProfitPct, 75);
+  });
+
+  await t.test('managed is carried', () => {
+    assert.equal(validateLaunchParams({ ...ok, managed: true }).managed, true);
+  });
+
+  await t.test('a legacy risk profile is mapped when no take-profit is given', () => {
+    const { takeProfitPct, ...legacy } = ok;
+    assert.equal(validateLaunchParams({ ...legacy, riskProfile: 'Safe' }).takeProfitPct, 20);
+    assert.equal(validateLaunchParams({ ...legacy, risk: 'balanced' }).takeProfitPct, 50);
+    assert.equal(validateLaunchParams({ ...legacy, riskProfile: 'degen' }).takeProfitPct, 100);
+    assert.equal(validateLaunchParams({ ...ok, riskProfile: 'safe' }).takeProfitPct, 100, 'an explicit take-profit wins');
   });
 
   const rifiutati = [
@@ -398,7 +511,14 @@ test('validateLaunchParams: nulla di non validato arriva a un deploy', async (t)
     ['direzione inventata', { side: 'pippo' }],
     ['leva fuori scala', { leverage: 999 }],
     ['leva non ammessa', { leverage: 4 }],
-    ['profilo inesistente', { riskProfile: 'yolo' }],
+    ['leva 7x (not a stop)', { leverage: 7 }],
+    ['take-profit 9 (below the minimum)', { takeProfitPct: 9 }],
+    ['take-profit 501 (above the maximum)', { takeProfitPct: 501 }],
+    ['take-profit not an integer', { takeProfitPct: 50.5 }],
+    ['take-profit not a number', { takeProfitPct: 'lots' }],
+    ['no take-profit and an unknown profile', { takeProfitPct: undefined, riskProfile: 'yolo' }],
+    ['no take-profit at all', { takeProfitPct: undefined }],
+    ['managed not a boolean', { managed: 'yes' }],
     ['creator non indirizzo', { creator: 'non-un-indirizzo' }],
     ['creator a zero', { creator: '0x0000000000000000000000000000000000000000' }],
     ['mercato con spazi', { market: 'NV DA' }],
@@ -436,4 +556,52 @@ test('isFeeInflow: fees come from the pool on V3 and from the sink on v4, never 
   await t.test('v4 coin without a sink yet: nothing is a fee inflow (everything counts as bridge credit, as for an unknown source)', () => {
     assert.equal(isFeeInflow({ venue: 'v4', sink: null }, '0x1111111111111111111111111111111111111111'), false);
   });
+});
+
+// ── Lighter market caps: the venue's max leverage from the margin fraction ──
+test('lighter market(): maxLeverage from min_initial_margin_fraction', async (t) => {
+  const { parseMarket, maxLeverageFromImf } = require('../lighter/client');
+  await t.test('live reference values (orderBookDetails, 2026-10-05)', () => {
+    for (const [imf, lev] of [[200, 50], [400, 25], [500, 20], [2000, 5], [3333, 3], [1000, 10]]) {
+      assert.equal(maxLeverageFromImf(imf), lev, `imf ${imf}`);
+    }
+  });
+  await t.test('missing or zero: no cap known (null), never 0 or Infinity', () => {
+    assert.equal(maxLeverageFromImf(undefined), null);
+    assert.equal(maxLeverageFromImf(0), null);
+    assert.equal(maxLeverageFromImf('n/a'), null);
+  });
+  await t.test('parseMarket carries it next to the existing fields', () => {
+    const m = parseMarket('NVDA', { index: 15, size_dec: 3, price_dec: 2, status: 'active', min_base: '0.010', min_quote: '10', min_imf: 500 });
+    assert.equal(m.maxLeverage, 20);
+    assert.equal(m.minBaseUnits, 10);
+    assert.equal(m.minQuoteUsd, 10);
+    assert.equal(parseMarket('NVDA/USDG', { index: 2054, size_dec: 3, price_dec: 2 }).maxLeverage, null);
+    assert.throws(() => parseMarket('NOPE', undefined), /NOPE/);
+  });
+});
+
+// ── public snapshot: whitelist, never a secret ───────────────────────────────
+test('publicSnapshot: exposes the engine as the venue runs it, never the API key', () => {
+  const { publicSnapshot } = require('../lib/publish');
+  const token = '0x3335f28a0dc28808849ed1025695f1f6ee2ef5d2';
+  const reg = {
+    coins: [{ token, leverage: 50, takeProfitPct: 200, managed: true, pendingEngine: { leverage: 20, takeProfitPct: 100, effectiveAt: 1 } }],
+    state: { [token]: {
+      lighterApiPrivKey: 'enc:secret', lighterApiKeyIndex: 4, perpWithdrawIntentUsd: 3, lighterLeverageRejected: 50,
+      lighterLeverage: 20, engineBlocked: "50x is above NVDA's 20x cap on Lighter",
+      perpTranches: [{ base: 10, entryMark: 1, leverage: 20, ts: 1 }],
+    } },
+  };
+  const snap = publicSnapshot(reg);
+  const st = snap.state[token];
+  assert.equal(st.lighterLeverage, 20);
+  assert.match(st.engineBlocked, /cap on Lighter/);
+  assert.equal(st.perpTranches[0].leverage, 20);
+  for (const k of ['lighterApiPrivKey', 'lighterApiKeyIndex', 'perpWithdrawIntentUsd', 'lighterLeverageRejected']) {
+    assert.equal(k in st, false, k + ' must not be public');
+  }
+  assert.doesNotMatch(JSON.stringify(snap), /enc:secret/);
+  const c = snap.coins[0];
+  assert.deepEqual([c.takeProfitPct, c.managed, c.pendingEngine.leverage], [200, true, 20]);
 });

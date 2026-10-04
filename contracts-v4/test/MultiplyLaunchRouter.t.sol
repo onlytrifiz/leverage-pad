@@ -164,6 +164,8 @@ contract MultiplyLaunchRouterFork is Test {
             )
         );
         router = MultiplyLaunchRouter(address(new ERC1967Proxy(address(impl), init)));
+        vm.prank(owner);
+        router.setEngineConfig(_engineConfig());
         swapper = new Swapper(POOL_MANAGER);
         vm.deal(launcher, 1 ether);
         // fund the trader with real USDG from the deployer
@@ -200,9 +202,21 @@ contract MultiplyLaunchRouterFork is Test {
             market: "NVDA",
             side: 0,
             leverage: 3,
-            risk: 1
+            takeProfitPct: 50,
+            managed: false
         });
     }
+
+    /// The engine bounds the upgrade sets: leverage 2,3,5,10,20,25,50, take-profit +10..+500%, 12 h notice.
+    function _engineConfig() internal pure returns (MultiplyLaunchRouter.EngineConfig memory) {
+        return MultiplyLaunchRouter.EngineConfig({
+            leverageMask: uint64((1 << 2) | (1 << 3) | (1 << 5) | (1 << 10) | (1 << 20) | (1 << 25) | (1 << 50)),
+            minTakeProfitPct: 10,
+            maxTakeProfitPct: 500,
+            managedDelay: 12 hours
+        });
+    }
+
 
     function test_tickForMcap_matchesOffchainPlan() public view {
         (int24 tick, int24 maxTick) = router.tickForMcap(4_000e6);
@@ -407,28 +421,42 @@ contract MultiplyLaunchRouterFork is Test {
         assertEq(IERC20(USDG).balanceOf(address(router)), 0, "router holds nothing");
     }
 
-    /// The engine is on-chain: validated in the keeper's ranges and emitted for it to read.
-    function test_engine_validatedAndEmitted() public {
+    /// The engine is on-chain: validated against the owner's bounds, stored and emitted.
+    function test_engine_validatedStoredAndEmitted() public {
         MultiplyLaunchRouter.LaunchInput memory i = _input("Engine", "ENG", 30_000, false, 0, 0, keccak256("eng"));
-        i.market = "TSLA";
+        i.market = "BTC";
         i.side = 1;
-        i.leverage = 5;
-        i.risk = 2;
-        vm.expectEmit(false, false, false, true, address(router));
-        emit MultiplyLaunchRouter.MultiplyEngine(address(0), "TSLA", 1, 5, 2);
+        i.leverage = 50;
+        i.takeProfitPct = 300;
+        i.managed = true;
+        vm.expectEmit(false, true, false, true, address(router));
+        emit MultiplyLaunchRouter.MultiplyEngine(address(0), "BTC", 1, 50, 300, true, launcher);
         vm.prank(launcher);
-        router.launch(i);
+        (address asset,,) = router.launch(i);
 
-        assertTrue(router.validEngine("BTC", 0, 2, 0));
-        assertTrue(router.validEngine("0G", 1, 20, 1));
-        assertFalse(router.validEngine("nvda", 0, 3, 1), "lowercase");
-        assertFalse(router.validEngine("NVDA/USDG", 0, 3, 1), "punctuation");
-        assertFalse(router.validEngine("X", 0, 3, 1), "too short");
-        assertFalse(router.validEngine("ABCDEFGHIJKLM", 0, 3, 1), "too long");
-        assertFalse(router.validEngine("NVDA", 2, 3, 1), "side");
-        assertFalse(router.validEngine("NVDA", 0, 7, 1), "leverage not in the set");
-        assertFalse(router.validEngine("NVDA", 0, 0, 1), "leverage zero");
-        assertFalse(router.validEngine("NVDA", 0, 3, 3), "risk");
+        MultiplyLaunchRouter.Engine memory e = router.engineOf(asset);
+        assertEq(e.market, "BTC");
+        assertEq(e.side, 1);
+        assertEq(e.leverage, 50);
+        assertEq(e.takeProfitPct, 300);
+        assertTrue(e.managed);
+        assertEq(e.creator, launcher);
+        assertEq(e.pendingAt, 0);
+        assertEq(router.engineOf(address(0xBEEF)).creator, address(0), "unknown coin");
+
+        assertTrue(router.validEngine("BTC", 0, 2, 10));
+        assertTrue(router.validEngine("0G", 1, 25, 500));
+        assertTrue(router.validEngine("ETH", 0, 50, 100));
+        assertFalse(router.validEngine("nvda", 0, 3, 50), "lowercase");
+        assertFalse(router.validEngine("NVDA/USDG", 0, 3, 50), "punctuation");
+        assertFalse(router.validEngine("X", 0, 3, 50), "too short");
+        assertFalse(router.validEngine("ABCDEFGHIJKLM", 0, 3, 50), "too long");
+        assertFalse(router.validEngine("NVDA", 2, 3, 50), "side");
+        assertFalse(router.validEngine("NVDA", 0, 7, 50), "leverage not in the set");
+        assertFalse(router.validEngine("NVDA", 0, 0, 50), "leverage zero");
+        assertFalse(router.validEngine("NVDA", 0, 100, 50), "leverage beyond the mask");
+        assertFalse(router.validEngine("NVDA", 0, 3, 9), "take-profit below the floor");
+        assertFalse(router.validEngine("NVDA", 0, 3, 501), "take-profit above the ceiling");
 
         vm.startPrank(launcher);
         i.salt = keccak256("eng2");
@@ -436,10 +464,146 @@ contract MultiplyLaunchRouterFork is Test {
         vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
         router.launch(i);
         i.leverage = 3;
-        i.market = "nvda";
+        i.takeProfitPct = 1000;
         vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
         router.launch(i);
         vm.stopPrank();
+    }
+
+    /// A managed coin: the creator proposes, the change waits out the delay, the owner can
+    /// cancel or override at any time; everyone else is refused.
+    function test_managed_propose_delay_cancel_override() public {
+        MultiplyLaunchRouter.LaunchInput memory i = _input("Managed", "MGD", 30_000, false, 0, 0, keccak256("mgd"));
+        i.managed = true;
+        vm.prank(launcher);
+        (address asset,,) = router.launch(i);
+
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NotCreator.selector, asset));
+        router.proposeEngine(asset, 10, 200);
+
+        vm.prank(launcher);
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
+        router.proposeEngine(asset, 7, 200);
+
+        uint64 at = uint64(block.timestamp + 12 hours);
+        vm.expectEmit(true, false, false, true, address(router));
+        emit MultiplyLaunchRouter.EngineProposed(asset, 10, 200, at);
+        vm.prank(launcher);
+        router.proposeEngine(asset, 10, 200);
+
+        MultiplyLaunchRouter.Engine memory e = router.engineOf(asset);
+        assertEq(e.leverage, 3, "unchanged during the notice");
+        assertEq(e.takeProfitPct, 50);
+        assertEq(e.pendingLeverage, 10);
+        assertEq(e.pendingTakeProfitPct, 200);
+        assertEq(e.pendingAt, at);
+
+        vm.warp(at - 1);
+        assertEq(router.engineOf(asset).leverage, 3, "one second early");
+        vm.warp(at);
+        e = router.engineOf(asset);
+        assertEq(e.leverage, 10, "in effect at the announced time");
+        assertEq(e.takeProfitPct, 200);
+        assertEq(e.pendingAt, 0);
+
+        // too late to cancel what is already in effect
+        vm.prank(launcher);
+        vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NothingPending.selector, asset));
+        router.cancelEngineProposal(asset);
+
+        // a new proposal settles the due one first, then the owner withdraws it
+        vm.prank(launcher);
+        router.proposeEngine(asset, 20, 500);
+        e = router.engineOf(asset);
+        assertEq(e.leverage, 10);
+        assertEq(e.pendingLeverage, 20);
+        vm.prank(trader);
+        vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NotCreator.selector, asset));
+        router.cancelEngineProposal(asset);
+        vm.prank(owner);
+        router.cancelEngineProposal(asset);
+        e = router.engineOf(asset);
+        assertEq(e.leverage, 10);
+        assertEq(e.pendingAt, 0);
+
+        // the owner overrides immediately and drops anything pending
+        vm.prank(launcher);
+        router.proposeEngine(asset, 25, 400);
+        vm.prank(trader);
+        vm.expectRevert();
+        router.overrideEngine(asset, 2, 20);
+        vm.expectEmit(true, true, false, true, address(router));
+        emit MultiplyLaunchRouter.EngineOverridden(asset, 2, 20, owner);
+        vm.prank(owner);
+        router.overrideEngine(asset, 2, 20);
+        e = router.engineOf(asset);
+        assertEq(e.leverage, 2);
+        assertEq(e.takeProfitPct, 20);
+        assertEq(e.pendingAt, 0, "override drops the proposal");
+        vm.warp(block.timestamp + 13 hours);
+        assertEq(router.engineOf(asset).leverage, 2, "the dropped proposal never lands");
+
+        // market and side are not part of any change
+        assertEq(router.engineOf(asset).market, "NVDA");
+        assertEq(router.engineOf(asset).side, 0);
+    }
+
+    /// Without the flag the creator has no say; only the owner's override remains.
+    function test_unmanaged_onlyOwnerOverrides() public {
+        vm.prank(launcher);
+        (address asset,,) = router.launch(_input("Fixed", "FIX", 30_000, false, 0, 0, keccak256("fix")));
+        vm.prank(launcher);
+        vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NotManaged.selector, asset));
+        router.proposeEngine(asset, 10, 100);
+        vm.prank(owner);
+        router.overrideEngine(asset, 2, 100);
+        assertEq(router.engineOf(asset).leverage, 2);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.UnknownCoin.selector, address(0xBEEF)));
+        router.overrideEngine(address(0xBEEF), 2, 100);
+    }
+
+    function test_engineConfig_onlyOwner_validation_and_pause() public {
+        MultiplyLaunchRouter.EngineConfig memory c = _engineConfig();
+        vm.prank(launcher);
+        vm.expectRevert();
+        router.setEngineConfig(c);
+
+        vm.startPrank(owner);
+        c.leverageMask = 0;
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngineConfig.selector);
+        router.setEngineConfig(c);
+        c = _engineConfig();
+        c.leverageMask |= 1 << 1; // 1x
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngineConfig.selector);
+        router.setEngineConfig(c);
+        c = _engineConfig();
+        c.minTakeProfitPct = 600; // above max
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngineConfig.selector);
+        router.setEngineConfig(c);
+        c = _engineConfig();
+        c.maxTakeProfitPct = 10_001;
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngineConfig.selector);
+        router.setEngineConfig(c);
+        c = _engineConfig();
+        c.managedDelay = 31 days;
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngineConfig.selector);
+        router.setEngineConfig(c);
+        vm.stopPrank();
+
+        MultiplyLaunchRouter.LaunchInput memory i = _input("Paused", "PSD", 30_000, false, 0, 0, keccak256("psd"));
+        i.managed = true;
+        vm.prank(launcher);
+        (address asset,,) = router.launch(i);
+        vm.prank(owner);
+        router.pause();
+        vm.prank(launcher);
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        router.proposeEngine(asset, 10, 100);
+        vm.prank(owner);
+        router.overrideEngine(asset, 10, 100); // the escape hatch works while paused
+        assertEq(router.engineOf(asset).leverage, 10);
     }
 
     function test_feeBounds_and_pause() public {

@@ -61,8 +61,47 @@ export type EngineParams = {
   market: string;
   side: "long" | "short";
   leverage: number;
-  risk: "safe" | "balanced" | "degen";
+  /** each deposit banks at +takeProfitPct% on its collateral */
+  takeProfitPct: number;
+  /** the creator may retune leverage and take-profit later, after the router's notice */
+  managed: boolean;
 };
+
+/*
+ * The engine's bounds, as the router's EngineConfig and the keeper's config set them. Kept here
+ * in one place for the launch form, the coin page and the docs; the router is the authority and
+ * rejects anything outside them.
+ */
+export const ROUTER_LEVERAGES = [2, 3, 5, 10, 20, 25, 50] as const;
+export const TP_MIN_PCT = 10;
+export const TP_MAX_PCT = 500;
+/** shortcuts on the take-profit slider: the three profiles every coin used to pick from */
+export const TP_PRESETS = [
+  { pct: 20, label: "safe" },
+  { pct: 50, label: "balanced" },
+  { pct: 100, label: "degen" },
+  { pct: 300, label: "moon" },
+] as const;
+/** a managed coin's change waits this long before it applies */
+export const MANAGED_DELAY_HOURS = 12;
+/** the keeper's take-profit decay: from this day a deposit's target falls, reaching the floor at the end */
+export const TP_DECAY = { startDays: 7, endDays: 30, floorPct: 10 } as const;
+
+/**
+ * A deposit's take-profit after `ageDays`: unchanged for the first `startDays`, then falling in
+ * a straight line to the floor at `endDays`. A target already at or below the floor never moves.
+ * Mirrors `effectiveTrigger` in the keeper.
+ */
+export function decayedTakeProfitPct(takeProfitPct: number, ageDays: number) {
+  const floor = Math.min(takeProfitPct, TP_DECAY.floorPct);
+  if (ageDays <= TP_DECAY.startDays) return takeProfitPct;
+  if (ageDays >= TP_DECAY.endDays) return floor;
+  const t = (ageDays - TP_DECAY.startDays) / (TP_DECAY.endDays - TP_DECAY.startDays);
+  return takeProfitPct - (takeProfitPct - floor) * t;
+}
+
+/** coins launched before custom take-profits carried a named profile */
+export const LEGACY_TP: Record<string, number> = { safe: 20, balanced: 50, degen: 100 };
 
 export type LaunchConfig = {
   name: string;
@@ -246,7 +285,7 @@ export function metadataSignMessage(input: { name: string; symbol: string; creat
     "multiply.cash metadata",
     `name: ${input.name}`,
     `symbol: ${input.symbol}`,
-    `engine: ${e.market} ${e.side} ${e.leverage}x ${e.risk}`,
+    `engine: ${e.market} ${e.side} ${e.leverage}x +${e.takeProfitPct}%${e.managed ? " managed" : ""}`,
     `creator: ${input.creator.toLowerCase()}`,
     `ts: ${input.ts}`,
   ].join("\n");
@@ -261,9 +300,8 @@ export function metadataSignMessage(input: { name: string; symbol: string; creat
 export const NAME_MAX = 64;
 export const SYMBOL_MAX = 16;
 
-/** The router's enums for the engine, in the order the contract declares them. */
+/** The router's side enum, in the order the contract declares it. */
 export const ENGINE_SIDES = ["long", "short"] as const;
-export const ENGINE_RISKS = ["safe", "balanced", "degen"] as const;
 
 export type RouterInput = {
   name: string;
@@ -278,17 +316,29 @@ export type RouterInput = {
   market: string;
   side: number; // index into ENGINE_SIDES
   leverage: number;
-  risk: number; // index into ENGINE_RISKS
+  takeProfitPct: number;
+  managed: boolean;
 };
 
-export function routerEngine(e: EngineParams): Pick<RouterInput, "market" | "side" | "leverage" | "risk"> {
-  return { market: e.market.toUpperCase(), side: ENGINE_SIDES.indexOf(e.side), leverage: e.leverage, risk: ENGINE_RISKS.indexOf(e.risk) };
+export function routerEngine(e: EngineParams): Pick<RouterInput, "market" | "side" | "leverage" | "takeProfitPct" | "managed"> {
+  return {
+    market: e.market.toUpperCase(),
+    side: ENGINE_SIDES.indexOf(e.side),
+    leverage: e.leverage,
+    takeProfitPct: Math.round(e.takeProfitPct),
+    managed: e.managed,
+  };
 }
 
 export const ROUTER_IFACE = new ethers.utils.Interface([
-  "function launch((string name,string symbol,string tokenURI,uint24 fee,bool antiSnipe,uint256 mcap,uint128 firstBuy,bytes32 salt,string market,uint8 side,uint8 leverage,uint8 risk) input) returns (address asset,bytes32 poolId,uint128 firstBuyOut)",
-  "function validEngine(string market,uint8 side,uint8 leverage,uint8 risk) pure returns (bool)",
-  "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint8 risk)",
+  "function launch((string name,string symbol,string tokenURI,uint24 fee,bool antiSnipe,uint256 mcap,uint128 firstBuy,bytes32 salt,string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed) input) returns (address asset,bytes32 poolId,uint128 firstBuyOut)",
+  "function validEngine(string market,uint8 side,uint8 leverage,uint16 takeProfitPct) view returns (bool)",
+  "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint16 takeProfitPct, bool managed, address indexed creator)",
+  // stored engines (router upgrade of 2026-10-05): the current values, and a managed coin's announced change
+  "function engineOf(address asset) view returns ((string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed,address creator,uint8 pendingLeverage,uint16 pendingTakeProfitPct,uint64 pendingAt))",
+  "function engineConfig() view returns ((uint64 leverageMask,uint16 minTakeProfitPct,uint16 maxTakeProfitPct,uint32 managedDelay))",
+  "function proposeEngine(address asset,uint8 leverage,uint16 takeProfitPct)",
+  "function cancelEngineProposal(address asset)",
   "function saltFor(address launcher,bytes32 salt) pure returns (bytes32)",
   "function policy() view returns ((address numeraire,address feeHub,uint256 protocolShareWad,uint256 supply,uint256 defaultMcap,uint256 minMcap,uint256 maxMcap,uint24 minFee,uint24 maxFee,int24 tickSpacing,uint24 snipeStartFee,uint32 snipeSeconds))",
   // per-coin fee sinks (router upgrade of 2026-09-15); absent on the pre-upgrade implementation

@@ -50,6 +50,8 @@ contract MultiplyFeeSinkFork is Test {
         sinkImpl = new MultiplyFeeSink(address(router));
         vm.prank(owner);
         router.setSinkConfig(_config(address(sinkImpl)));
+        vm.prank(owner);
+        router.setEngineConfig(_engineConfig());
         swapper = new Swapper(POOL_MANAGER);
         vm.deal(launcher, 1 ether);
         vm.prank(DEPLOYER);
@@ -118,9 +120,21 @@ contract MultiplyFeeSinkFork is Test {
             market: "NVDA",
             side: 0,
             leverage: 3,
-            risk: 1
+            takeProfitPct: 50,
+            managed: false
         });
     }
+
+    /// The engine bounds the upgrade sets: leverage 2,3,5,10,20,25,50, take-profit +10..+500%, 12 h notice.
+    function _engineConfig() internal pure returns (MultiplyLaunchRouter.EngineConfig memory) {
+        return MultiplyLaunchRouter.EngineConfig({
+            leverageMask: uint64((1 << 2) | (1 << 3) | (1 << 5) | (1 << 10) | (1 << 20) | (1 << 25) | (1 << 50)),
+            minTakeProfitPct: 10,
+            maxTakeProfitPct: 500,
+            managedDelay: 12 hours
+        });
+    }
+
 
     function _launch(MultiplyLaunchRouter r, string memory sym, bytes32 salt)
         internal
@@ -358,6 +372,9 @@ contract MultiplyFeeSinkFork is Test {
 
     function test_firstBuy_throughBundler_sinkBoundAfterwards() public {
         uint128 buy = 3e6;
+        // the deployer's live balance moves with real use; setUp already handed most of it to the trader
+        vm.prank(trader);
+        IERC20(USDG).transfer(DEPLOYER, buy);
         bytes32 salt = keccak256("sink-six");
         address predicted = router.predictSink(DEPLOYER, salt);
         vm.startPrank(DEPLOYER);
@@ -377,6 +394,8 @@ contract MultiplyFeeSinkFork is Test {
 
     function test_withoutSinkConfig_feesGoToPolicyHub() public {
         MultiplyLaunchRouter bare = _freshRouter(); // no setSinkConfig
+        vm.prank(owner);
+        bare.setEngineConfig(_engineConfig());
         assertEq(bare.predictSink(launcher, keccak256("x")), address(0));
         vm.prank(launcher);
         (address asset, bytes32 poolId,) = bare.launch(_input("Hub Only", "HUBO", 30_000, 0, keccak256("hub-only")));
@@ -440,44 +459,55 @@ contract MultiplyFeeSinkFork is Test {
         assertEq(IERC20(USDG).balanceOf(treasury), 0);
     }
 
-    /// The real thing: upgrade the proxy live on Robinhood Chain (pranked as its owner), enable
-    /// sinks in the same call, and launch through it.
-    function test_liveProxy_upgradeToAndCall_enablesSinks() public {
+    /// The real thing: upgrade the proxy live on Robinhood Chain (pranked as its owner) to the
+    /// engine implementation, setting the engine bounds in the same call, then launch through it.
+    /// Its sink config (set by the previous upgrade) must survive untouched.
+    function test_liveProxy_upgradeToAndCall_enginesKeepSinks() public {
         MultiplyLaunchRouter live = MultiplyLaunchRouter(LIVE_ROUTER);
         address liveOwner = live.owner();
         MultiplyLaunchRouter.Policy memory before = live.policy();
         MultiplyLaunchRouter.Modules memory modulesBefore = live.modules();
+        MultiplyLaunchRouter.SinkConfig memory sinkBefore = live.sinkConfig();
+        assertTrue(sinkBefore.implementation != address(0), "the live proxy already has sinks");
 
-        MultiplyFeeSink liveSinkImpl = new MultiplyFeeSink(LIVE_ROUTER);
         MultiplyLaunchRouter newImpl = new MultiplyLaunchRouter();
-        MultiplyLaunchRouter.SinkConfig memory c = MultiplyLaunchRouter.SinkConfig({
-            implementation: address(liveSinkImpl),
-            keeper: keeper,
-            treasury: treasury,
-            treasuryBps: TREASURY_BPS
-        });
         vm.prank(liveOwner);
-        IUUPS(LIVE_ROUTER).upgradeToAndCall(address(newImpl), abi.encodeCall(MultiplyLaunchRouter.setSinkConfig, (c)));
+        IUUPS(LIVE_ROUTER).upgradeToAndCall(address(newImpl), abi.encodeCall(MultiplyLaunchRouter.setEngineConfig, (_engineConfig())));
 
-        // storage survived: policy and modules untouched, sink config live
+        // storage survived: policy, modules and sink config untouched; engine bounds live
         MultiplyLaunchRouter.Policy memory after_ = live.policy();
         assertEq(after_.feeHub, before.feeHub);
         assertEq(after_.defaultMcap, before.defaultMcap);
         assertEq(after_.maxFee, before.maxFee);
         assertEq(live.modules().rehype, modulesBefore.rehype);
         assertEq(live.owner(), liveOwner);
-        assertEq(live.sinkConfig().implementation, address(liveSinkImpl));
-        assertEq(live.keeper(), keeper);
+        MultiplyLaunchRouter.SinkConfig memory sinkAfter = live.sinkConfig();
+        assertEq(sinkAfter.implementation, sinkBefore.implementation);
+        assertEq(sinkAfter.keeper, sinkBefore.keeper);
+        assertEq(sinkAfter.treasury, sinkBefore.treasury);
+        assertEq(sinkAfter.treasuryBps, sinkBefore.treasuryBps);
+        assertEq(live.engineConfig().maxTakeProfitPct, 500);
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
         live.initialize(liveOwner, modulesBefore, before);
 
-        // a launch through the upgraded live proxy gets a sink, and the fee reaches it
-        (address asset, bytes32 poolId, MultiplyFeeSink sink) = _launch(live, "LIVE", keccak256("live-sink"));
+        // a 50x, +300%, managed launch through the upgraded proxy: sink attached, engine stored
+        MultiplyLaunchRouter.LaunchInput memory i = _input("LIVE", "LIVE", 30_000, 0, keccak256("live-engine"));
+        i.market = "ETH";
+        i.leverage = 50;
+        i.takeProfitPct = 300;
+        i.managed = true;
+        vm.prank(launcher);
+        (address asset, bytes32 poolId,) = live.launch(i);
+        address sink = live.sinkOf(asset);
+        assertTrue(sink != address(0), "sink attached");
         (,, address dst) = IRehypePoolInfo(REHYPE).getPoolInfo(poolId);
-        assertEq(dst, address(sink));
-        uint256 hubBefore = IERC20(USDG).balanceOf(before.feeHub);
+        assertEq(dst, sink);
+        MultiplyLaunchRouter.Engine memory e = live.engineOf(asset);
+        assertEq(e.leverage, 50);
+        assertEq(e.takeProfitPct, 300);
+        assertTrue(e.managed);
+        assertEq(e.creator, launcher);
         _buy(asset, 2e6);
-        assertGt(IERC20(USDG).balanceOf(address(sink)), 0.050e6, "fee on the sink");
-        assertEq(IERC20(USDG).balanceOf(before.feeHub), hubBefore, "the old hub gets nothing");
+        assertGt(IERC20(USDG).balanceOf(sink), 0.050e6, "fee on the sink");
     }
 }

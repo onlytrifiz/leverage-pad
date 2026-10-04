@@ -22,6 +22,8 @@ export type RegistryTranche = {
   sizeDec: number;
   ts: number;
   synthetic?: boolean;
+  /** the leverage set on the venue when the tranche opened (older tranches: the coin's) */
+  leverage?: number;
 };
 
 export type CoinState = {
@@ -42,6 +44,10 @@ export type CoinState = {
   perpTranches?: RegistryTranche[];
   lighterAccountIndex: number | null;
   lastTickTs: number;
+  /** why the keeper is not opening (e.g. leverage above the venue's cap), null when it can */
+  engineBlocked?: string | null;
+  /** the leverage actually set on the venue */
+  lighterLeverage?: number | null;
 };
 
 export type Registry = { coins: Coin[]; state: Record<string, CoinState> };

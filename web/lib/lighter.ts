@@ -58,6 +58,14 @@ export type MarketRow = {
   change24h: number | null; // percento
   volume24h: number | null; // in quote (USD)
   status: string;
+  /**
+   * The most leverage Lighter allows on this market: 1 / min initial margin
+   * fraction (basis points of 1e4). Ranges from 3x on the newest memecoins to
+   * 50x on BTC, ETH, SPY and QQQ. A coin launched above it would never open its
+   * position: the venue rejects the leverage update and the keeper retries
+   * every tick.
+   */
+  maxLeverage: number | null;
 };
 
 /** tutti i mercati PERP di Lighter con mark, variazione e volume 24h */
@@ -73,6 +81,10 @@ export async function allMarkets(): Promise<MarketRow[]> {
       change24h: o.daily_price_change != null ? Number(o.daily_price_change) : null,
       volume24h: o.daily_quote_token_volume != null ? Number(o.daily_quote_token_volume) : null,
       status: String(o.status ?? ""),
+      maxLeverage:
+        Number(o.min_initial_margin_fraction) > 0
+          ? Math.floor(10_000 / Number(o.min_initial_margin_fraction) + 1e-9)
+          : null,
     }));
   return rows.sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0));
 }

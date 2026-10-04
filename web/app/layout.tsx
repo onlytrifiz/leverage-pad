@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Familjen_Grotesk, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import Nav from "@/components/Nav";
@@ -6,6 +7,8 @@ import Footer from "@/components/Footer";
 import { WalletProvider } from "@/components/wallet";
 import { MotionProvider } from "@/components/motion";
 import { LAUNCH_ROUTER } from "@/lib/clientConfig";
+import { IntroProvider } from "@/components/intro/intro-context";
+import { INTRO_BOOT_SCRIPT } from "@/components/intro/boot";
 
 /*
  * Three roles, three families: Familjen Grotesk for headings (the only voice
@@ -46,14 +49,21 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${familjen.variable} ${plexSans.variable} ${plexMono.variable}`}
+      suppressHydrationWarning
     >
       <body className="min-h-screen">
+        {/* first paint for a first-time visitor is the intro's night, not a flash of the market */}
+        <Script id="intro-boot" strategy="beforeInteractive">
+          {INTRO_BOOT_SCRIPT}
+        </Script>
         <MotionProvider>
           <WalletProvider>
-            <Nav />
-            {/* width is the page's decision: the market view is wide, prose is not */}
-            <main className="w-full pb-16">{children}</main>
-            <Footer router={LAUNCH_ROUTER} />
+            <IntroProvider>
+              <Nav />
+              {/* width is the page's decision: the market view is wide, prose is not */}
+              <main className="w-full pb-16">{children}</main>
+              <Footer router={LAUNCH_ROUTER} />
+            </IntroProvider>
           </WalletProvider>
         </MotionProvider>
       </body>

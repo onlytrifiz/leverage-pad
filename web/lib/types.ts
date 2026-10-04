@@ -26,8 +26,12 @@ export type Coin = {
   market: string;
   side: "long" | "short";
   leverage: number;
-  /** profilo take-profit del motore: scelto al lancio */
-  riskProfile?: "safe" | "balanced" | "degen";
+  /** each deposit banks at +takeProfitPct% on its collateral (current value, after any change) */
+  takeProfitPct: number;
+  /** launched managed: its creator may retune leverage and take-profit, after a notice */
+  managed: boolean;
+  /** a managed coin's announced change, not in effect yet */
+  pendingEngine: { leverage: number; takeProfitPct: number; effectiveAt: number } | null;
   tokenURI: string;
   /** ipfs:// image from the metadata, when pinned to the standard */
   image?: string;
@@ -108,6 +112,9 @@ export type TrancheView = {
   collateralUsd: number;
   ts: number;
   synthetic: boolean;
+  /** this tranche's take-profit now, after the decay of an old deposit's target */
+  takeProfitPct: number;
+  leverage: number;
 };
 
 export type CoinDetail = {
@@ -129,6 +136,8 @@ export type CoinDetail = {
   };
   perp: PerpPosition | null;
   tranches: TrancheView[];
+  /** the keeper's reason for not opening, shown on the coin page; null when the engine can run */
+  engineBlocked: string | null;
   subWallet: {
     address: string;
     quoteBalanceUsd: number | null;

@@ -7,13 +7,12 @@ import { useMarkets } from "./markets-provider";
 import AssetIcon from "./AssetIcon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Panel, PanelHeader, PanelTitle, PanelMeta, PanelBody } from "@/components/ui/panel";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import { OptionCard, OptionGroup, StepHeading } from "@/components/ui/option-card";
+import { OptionCard, OptionGroup } from "@/components/ui/option-card";
 import { CoinSeal } from "@/components/brand/CoinSeal";
-import { OPEN_GATE_LABEL } from "@/lib/thresholds";
+import { Banknote } from "@/components/brand/Banknote";
+import { EngravedArt } from "@/components/brand/EngravedArt";
+import { OPEN_GATE_USD, fmtThreshold } from "@/lib/thresholds";
 import { fmtChange } from "@/lib/format";
 import { USDG, LAUNCH_FEE_HUB, LAUNCH_ROUTER, explorerTx, explorerToken, explorerAddr } from "@/lib/clientConfig";
 import { multicall } from "@/lib/multicall";
@@ -22,7 +21,6 @@ import {
   FEE_PRESETS,
   SNIPE,
   firstBuyDopplerCostPct,
-  HOOK_FLUSH_EPSILON_USDG,
   ERC20_IFACE,
   buildCreateParams,
   simulateBundle,
@@ -41,31 +39,51 @@ import {
   randomSalt,
   readProvider,
   dexscreenerPool,
+  FEE_SPLIT_PCT,
+  ROUTER_LEVERAGES,
+  TP_MIN_PCT,
+  TP_MAX_PCT,
+  TP_PRESETS,
+  TP_DECAY,
+  MANAGED_DELAY_HOURS,
   type EngineParams,
 } from "@/lib/doppler";
-import { AnimatedNumber, Reveal, RevealItem } from "@/components/motion";
-import { Gauge } from "@/components/animate-ui/icons/gauge";
-import { Sparkles } from "@/components/animate-ui/icons/sparkles";
-import { ChartColumnIncreasing } from "@/components/animate-ui/icons/chart-column-increasing";
-import { ChartColumnDecreasing } from "@/components/animate-ui/icons/chart-column-decreasing";
-import { motion } from "motion/react";
+import { AnimatedNumber } from "@/components/motion";
+import AssetPicker from "@/components/launch/AssetPicker";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 /**
- * Launch configurator: direction → underlying → leverage → risk → fee →
+ * Launch configurator: direction → underlying → leverage → take-profit → control → fee →
  * protection → identity, then the launch itself, signed by the connected
  * wallet. The deploy goes through the multiply launch router, which builds the
  * Doppler launch on-chain from these inputs; see `lib/doppler.ts` for the
  * mirror encoders used to predict the token address before signing.
  */
 
-const LEVERAGES = [2, 3, 5, 10, 20];
+const LEVERAGES: readonly number[] = ROUTER_LEVERAGES;
 
-const RISK_PROFILES = [
-  { key: "safe", label: "safe", trigger: 20, desc: "Every tranche banks fully at +20%: small wins, constant burns." },
-  { key: "balanced", label: "balanced", trigger: 50, desc: "Every tranche banks fully at +50%. The middle path." },
-  { key: "degen", label: "degen", trigger: 100, desc: "Every tranche rides to +100% before banking. Maximum conviction." },
-] as const;
-type RiskKey = (typeof RISK_PROFILES)[number]["key"];
+/** what a take-profit means as a way of running the coin, by band */
+function approachFor(tp: number) {
+  if (tp <= 30)
+    return {
+      title: "Bank small, bank often",
+      text: "Each deposit closes on a short move, so buybacks arrive steadily and little sits in the market for long. Suits calm assets and high leverage.",
+    };
+  if (tp <= 75)
+    return {
+      title: "Let it run, then bank",
+      text: "Fewer take-profits, each one bigger. The usual choice for an asset with a trend behind it.",
+    };
+  if (tp <= 150)
+    return {
+      title: "Double or nothing, per deposit",
+      text: "Every deposit holds until it has about doubled its collateral. When the call is right the burns are big; on a choppy asset deposits wait underwater for a long time.",
+    };
+  return {
+    title: "Moonshot",
+    text: "Deposits ride for a multiple of their collateral. Most of the time they wait; when the asset runs hard, a single take-profit can burn a large slice of supply.",
+  };
+}
 
 const dirCurve = (up: boolean) => (
   <svg viewBox="0 0 64 24" className="h-6 w-16" aria-hidden>
@@ -117,19 +135,26 @@ const clampUsdgInput = (v: string) => {
   return d === undefined ? i : `${i}.${d.slice(0, 6)}`;
 };
 
-export default function LaunchForm() {
+export default function LaunchForm({
+  initialMarket = "NVDA",
+  initialSide = "long",
+}: {
+  /** preset from the URL (`/launch?market=TSLA&side=short`), e.g. from the market's movers */
+  initialMarket?: string;
+  initialSide?: "long" | "short";
+}) {
   const { address, provider } = useWallet();
   const { markets, loaded } = useMarkets();
-  const [side, setSide] = useState<"long" | "short">("long");
-  const [market, setMarket] = useState("NVDA");
+  const [side, setSide] = useState<"long" | "short">(initialSide);
+  const [market, setMarket] = useState(initialMarket);
   const [lev, setLev] = useState(3);
-  const [risk, setRisk] = useState<RiskKey>("balanced");
+  const [tp, setTp] = useState(50);
+  const [managed, setManaged] = useState(false);
   const [feeBps, setFeeBps] = useState<number>(300);
   const [antiSnipe, setAntiSnipe] = useState(false);
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [firstBuy, setFirstBuy] = useState("");
-  const [assetQ, setAssetQ] = useState("");
   const [salt, setSalt] = useState<string>(() => randomSalt());
 
   const [predicted, setPredicted] = useState<{ asset: string; gas: ethers.BigNumber | null; firstBuyOut: ethers.BigNumber | null } | null>(null);
@@ -143,17 +168,38 @@ export default function LaunchForm() {
   const [launched, setLaunched] = useState<Launched | null>(null);
 
   const selected = markets.find((m) => m.symbol === market) ?? null;
-  const filteredMarkets = useMemo(() => {
-    const q = assetQ.trim().toLowerCase();
-    return q ? markets.filter((m) => m.symbol.toLowerCase().includes(q)) : markets;
-  }, [markets, assetQ]);
-  const trigger = RISK_PROFILES.find((p) => p.key === risk)!.trigger;
+  /** Lighter's cap for the chosen market; null until the list has loaded */
+  const maxLev = selected?.maxLeverage ?? null;
+  const levOk = maxLev == null || lev <= maxLev;
+  /*
+   * Changing side floods the page with the new side's ink from where the
+   * click landed, then the palette underneath has already turned.
+   */
+  const [wash, setWash] = useState<{ x: number; y: number; to: "long" | "short"; id: number } | null>(null);
+  const switchSide = (to: "long" | "short", e?: { clientX: number; clientY: number }) => {
+    if (to === side) return;
+    setSide(to);
+    const x = e?.clientX ?? (typeof window !== "undefined" ? window.innerWidth / 2 : 0);
+    const y = e?.clientY ?? (typeof window !== "undefined" ? window.innerHeight / 2 : 0);
+    setWash((w) => ({ x, y, to, id: (w?.id ?? 0) + 1 }));
+  };
+
+  /** choosing a market brings the leverage down to what that market allows, never up */
+  const pickMarket = (symbol: string) => {
+    setMarket(symbol);
+    const cap = markets.find((m) => m.symbol === symbol)?.maxLeverage;
+    if (cap != null && lev > cap) {
+      const allowed = LEVERAGES.filter((l) => l <= cap);
+      setLev(allowed[allowed.length - 1] ?? LEVERAGES[0]);
+    }
+  };
+  const trigger = tp;
   const feeLabel = FEE_PRESETS.find((f) => f.bps === feeBps)!.label;
   const { mcapUsd } = launchTicks();
 
   const engine: EngineParams = useMemo(
-    () => ({ market, side, leverage: lev, risk }),
-    [market, side, lev, risk]
+    () => ({ market, side, leverage: lev, takeProfitPct: tp, managed }),
+    [market, side, lev, tp, managed]
   );
   const firstBuyIn = useMemo(() => {
     if (!firstBuy || Number(firstBuy) <= 0) return ethers.constants.Zero;
@@ -215,6 +261,8 @@ export default function LaunchForm() {
    * Read from the router, never assumed: a router without sinks configured answers null and
    * the form says "hub", which is then also what the launch will do.
    */
+  /** which address the split was read for: a stale read must not pass for the current one */
+  const [splitFor, setSplitFor] = useState<string | null>(null);
   useEffect(() => {
     if (!address) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -222,17 +270,30 @@ export default function LaunchForm() {
       return;
     }
     let live = true;
-    readFeeSplit(address, salt).then((s) => live && setFeeSplit(s));
+    readFeeSplit(address, salt).then((s) => {
+      if (!live) return;
+      setFeeSplit(s);
+      setSplitFor(`${address}:${salt}`);
+    });
     return () => {
       live = false;
     };
   }, [address, salt]);
 
-  const enginePct = feeSplit ? feeSplit.engineBps / 100 : 95;
-  const treasuryPct = feeSplit ? feeSplit.treasuryBps / 100 : 0;
-  const feeWords = feeSplit
-    ? `${enginePct}% feeds the coin's engine, ${treasuryPct}% is the protocol's share, 5% is the Doppler protocol fee.`
-    : "95% feeds the coin's engine; 5% is the Doppler protocol fee.";
+  /*
+   * Three cases, kept apart. Read from the router: the coin's own split. The
+   * router answered "no sink": the hub, 95% engine. Not read yet (no wallet,
+   * or the read in flight): the protocol's published split, which is what a
+   * sink-enabled router locks in. The form used to show the hub's 95% in that
+   * last case, contradicting the docs for every visitor without a wallet.
+   */
+  const splitKnown = !!address && splitFor === `${address}:${salt}`;
+  const enginePct = feeSplit ? feeSplit.engineBps / 100 : splitKnown ? 95 : FEE_SPLIT_PCT.engine;
+  const treasuryPct = feeSplit ? feeSplit.treasuryBps / 100 : splitKnown ? 0 : FEE_SPLIT_PCT.treasury;
+  const viaHub = splitKnown && !feeSplit;
+  const feeWords = viaHub
+    ? "95% feeds the coin's engine; 5% is the Doppler protocol fee."
+    : `${enginePct}% feeds the coin's engine, ${treasuryPct}% is the protocol's share, 5% is the Doppler protocol fee.`;
 
   /*
    * Dry-run on every change, debounced: the token address depends on the salt
@@ -316,497 +377,809 @@ export default function LaunchForm() {
     }
   }
 
+  /* what each choice means, in plain numbers, recomputed as you change it */
+  const up = side === "long";
+  const move10 = 10 * lev;
+  const liqAway = 100 / lev;
+  const engineShare = enginePct / 100;
+  const volToOpen = OPEN_GATE_USD / ((feeBps / 10_000) * engineShare);
+  const engineOn100k = 100_000 * (feeBps / 10_000) * engineShare;
+  const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
+
+  const launchButton = (
+    <ChainGate connectLabel="Connect wallet to launch">
+      <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !predicted || !!busy || insufficient || !levOk}>
+        {busy && <Spinner data-icon="inline-start" />}
+        {busy ??
+          (!ready
+            ? "Name the coin"
+            : !levOk
+              ? `${market} allows up to ${maxLev}x`
+              : insufficient
+              ? "Not enough USDG for the first buy"
+              : needsApproval
+                ? `Approve USDG and launch $${symbol}`
+                : withFirstBuy
+                  ? `Launch $${symbol} and buy ${fmtUsdg(firstBuyIn)} USDG`
+                  : `Launch $${symbol}`)}
+      </Button>
+    </ChainGate>
+  );
+
   return (
-    <div className="grid grid-cols-1 gap-6 pt-8 lg:grid-cols-[minmax(0,1fr)_360px]">
-      {/* ── form column ─────────────────────────────────────────────────── */}
-      <div className="min-w-0">
-        <div className="mb-2 text-sm text-ink-3">New coin</div>
-        <h1 className="text-4xl font-bold">Launch a coin</h1>
-        <p className="mt-3 max-w-[540px] text-base leading-relaxed text-ink-2">
-          Pick a direction, choose the underlying perp, set the leverage, choose the fee, name
-          it. The liquidity locks forever at launch, from your own wallet. After that the
-          engine runs itself.
-        </p>
-
-        {/* step 1: direction */}
-        <section className="mt-9">
-          <StepHeading n={1} title="Choose the direction" />
-          <OptionGroup label="Direction" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {(["long", "short"] as const).map((s) => (
-              <OptionCard
-                key={s}
-                selected={side === s}
-                onClick={() => setSide(s)}
-                className="flex items-start justify-between gap-3"
-              >
-                <span className="min-w-0">
-                  <span className={`text-lg font-semibold capitalize ${s === "long" ? "text-up" : "text-down"}`}>
-                    {s}
-                  </span>
-                  <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                    {s === "long"
-                      ? "The engine profits when the underlying rises."
-                      : "The engine profits when the underlying falls."}
-                  </span>
-                </span>
-                <span className={`flex shrink-0 items-center gap-2 ${s === "long" ? "text-up" : "text-down"}`}>
-                  {s === "long" ? (
-                    <ChartColumnIncreasing aria-hidden size={16} animate={side === s} />
-                  ) : (
-                    <ChartColumnDecreasing aria-hidden size={16} animate={side === s} />
-                  )}
-                  {dirCurve(s === "long")}
-                </span>
-              </OptionCard>
-            ))}
-          </OptionGroup>
-        </section>
-
-        {/* step 2: underlying */}
-        <section className="mt-9">
-          <StepHeading
-            n={2}
-            title="Pick the underlying"
-            meta={loaded ? `${markets.length} Lighter perps` : undefined}
-            action={
-              <Input
-                value={assetQ}
-                onChange={(e) => setAssetQ(e.target.value)}
-                placeholder="Filter…"
-                aria-label="Filter markets"
-                className="w-36"
-              />
-            }
-          />
-          <OptionGroup
-            label="Underlying market"
-            className="grid max-h-[320px] grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3"
-          >
-            {!loaded && Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-11" />)}
-            {loaded && filteredMarkets.length === 0 && (
-              <p className="col-span-full py-6 text-sm text-ink-3">No market matches “{assetQ}”.</p>
-            )}
-            {filteredMarkets.map((m) => (
-              <OptionCard
-                key={m.marketId}
-                selected={market === m.symbol}
-                onClick={() => setMarket(m.symbol)}
-                className="flex items-center justify-between gap-2 rounded-lg px-3 py-2.5 shadow-none sm:px-3 sm:py-2.5"
-              >
-                <span className="flex min-w-0 items-center gap-2">
-                  <AssetIcon symbol={m.symbol} size={20} />
-                  <span className="truncate text-sm font-medium text-ink">{m.symbol}</span>
-                </span>
-                {m.change24h != null && (
-                  <span className={`num shrink-0 text-xs ${m.change24h >= 0 ? "text-up" : "text-down"}`}>
-                    {fmtChange(m.change24h, 1)}
-                  </span>
-                )}
-              </OptionCard>
-            ))}
-          </OptionGroup>
-        </section>
-
-        {/* step 3: leverage */}
-        <section className="mt-9">
-          <StepHeading
-            n={3}
-            title="Set the leverage"
-            meta={
-              <span className="flex items-center gap-1.5">
-                <Gauge key={lev} aria-hidden size={14} animate />
-                Isolated margin
-              </span>
-            }
-          />
-          <OptionGroup label="Leverage" className="flex flex-wrap gap-2">
-            {LEVERAGES.map((l) => (
-              <OptionCard
-                key={l}
-                selected={lev === l}
-                onClick={() => setLev(l)}
-                className={`rounded-lg px-5 py-2.5 text-base font-semibold shadow-none sm:px-5 sm:py-2.5 ${
-                  lev === l ? "text-brand" : "text-ink-2"
-                }`}
-              >
-                {l}×
-              </OptionCard>
-            ))}
-          </OptionGroup>
-          <p className="mt-2.5 text-sm leading-relaxed text-ink-3">
-            Higher leverage means faster burns on a good call, faster liquidation on a bad one.
+    <div data-side={side} className="launch-root">
+      <SideWash wash={wash} />
+      {/* ── the night band: what this page does, in one line ─────────────── */}
+      <section className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
+        <div aria-hidden className="pointer-events-none absolute top-1/2 right-[-6%] -z-10 -translate-y-1/2 text-mint/[0.2]">
+          <CoinSeal leverage={lev} side={side} takeProfitPct={tp} size={760} rings={4} spin={120} className="w-[110vw] max-w-[760px]" />
+        </div>
+        <div className="mx-auto w-full max-w-[1320px] px-4 pt-10 pb-10 sm:px-5 sm:pt-14 sm:pb-12">
+          <h1 className="font-display text-[clamp(44px,7vw,92px)] leading-[0.95] font-bold tracking-[-0.04em] text-night-ink">
+            Print your <span className="type-engraved [--ink-c:var(--color-mint)]">coin.</span>
+          </h1>
+          <p className="mt-4 max-w-[52ch] text-lg leading-relaxed text-night-ink-2">
+            Pick what its fees trade, name it, sign once. The pool locks forever at launch and the engine runs itself.
           </p>
-        </section>
-
-        {/* step 4: risk profile */}
-        <section className="mt-9">
-          <StepHeading n={4} title="Choose the risk profile" meta="When the engine takes profit" />
-          <OptionGroup label="Risk profile" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {RISK_PROFILES.map((p) => (
-              <OptionCard key={p.key} selected={risk === p.key} onClick={() => setRisk(p.key)}>
-                <span className="flex items-baseline justify-between gap-2">
-                  <span
-                    className={`text-md font-semibold capitalize ${
-                      p.key === "degen" ? "text-down" : p.key === "safe" ? "text-up" : "text-brand"
-                    }`}
-                  >
-                    {p.label}
-                  </span>
-                  <span className="num shrink-0 text-xs text-ink-2">+{p.trigger}%</span>
-                </span>
-                <span className="mt-1.5 block text-xs leading-relaxed text-ink-3">{p.desc}</span>
-              </OptionCard>
-            ))}
-          </OptionGroup>
-        </section>
-
-        {/* step 5: trading fee */}
-        <section className="mt-9">
-          <StepHeading n={5} title="Set the trading fee" meta="Immutable after launch" />
-          <OptionGroup label="Trading fee" className="flex flex-wrap gap-2">
-            {FEE_PRESETS.map((f) => (
-              <OptionCard
-                key={f.bps}
-                selected={feeBps === f.bps}
-                onClick={() => setFeeBps(f.bps)}
-                className={`num rounded-lg px-5 py-2.5 text-base font-semibold shadow-none sm:px-5 sm:py-2.5 ${
-                  feeBps === f.bps ? "text-brand" : "text-ink-2"
-                }`}
-              >
-                {f.label}
-              </OptionCard>
-            ))}
-          </OptionGroup>
-          <p className="mt-2.5 text-sm leading-relaxed text-ink-3">
-            Charged on every swap, both ways, for the life of the pool, and always collected in
-            USDG: a buy pays it in the coin and the pool converts it in the same transaction, so
-            the engine is fed in full, never in coins to sell later. {feeWords} A higher fee
-            fuels the position faster and slows trading down.
-          </p>
-        </section>
-
-        {/* step 6: launch protection */}
-        <section className="mt-9">
-          <StepHeading n={6} title="Launch protection" meta="Anti-snipe, off by default" />
-          <OptionGroup label="Launch protection" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <OptionCard selected={!antiSnipe} onClick={() => setAntiSnipe(false)}>
-              <span className="flex items-baseline justify-between gap-2">
-                <span className="text-md font-semibold text-ink">Off</span>
-                <span className="text-xs text-ink-3">default</span>
-              </span>
-              <span className="mt-1.5 block text-xs leading-relaxed text-ink-3">
-                Everyone pays the flat {feeLabel} trading fee from the first block, nothing else.
-                Your bundled first buy pays only Doppler&apos;s slice of it,{" "}
-                {firstBuyDopplerCostPct(feeBps, false).toFixed(2)}% of the tokens.
-              </span>
-            </OptionCard>
-            <OptionCard selected={antiSnipe} onClick={() => setAntiSnipe(true)}>
-              <span className="flex items-baseline justify-between gap-2">
-                <span className="text-md font-semibold text-brand">On</span>
-                <span className="num text-xs text-ink-3">
-                  {SNIPE.startFee / 10_000}% → {feeLabel} in {SNIPE.seconds}s
-                </span>
-              </span>
-              <span className="mt-1.5 block text-xs leading-relaxed text-ink-3">
-                For the first {SNIPE.seconds} seconds the trading fee itself opens high:{" "}
-                {SNIPE.startFee / 10_000}% of the tokens bought at second zero, falling straight to{" "}
-                {feeLabel} by second {SNIPE.seconds}, where it stays. Bots that buy the launch block
-                keep little; a person buying a minute later pays the normal fee.
-              </span>
-            </OptionCard>
-          </OptionGroup>
-          {antiSnipe && (
-            <motion.div
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mt-3 rounded-xl bg-panel-2 px-4 py-3.5 text-sm leading-relaxed text-ink-2"
-            >
-              <span className="font-semibold text-ink">Where the opening fee goes.</span> Same place
-              as the normal fee: converted to USDG and sent to the engine, minus Doppler&apos;s 5%.
-              Your bundled first buy skips the fee itself but still pays Doppler&apos;s slice of the
-              opening rate,{" "}
-              <span className="num">{firstBuyDopplerCostPct(feeBps, true).toFixed(0)}%</span> of the
-              tokens it receives (5% of {SNIPE.startFee / 10_000}%). Turn protection off and that
-              drops to {firstBuyDopplerCostPct(feeBps, false).toFixed(2)}%.
-            </motion.div>
-          )}
-        </section>
-
-        {/* step 7: identity + first buy */}
-        <section className="mt-9">
-          <StepHeading n={7} title="Name it" />
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value.slice(0, NAME_MAX))}
-              placeholder="Coin name"
-              aria-label="Coin name"
-              className="h-11 text-base"
-            />
-            {/* the ticker is the creator's, as typed: any characters, no forced case; only spaces and a length cap */}
-            <Input
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value.replace(/\s/g, "").slice(0, SYMBOL_MAX))}
-              placeholder="TICKER"
-              aria-label="Ticker"
-              className="num h-11 text-base"
-            />
-          </div>
-          <div className="mt-3 rounded-xl border border-border bg-void px-4 py-3.5">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <span className="text-sm font-medium text-ink">First buy, optional</span>
-              {acct && (
-                <button
-                  type="button"
-                  className="min-w-0 truncate text-xs text-ink-3 transition-colors hover:text-brand"
-                  onClick={() => setFirstBuy(ethers.utils.formatUnits(acct.usdg, 6))}
-                >
-                  Balance {fmtUsdg(acct.usdg)} USDG, max
-                </button>
-              )}
-            </div>
-            <div className="mt-1.5 flex items-baseline gap-2">
-              <input
-                value={firstBuy}
-                onChange={(e) => setFirstBuy(clampUsdgInput(e.target.value))}
-                placeholder="0.00"
-                inputMode="decimal"
-                aria-label="First buy in USDG"
-                className="num w-full min-w-0 bg-transparent text-2xl text-ink placeholder:text-ink-3 focus:outline-none"
-              />
-              <span className="shrink-0 text-sm text-ink-2">USDG</span>
-            </div>
-            <p className="mt-2 text-xs leading-relaxed text-ink-3">
-              Bundled into the launch transaction, so it is the pool&apos;s first swap by
-              construction: nobody can trade before you. The fee is waived on it except
-              Doppler&apos;s slice: {firstBuyDopplerCostPct(feeBps, antiSnipe).toFixed(2)}% of the
-              tokens.
-            </p>
-          </div>
-        </section>
-
-        {/* launch */}
-        <Panel className="mt-9">
-          <PanelHeader>
-            <PanelTitle className="flex items-center gap-2">
-              <Sparkles aria-hidden size={15} animateOnView className="text-brand" />
-              Launch
-            </PanelTitle>
-            <PanelMeta>
-              Signed by your wallet · router{" "}
-              <a className="num underline underline-offset-2" href={explorerAddr(LAUNCH_ROUTER)} target="_blank" rel="noreferrer">
-                {short(LAUNCH_ROUTER)}
-              </a>
-            </PanelMeta>
-          </PanelHeader>
-          <PanelBody className="flex flex-col gap-3.5">
-            <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-[auto_minmax(0,1fr)]">
-              <dt className="text-ink-3">Token address</dt>
-              <dd className="num min-w-0 truncate text-ink">
-                {predicted ? (
-                  <a className="underline underline-offset-2" href={explorerAddr(predicted.asset)} target="_blank" rel="noreferrer">
-                    {predicted.asset}
-                  </a>
-                ) : address && ready ? (
-                  simError ? <span className="text-down">{simError}</span> : "computing…"
-                ) : (
-                  "name the coin to preview"
-                )}
-              </dd>
-              <dt className="text-ink-3">Opens at</dt>
-              <dd className="num text-ink">≈ ${mcapUsd.toFixed(0)} market cap, 1B supply, all in the pool</dd>
-              <dt className="text-ink-3">Fee routing</dt>
-              <dd className="min-w-0 truncate text-ink">
-                {feeSplit ? (
-                  <>
-                    all in USDG · {enginePct}% engine · {treasuryPct}% treasury · 5% Doppler · via the
-                    coin&apos;s sink{" "}
-                    <a className="num text-ink-2 underline underline-offset-2" href={explorerAddr(feeSplit.sink)} target="_blank" rel="noreferrer">
-                      {short(feeSplit.sink)}
-                    </a>
-                  </>
-                ) : (
-                  <>
-                    all in USDG · 95% engine hub{" "}
-                    <a className="num text-ink-2 underline underline-offset-2" href={explorerAddr(LAUNCH_FEE_HUB)} target="_blank" rel="noreferrer">
-                      {short(LAUNCH_FEE_HUB)}
-                    </a>{" "}
-                    · 5% Doppler
-                  </>
-                )}
-              </dd>
-              {withFirstBuy && (
-                <>
-                  <dt className="text-ink-3">First buy gets</dt>
-                  <dd className="num text-ink">
-                    {predicted?.firstBuyOut
-                      ? `≈ ${Number(ethers.utils.formatEther(predicted.firstBuyOut)).toLocaleString("en-US", { maximumFractionDigits: 0 })} $${symbol || "TICKER"}`
-                      : "simulating…"}
-                  </dd>
-                </>
-              )}
-              <dt className="text-ink-3">Gas</dt>
-              <dd className="num text-ink">
-                {predicted?.gas ? `~${predicted.gas.toNumber().toLocaleString("en-US")} units` : "estimated at signing"}
-              </dd>
-            </dl>
-
-            <ChainGate connectLabel="Connect wallet to launch">
-              <Button
-                size="xl"
-                className="w-full"
-                onClick={launch}
-                disabled={!routerInput || !predicted || !!busy || insufficient}
-              >
-                {busy && <Spinner data-icon="inline-start" />}
-                {busy ??
-                  (!ready
-                    ? "Name the coin"
-                    : insufficient
-                      ? "Not enough USDG for the first buy"
-                      : needsApproval
-                        ? `Approve USDG and launch $${symbol}`
-                        : withFirstBuy
-                          ? `Launch $${symbol} and buy ${fmtUsdg(firstBuyIn)} USDG`
-                          : `Launch $${symbol}`)}
-              </Button>
-            </ChainGate>
-
-            {launched && (
-              <div className="rounded-xl bg-brand-soft px-4 py-3.5 text-sm leading-relaxed text-ink-2" role="status">
-                <span className="font-semibold text-brand">${launched.symbol} is live.</span>{" "}
-                <a className="underline underline-offset-2" href={explorerToken(launched.asset)} target="_blank" rel="noreferrer">
-                  token
-                </a>{" "}
-                ·{" "}
-                <a className="underline underline-offset-2" href={dexscreenerPool(launched.poolId)} target="_blank" rel="noreferrer">
-                  DexScreener
-                </a>{" "}
-                ·{" "}
-                <a className="underline underline-offset-2" href={explorerTx(launched.hash)} target="_blank" rel="noreferrer">
-                  transaction
-                </a>{" "}
-                ·{" "}
-                <a className="underline underline-offset-2" href={launched.metadataUrl} target="_blank" rel="noreferrer">
-                  metadata
-                </a>
-              </div>
-            )}
-            {error && (
-              <p className="text-sm leading-relaxed text-down" role="alert">
-                {error}
-              </p>
-            )}
-
-            <p className="text-xs leading-relaxed text-ink-3">
-              The seal and the metadata are pinned to IPFS first, then one transaction through the
-              multiply router deploys the token, seeds the pool one-sided and locks it. The router
-              only enforces the shape of the launch; the coin, its pool and its lock are Doppler
-              contracts with no owner, no migration and no admin key. The lock is irreversible.
-            </p>
-          </PanelBody>
-        </Panel>
-      </div>
-
-      {/* ── preview column ──────────────────────────────────────────────── */}
-      <div className="flex min-w-0 flex-col gap-4 lg:sticky lg:top-20 lg:self-start">
-        <Panel>
-          <PanelHeader>
-            <PanelTitle>Live preview</PanelTitle>
-          </PanelHeader>
-          <PanelBody>
-            <div className="hatch relative mx-auto flex h-[188px] w-full items-center justify-center overflow-hidden rounded-xl">
-              <CoinSeal leverage={lev} side={side} riskProfile={risk} size={176} rings={4} className="text-brand" />
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center px-6 text-center">
-                <div className="max-w-full truncate text-lg font-semibold text-ink">${symbol || "TICKER"}</div>
-                <div className="max-w-full truncate text-xs text-ink-3">{name || "Your coin"}</div>
-              </div>
-            </div>
-
-            <Reveal className="mt-5 grid grid-cols-2 gap-px overflow-hidden rounded-xl bg-border sm:grid-cols-4">
-              {[
-                { label: "Leverage", value: `${lev}×` },
-                { label: "Underlying", value: market },
-                { label: "Direction", value: side },
-                { label: "Fee", value: feeLabel },
-              ].map((c) => (
-                <RevealItem key={c.label} className="min-w-0 bg-panel-2 px-2 py-3 text-center">
-                  <div
-                    className={`truncate text-md font-semibold capitalize ${
-                      c.label === "Direction" ? (side === "long" ? "text-up" : "text-down") : "text-ink"
-                    }`}
-                  >
-                    {c.value}
-                  </div>
-                  <div className="mt-0.5 truncate text-xs text-ink-3">{c.label}</div>
-                </RevealItem>
-              ))}
-            </Reveal>
-
-            <div className="mt-4 rounded-xl border border-border bg-void px-4 py-3.5">
-              <div className="flex min-w-0 items-center justify-between gap-2">
-                <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-ink">
-                  <AssetIcon symbol={market} size={18} />
-                  <span className="truncate">{market} / USD</span>
-                </span>
-                {selected?.change24h != null && (
-                  <Badge variant={selected.change24h >= 0 ? "up" : "down"} className="num shrink-0">
-                    {fmtChange(selected.change24h)} 24h
-                  </Badge>
-                )}
-              </div>
-              <div className="num mt-2 truncate text-3xl font-semibold text-ink">
-                <AnimatedNumber value={selected?.mark ?? null} format="mark" />
-              </div>
-              <p className="mt-1.5 text-xs leading-relaxed text-ink-3">
-                Mark price on Lighter · the engine trades this at {lev}×
-              </p>
-            </div>
-
-            <motion.p
-              key={`${market}-${lev}-${side}-${risk}-${feeBps}-${antiSnipe}`}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.28 }}
-              className="mt-4 rounded-xl bg-brand-soft px-4 py-3.5 text-sm leading-relaxed text-ink-2"
-            >
-              <span className="font-semibold text-brand">
-                {market} {lev}× {side} · {risk} · {feeLabel} fee{antiSnipe ? " · protected" : ""}
-              </span>
-              . If {market} moves {side === "long" ? "up" : "down"} 10%, the coin&apos;s perp treasury
-              gains ~{(10 * lev).toFixed(0)}%. Each deposit is its own tranche that banks fully at +
-              {trigger}%; realized profits flow back on-chain: 75% buys and burns the coin, 25% to
-              treasury.
-            </motion.p>
-          </PanelBody>
-        </Panel>
-
-        <Panel>
-          <PanelHeader>
-            <PanelTitle>How it works</PanelTitle>
-          </PanelHeader>
-          <ol className="flex flex-col gap-3.5 p-4 sm:p-5">
+          <dl className="mt-8 flex flex-wrap gap-x-10 gap-y-4">
             {[
-              `The token deploys with a 1B fixed supply and no owner, all of it seeded one-sided into a Uniswap v4 pool at roughly $${mcapUsd.toFixed(0)} mcap, through Doppler's Airlock.`,
-              "The pool is locked by its fee beneficiaries. Nobody can pull the liquidity, not you, not us, not Doppler.",
-              feeSplit
-                ? `Every swap pays ${feeLabel}, always collected in USDG, into a fee contract that is the coin's alone: ${enginePct}% to its engine, ${treasuryPct}% to the protocol, 5% to Doppler. Small fees pool on the hook until they pass ${HOOK_FLUSH_EPSILON_USDG} USDG, then flush. On top, the protocol takes 25% of realized profits.`
-                : `Every swap pays ${feeLabel}, always collected in USDG: 95% into the coin's engine, 5% to Doppler. Small fees pool on the hook until they pass ${HOOK_FLUSH_EPSILON_USDG} USDG, then flush. The protocol earns only 25% of realized profits.`,
-              `At ${OPEN_GATE_LABEL} the engine opens the ${lev}× ${side} on ${market}; profits are withdrawn on your risk profile, bought back and burned.`,
-            ].map((step, i) => (
-              <li key={i} className="flex min-w-0 gap-3 text-sm leading-relaxed text-ink-2">
-                <span
-                  aria-hidden
-                  className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-2xs font-semibold text-ink-3"
-                >
-                  {i + 1}
-                </span>
-                {step}
-              </li>
+              { k: "Opens at", v: `~${usd0(mcapUsd)} market cap` },
+              { k: "Supply", v: "1B, all in the pool" },
+              { k: "Liquidity", v: "locked from block one" },
+            ].map((f) => (
+              <div key={f.k}>
+                <dt className="text-xs text-night-ink-2">{f.k}</dt>
+                <dd className="mt-0.5 font-semibold text-night-ink">{f.v}</dd>
+              </div>
             ))}
-          </ol>
-        </Panel>
+          </dl>
+        </div>
+      </section>
+
+      <div className="mx-auto grid w-full max-w-[1320px] grid-cols-1 gap-8 px-4 pt-10 sm:px-5 lg:grid-cols-[minmax(0,1fr)_440px] lg:gap-12">
+        {/* ── the press: the note prints as you choose (first on a phone) ── */}
+        <aside className="min-w-0 lg:col-start-2 lg:row-start-1 lg:row-span-2 lg:sticky lg:top-[calc(var(--nav-h)+16px)] lg:self-start">
+          <div className="relative">
+            <Banknote
+              symbol={symbol || "TICKER"}
+              name={name.trim() || "Your coin"}
+              market={market}
+              side={side}
+              leverage={lev}
+              managed={managed}
+              serial={predicted?.asset ?? launched?.asset ?? "0x0000000000000000000000000000000000000000"}
+            />
+            <AnimatePresence>
+              {launched && (
+                <motion.div
+                  key="stamp"
+                  initial={{ opacity: 0, scale: 2.2, rotate: -24 }}
+                  animate={{ opacity: 1, scale: 1, rotate: -12 }}
+                  transition={{ type: "spring", stiffness: 260, damping: 16 }}
+                  className="pointer-events-none absolute inset-0 flex items-center justify-center"
+                >
+                  <span className="rounded-lg border-[3px] border-double border-down px-5 py-2 font-display text-[clamp(22px,4vw,40px)] font-bold tracking-[0.2em] text-down/90 uppercase mix-blend-multiply">
+                    Issued
+                  </span>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          <motion.p
+            key={`${market}-${lev}-${side}-${tp}-${feeBps}-${managed}`}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3 }}
+            className="mt-5 text-md leading-relaxed text-ink-2"
+          >
+            <span className="font-semibold text-ink">
+              Every trade on ${symbol || "TICKER"} funds a {lev}x {side} on {market}.
+            </span>{" "}
+            If {market} moves 10% {up ? "up" : "down"}, the position gains about {move10}%. Each deposit banks at +{trigger}%, then 75%
+            of the profit buys the coin back and burns it.
+          </motion.p>
+
+          {/* live mark of the chosen asset */}
+          <div className="mt-5 flex items-center justify-between gap-3 rounded-[14px] border border-line bg-panel px-4 py-3">
+            <span className="flex min-w-0 items-center gap-2">
+              <AssetIcon symbol={market} size={20} />
+              <span className="truncate font-semibold text-ink">{market}</span>
+              <span className="text-xs text-ink-3">on Lighter</span>
+            </span>
+            <span className="flex items-baseline gap-2">
+              <span className="num font-semibold text-ink">
+                <AnimatedNumber value={selected?.mark ?? null} format="mark" />
+              </span>
+              {selected?.change24h != null && (
+                <span className={`num text-xs ${selected.change24h >= 0 ? "text-up" : "text-down"}`}>{fmtChange(selected.change24h, 1)}</span>
+              )}
+            </span>
+          </div>
+
+          {/* launch: desktop keeps it under the note; a phone gets it after the steps */}
+          <div className="mt-5 hidden lg:block">
+            <LaunchPanel
+              {...{ predicted, simError, address, ready, mcapUsd, viaHub, enginePct, treasuryPct, feeSplit, withFirstBuy, symbol, launched, error }}
+              button={launchButton}
+            />
+          </div>
+        </aside>
+
+        {/* ── the steps ───────────────────────────────────────────────────── */}
+        <ol className="min-w-0 lg:col-start-1 lg:row-start-1">
+          <Step n={1} title="Which way" meta="The engine profits when the asset moves this way">
+            <OptionGroup label="Direction" className="grid grid-cols-2 gap-3">
+              {(["long", "short"] as const).map((s) => (
+                <OptionCard
+                  key={s}
+                  selected={side === s}
+                  onClick={(e) => switchSide(s, e)}
+                  className="group relative overflow-hidden p-0 sm:p-0"
+                >
+                  {/* a fixed box with the art standing on its floor: bull and bear share a baseline */}
+                  <div
+                    className={`flex h-[120px] items-end justify-center px-4 pt-4 transition-colors sm:h-[180px] sm:px-5 ${
+                      side === s ? "text-ink" : "text-ink-3 group-hover:text-ink-2"
+                    }`}
+                  >
+                    <EngravedArt name={s === "long" ? "bull" : "bear"} fit="height" />
+                  </div>
+                  <div className="flex items-center justify-between gap-2 px-4 py-3 sm:px-5">
+                    <span className={`font-display text-xl font-bold capitalize ${s === "long" ? "text-up" : "text-down"}`}>{s}</span>
+                    <span className={s === "long" ? "text-up" : "text-down"}>{dirCurve(s === "long")}</span>
+                  </div>
+                </OptionCard>
+              ))}
+            </OptionGroup>
+          </Step>
+
+          <Step n={2} title="What its fees trade" meta={loaded ? `${markets.length} Lighter perps` : undefined}>
+            <AssetPicker
+              markets={markets}
+              loaded={loaded}
+              value={market}
+              onPick={(sym, hint) => {
+                pickMarket(sym);
+                if (hint) switchSide(hint);
+              }}
+              levCap={LEVERAGES[LEVERAGES.length - 1]}
+            />
+          </Step>
+
+          <Step n={3} title="How hard" meta={maxLev != null ? `Up to ${Math.min(maxLev, LEVERAGES[LEVERAGES.length - 1])}x on ${market}` : "Isolated margin"}>
+            <LeverageDial value={lev} onChange={setLev} max={maxLev} />
+            {maxLev != null && maxLev > LEVERAGES[LEVERAGES.length - 1] && (
+              <p className="mt-3 text-xs leading-relaxed text-ink-3">
+                Lighter allows up to {maxLev}x on {market}; launches go up to {LEVERAGES[LEVERAGES.length - 1]}x for now.
+              </p>
+            )}
+            {maxLev != null && maxLev < LEVERAGES[LEVERAGES.length - 1] && (
+              <p className="mt-3 text-xs leading-relaxed text-ink-3">
+                Lighter allows at most {maxLev}x on {market}. Higher stops are off: above the venue&apos;s limit the position could
+                never open.
+              </p>
+            )}
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <Readout tone="up" label={`If ${market} moves 10% ${up ? "up" : "down"}`} value={`+${move10}%`} note="on the position" />
+              <Readout tone="down" label="Liquidation" value={`~${liqAway.toFixed(liqAway < 10 ? 1 : 0)}%`} note={`against you, before fees and funding`} />
+            </div>
+          </Step>
+
+          <Step n={4} title="When it takes profit" meta="Per deposit">
+            <TakeProfitSlider value={tp} onChange={setTp} market={market} leverage={lev} up={up} />
+          </Step>
+
+          <Step n={5} title="Who can change it" meta="Market and side never change">
+            <OptionGroup label="Engine control" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <OptionCard selected={!managed} onClick={() => setManaged(false)}>
+                <span className="font-semibold text-ink">Fixed forever</span>
+                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                  Leverage and take-profit stay as launched. Holders buy a rule that cannot move.
+                </span>
+              </OptionCard>
+              <OptionCard selected={managed} onClick={() => setManaged(true)}>
+                <span className="flex items-baseline justify-between gap-2">
+                  <span className="font-semibold text-brand">Managed by you</span>
+                  <span className="text-xs text-ink-3">{MANAGED_DELAY_HOURS}h notice</span>
+                </span>
+                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                  You can retune leverage and take-profit later. Every change is announced on-chain and lands{" "}
+                  {MANAGED_DELAY_HOURS} hours after, and the coin carries a Managed badge everywhere.
+                </span>
+              </OptionCard>
+            </OptionGroup>
+          </Step>
+
+          <Step n={6} title="The trading fee" meta="Fixed forever at launch">
+            <OptionGroup label="Trading fee" className="grid grid-cols-4 gap-2">
+              {FEE_PRESETS.map((f) => (
+                <OptionCard
+                  key={f.bps}
+                  selected={feeBps === f.bps}
+                  onClick={() => setFeeBps(f.bps)}
+                  className={`num rounded-xl px-0 py-3 text-center text-lg font-semibold shadow-none sm:px-0 sm:py-3 ${feeBps === f.bps ? "text-brand" : "text-ink-2"}`}
+                >
+                  {f.label}
+                </OptionCard>
+              ))}
+            </OptionGroup>
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <Readout label="Engine gets, per $100k traded" value={usd0(engineOn100k)} note={`${enginePct}% of the fee, in USDG`} />
+              <Readout label="Position opens after about" value={usd0(volToOpen)} note={`of trading (gate ${fmtThreshold(OPEN_GATE_USD)})`} />
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-ink-3">
+              Charged on every buy and sell for the life of the pool, always settled in USDG. {feeWords} A higher fee feeds the
+              position faster and slows trading down.
+            </p>
+          </Step>
+
+          <Step n={7} title="Launch protection" meta="Anti-snipe, off by default">
+            <OptionGroup label="Launch protection" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <OptionCard selected={!antiSnipe} onClick={() => setAntiSnipe(false)}>
+                <span className="font-semibold text-ink">Off</span>
+                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                  Everyone pays the flat {feeLabel} from the first block. Your first buy pays only Doppler&apos;s slice,{" "}
+                  {firstBuyDopplerCostPct(feeBps, false).toFixed(2)}% of the tokens.
+                </span>
+              </OptionCard>
+              <OptionCard selected={antiSnipe} onClick={() => setAntiSnipe(true)}>
+                <span className="flex items-baseline justify-between gap-2">
+                  <span className="font-semibold text-brand">On</span>
+                  <span className="num text-xs text-ink-3">
+                    {SNIPE.startFee / 10_000}% → {feeLabel} in {SNIPE.seconds}s
+                  </span>
+                </span>
+                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                  The fee opens high and falls to {feeLabel} in {SNIPE.seconds} seconds. Bots buying the launch block keep little.
+                </span>
+              </OptionCard>
+            </OptionGroup>
+            <AnimatePresence initial={false}>
+              {antiSnipe && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <ProtectionCurve endPct={feeBps / 100} />
+                  <p className="mt-2 text-xs leading-relaxed text-ink-3">
+                    The opening fee goes where the normal one goes: to the engine in USDG, minus Doppler&apos;s 5%. Your bundled
+                    first buy pays Doppler&apos;s slice of the opening rate,{" "}
+                    <span className="num">{firstBuyDopplerCostPct(feeBps, true).toFixed(0)}%</span> of its tokens.
+                  </p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </Step>
+
+          <Step n={8} title="Name it" meta="This is what gets printed" last>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_200px]">
+              <label className="block">
+                <span className="mb-1.5 flex justify-between text-xs text-ink-3">
+                  <span>Name</span>
+                  <span className="num">
+                    {name.length}/{NAME_MAX}
+                  </span>
+                </span>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value.slice(0, NAME_MAX))}
+                  placeholder="Long Nvidia Forever"
+                  className="h-12 text-lg"
+                />
+              </label>
+              {/* the ticker is the creator's, as typed: any characters, no forced case; only spaces and a length cap */}
+              <label className="block">
+                <span className="mb-1.5 flex justify-between text-xs text-ink-3">
+                  <span>Ticker</span>
+                  <span className="num">
+                    {symbol.length}/{SYMBOL_MAX}
+                  </span>
+                </span>
+                <Input
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value.replace(/\s/g, "").slice(0, SYMBOL_MAX))}
+                  placeholder="LNVDA"
+                  className="num h-12 text-lg"
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 rounded-[14px] border border-line bg-panel px-4 py-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <span className="text-sm font-semibold text-ink">First buy, optional</span>
+                {acct && (
+                  <span className="text-xs text-ink-3">
+                    Balance <span className="num">{fmtUsdg(acct.usdg)}</span> USDG
+                  </span>
+                )}
+              </div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <input
+                  value={firstBuy}
+                  onChange={(e) => setFirstBuy(clampUsdgInput(e.target.value))}
+                  placeholder="0.00"
+                  inputMode="decimal"
+                  aria-label="First buy in USDG"
+                  className="num w-full min-w-0 bg-transparent text-3xl text-ink placeholder:text-ink-3 focus:outline-none"
+                />
+                <span className="shrink-0 text-sm text-ink-2">USDG</span>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {["10", "50", "100"].map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setFirstBuy(v)}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${firstBuy === v ? "border-brand bg-brand-soft text-brand" : "border-line text-ink-2 hover:border-line-2"}`}
+                  >
+                    ${v}
+                  </button>
+                ))}
+                {acct && (
+                  <button
+                    type="button"
+                    onClick={() => setFirstBuy(ethers.utils.formatUnits(acct.usdg, 6))}
+                    className="rounded-full border border-line px-3 py-1 text-xs font-medium text-ink-2 transition-colors hover:border-line-2"
+                  >
+                    Max
+                  </button>
+                )}
+                {firstBuy && (
+                  <button type="button" onClick={() => setFirstBuy("")} className="px-1 text-xs text-ink-3 hover:text-ink">
+                    Clear
+                  </button>
+                )}
+              </div>
+              <p className="mt-3 text-xs leading-relaxed text-ink-3">
+                Bundled into the launch, so it is the pool&apos;s first swap: nobody trades before you. The fee is waived except
+                Doppler&apos;s slice, {firstBuyDopplerCostPct(feeBps, antiSnipe).toFixed(2)}% of the tokens.
+                {withFirstBuy && predicted?.firstBuyOut && (
+                  <>
+                    {" "}
+                    You get about{" "}
+                    <span className="num font-semibold text-ink">
+                      {Number(ethers.utils.formatEther(predicted.firstBuyOut)).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                    </span>{" "}
+                    ${symbol || "TICKER"}.
+                  </>
+                )}
+              </p>
+            </div>
+          </Step>
+
+          {/* a phone gets the launch panel at the end of the flow */}
+          <li className="mt-8 list-none lg:hidden">
+            <LaunchPanel
+              {...{ predicted, simError, address, ready, mcapUsd, viaHub, enginePct, treasuryPct, feeSplit, withFirstBuy, symbol, launched, error }}
+              button={launchButton}
+            />
+          </li>
+        </ol>
       </div>
     </div>
+  );
+}
+
+/* ───────────────────────────────────────────────────────── pieces ───── */
+
+/** one step of the flow: a numbered node on a rail, its content beside it */
+function Step({
+  n,
+  title,
+  meta,
+  last,
+  children,
+}: {
+  n: number;
+  title: string;
+  meta?: string;
+  last?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <li className="relative list-none pb-10 pl-11 sm:pl-14">
+      {!last && <span aria-hidden className="absolute top-9 bottom-0 left-[15px] w-px bg-line-2 sm:left-[19px]" />}
+      <span
+        aria-hidden
+        className="absolute top-0 left-0 flex size-8 items-center justify-center rounded-full border border-line-2 bg-panel font-display text-sm font-bold text-brand shadow-[inset_0_0_0_3px_var(--color-panel),inset_0_0_0_4px_var(--color-brand-soft)] sm:size-10 sm:text-base"
+      >
+        {n}
+      </span>
+      <div className="mb-4 flex min-h-8 flex-wrap items-baseline justify-between gap-x-4 gap-y-1 sm:min-h-10">
+        <h2 className="font-display text-xl font-semibold text-ink sm:text-2xl">{title}</h2>
+        {meta && <span className="text-sm text-ink-3">{meta}</span>}
+      </div>
+      {children}
+    </li>
+  );
+}
+
+function Readout({ label, value, note, tone }: { label: string; value: string; note?: string; tone?: "up" | "down" }) {
+  return (
+    <div className="min-w-0 rounded-[14px] border border-line bg-panel px-4 py-3">
+      <div className="text-2xs leading-snug text-ink-3 sm:truncate">{label}</div>
+      <motion.div
+        key={value}
+        initial={{ opacity: 0.4, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        className={`num mt-1 text-2xl font-semibold ${tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-ink"}`}
+      >
+        {value}
+      </motion.div>
+      {note && <div className="mt-0.5 text-2xs leading-snug text-ink-3 sm:truncate">{note}</div>}
+    </div>
+  );
+}
+
+/**
+ * Leverage as a dial you drag: five stops on one track, the fill and the thumb
+ * following. A native range underneath carries keyboard and screen readers.
+ */
+function LeverageDial({ value, onChange, max }: { value: number; onChange: (v: number) => void; max: number | null }) {
+  const i = LEVERAGES.indexOf(value);
+  const allowed = (l: number) => max == null || l <= max;
+  const lastAllowed = LEVERAGES.reduce((k, l, idx) => (allowed(l) ? idx : k), 0);
+  const pct = (i / (LEVERAGES.length - 1)) * 100;
+  return (
+    <div>
+      <div className="flex items-end justify-between">
+        <motion.span
+          key={value}
+          initial={{ scale: 0.85, opacity: 0.4 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ type: "spring", stiffness: 400, damping: 18 }}
+          className="font-display text-6xl leading-none font-bold tracking-[-0.04em] text-ink"
+        >
+          {value}x
+        </motion.span>
+        <span className="pb-1 text-sm text-ink-3">
+          {value >= 25 ? "full degen" : value >= 10 ? "maximum conviction" : value >= 5 ? "aggressive" : "steady"}
+        </span>
+      </div>
+      <div className="relative mt-6 h-10">
+        <div className="absolute top-1/2 right-0 left-0 h-2 -translate-y-1/2 rounded-full bg-panel-2" />
+        <motion.div
+          className="absolute top-1/2 left-0 h-2 -translate-y-1/2 rounded-full bg-gradient-to-r from-step-3 to-brand"
+          initial={false}
+          animate={{ width: `${pct}%` }}
+          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+        />
+        {LEVERAGES.map((l, k) => (
+          <button
+            key={l}
+            type="button"
+            tabIndex={-1}
+            onClick={() => allowed(l) && onChange(l)}
+            className={`absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-panel ${allowed(l) ? "bg-line-2" : "bg-down/40"}`}
+            style={{ left: `${(k / (LEVERAGES.length - 1)) * 100}%` }}
+            aria-hidden
+          />
+        ))}
+        <motion.div
+          className="pointer-events-none absolute top-1/2 size-7 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-panel bg-brand shadow-[0_4px_14px_rgba(15,107,63,0.45)]"
+          initial={false}
+          animate={{ left: `${pct}%` }}
+          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+        />
+        <input
+          type="range"
+          min={0}
+          max={LEVERAGES.length - 1}
+          step={1}
+          value={i}
+          onChange={(e) => onChange(LEVERAGES[Math.min(Number(e.target.value), lastAllowed)])}
+          aria-label="Leverage"
+          aria-valuetext={`${value}x`}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        />
+      </div>
+      <div className="relative mt-1 h-5">
+        {LEVERAGES.map((l, k) => (
+          <span
+            key={l}
+            className={`num absolute text-xs ${k === 0 ? "" : k === LEVERAGES.length - 1 ? "-translate-x-full" : "-translate-x-1/2"} ${
+              l === value ? "font-semibold text-brand" : allowed(l) ? "text-ink-3" : "text-ink-3/40 line-through"
+            }`}
+            style={{ left: `${(k / (LEVERAGES.length - 1)) * 100}%` }}
+          >
+            {l}x
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** the anti-snipe schedule, drawn: the fee falling from the opening rate to the coin's fee */
+function ProtectionCurve({ endPct }: { endPct: number }) {
+  const start = SNIPE.startFee / 10_000;
+  const W = 320;
+  const H = 110;
+  const y = (v: number) => 10 + (1 - v / start) * (H - 30);
+  const xEnd = W * 0.62;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="mt-4 h-auto w-full max-w-[420px]" aria-label={`Fee falls from ${start}% to ${endPct}% in ${SNIPE.seconds} seconds`}>
+      <line x1="0" y1={H - 20} x2={W} y2={H - 20} stroke="var(--color-line-2)" />
+      <motion.path
+        d={`M0,${y(start)} L${xEnd},${y(endPct)} L${W},${y(endPct)}`}
+        fill="none"
+        stroke="var(--color-brand)"
+        strokeWidth="2.5"
+        initial={{ pathLength: 0 }}
+        animate={{ pathLength: 1 }}
+        transition={{ duration: 1.1, ease: [0.16, 1, 0.3, 1] }}
+      />
+      <text x="4" y={y(start) - 2} className="fill-ink-2 text-[11px]">
+        {start}% at second 0
+      </text>
+      <text x={xEnd + 6} y={y(endPct) - 6} className="fill-ink-2 text-[11px]">
+        {endPct}% from second {SNIPE.seconds}
+      </text>
+      <text x="0" y={H - 4} className="fill-ink-3 text-[10px]">
+        launch
+      </text>
+      <text x={xEnd} y={H - 4} textAnchor="middle" className="fill-ink-3 text-[10px]">
+        {SNIPE.seconds}s
+      </text>
+    </svg>
+  );
+}
+
+function LaunchPanel({
+  predicted,
+  simError,
+  address,
+  ready,
+  mcapUsd,
+  viaHub,
+  enginePct,
+  treasuryPct,
+  feeSplit,
+  withFirstBuy,
+  symbol,
+  launched,
+  error,
+  button,
+}: {
+  predicted: { asset: string; gas: ethers.BigNumber | null; firstBuyOut: ethers.BigNumber | null } | null;
+  simError: string | null;
+  address: string | null | undefined;
+  ready: boolean;
+  mcapUsd: number;
+  viaHub: boolean;
+  enginePct: number;
+  treasuryPct: number;
+  feeSplit: FeeSplit | null;
+  withFirstBuy: boolean;
+  symbol: string;
+  launched: Launched | null;
+  error: string | null;
+  button: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-[18px] border border-line bg-panel p-5">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-2 text-sm">
+        <dt className="text-ink-3">Token address</dt>
+        <dd className="num min-w-0 truncate text-right text-ink">
+          {predicted ? (
+            <a className="underline underline-offset-2" href={explorerAddr(predicted.asset)} target="_blank" rel="noreferrer">
+              {short(predicted.asset)}
+            </a>
+          ) : address && ready ? (
+            simError ? <span className="text-down">{simError}</span> : "computing…"
+          ) : (
+            <span className="text-ink-3">name it to preview</span>
+          )}
+        </dd>
+        <dt className="text-ink-3">Opens at</dt>
+        <dd className="num text-right text-ink">~${mcapUsd.toFixed(0)} market cap</dd>
+        <dt className="text-ink-3">Fees</dt>
+        <dd className="min-w-0 truncate text-right text-ink">
+          {viaHub ? (
+            <>
+              95% engine hub{" "}
+              <a className="num text-ink-2 underline underline-offset-2" href={explorerAddr(LAUNCH_FEE_HUB)} target="_blank" rel="noreferrer">
+                {short(LAUNCH_FEE_HUB)}
+              </a>
+            </>
+          ) : (
+            <>
+              {enginePct}% engine, {treasuryPct}% protocol, 5% Doppler
+              {feeSplit && (
+                <>
+                  {" "}
+                  <a className="num text-ink-2 underline underline-offset-2" href={explorerAddr(feeSplit.sink)} target="_blank" rel="noreferrer">
+                    sink
+                  </a>
+                </>
+              )}
+            </>
+          )}
+        </dd>
+        {withFirstBuy && (
+          <>
+            <dt className="text-ink-3">First buy gets</dt>
+            <dd className="num text-right text-ink">
+              {predicted?.firstBuyOut
+                ? `≈ ${Number(ethers.utils.formatEther(predicted.firstBuyOut)).toLocaleString("en-US", { maximumFractionDigits: 0 })} $${symbol || "TICKER"}`
+                : "simulating…"}
+            </dd>
+          </>
+        )}
+        <dt className="text-ink-3">Gas</dt>
+        <dd className="num text-right text-ink">
+          {predicted?.gas ? `~${predicted.gas.toNumber().toLocaleString("en-US")} units` : "estimated at signing"}
+        </dd>
+      </dl>
+
+      <div className="mt-5">{button}</div>
+
+      {launched && (
+        <div className="mt-4 rounded-xl bg-brand-soft px-4 py-3.5 text-sm leading-relaxed text-ink-2" role="status">
+          <span className="font-semibold text-brand">${launched.symbol} is live.</span>{" "}
+          <a className="font-medium text-brand underline underline-offset-2" href={`/token/${launched.asset}`}>
+            Open its page
+          </a>
+          <span className="mt-1 flex flex-wrap gap-x-3 text-xs">
+            <a className="underline underline-offset-2" href={explorerToken(launched.asset)} target="_blank" rel="noreferrer">
+              token
+            </a>
+            <a className="underline underline-offset-2" href={dexscreenerPool(launched.poolId)} target="_blank" rel="noreferrer">
+              DexScreener
+            </a>
+            <a className="underline underline-offset-2" href={explorerTx(launched.hash)} target="_blank" rel="noreferrer">
+              transaction
+            </a>
+            <a className="underline underline-offset-2" href={launched.metadataUrl} target="_blank" rel="noreferrer">
+              metadata
+            </a>
+          </span>
+        </div>
+      )}
+      {error && (
+        <p className="mt-4 text-sm leading-relaxed text-down" role="alert">
+          {error}
+        </p>
+      )}
+
+      <p className="mt-4 text-xs leading-relaxed text-ink-3">
+        You sign twice: once to pin the seal and metadata to IPFS (no gas), once for the launch. One transaction through the
+        multiply router{" "}
+        <a className="num underline underline-offset-2" href={explorerAddr(LAUNCH_ROUTER)} target="_blank" rel="noreferrer">
+          {short(LAUNCH_ROUTER)}
+        </a>{" "}
+        deploys the token, seeds the pool and locks it. The lock is irreversible.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The take-profit as a slider from +10% to +500%, with the old profiles as shortcuts and a
+ * reading of the approach underneath: what the target means at this leverage on this asset,
+ * what one deposit returns to the coin, and a warning when the target sits much further away
+ * than the liquidation.
+ */
+function TakeProfitSlider({
+  value,
+  onChange,
+  market,
+  leverage,
+  up,
+}: {
+  value: number;
+  onChange: (v: number) => void;
+  market: string;
+  leverage: number;
+  up: boolean;
+}) {
+  const a = approachFor(value);
+  const pct = ((value - TP_MIN_PCT) / (TP_MAX_PCT - TP_MIN_PCT)) * 100;
+  const need = value / leverage;
+  const liqAway = 100 / leverage;
+  const far = need > liqAway * 2;
+  const tone = value > 150 ? "text-down" : value <= 30 ? "text-up" : "text-brand";
+  const band = value <= 30 ? "safe" : value <= 75 ? "balanced" : value <= 150 ? "degen" : "moon";
+  return (
+    <div>
+      <div className="flex items-end justify-between gap-4">
+        <span className="num font-display text-6xl leading-none font-bold tracking-[-0.04em] text-ink">+{value}%</span>
+        <span className={`pb-1 text-sm font-semibold capitalize ${tone}`}>{band}</span>
+      </div>
+
+      <div className="relative mt-6 h-10">
+        <div className="absolute top-1/2 right-0 left-0 h-2 -translate-y-1/2 rounded-full bg-gradient-to-r from-up/25 via-brand/25 to-down/30" />
+        <div
+          className="absolute top-1/2 left-0 h-2 -translate-y-1/2 rounded-full bg-gradient-to-r from-up via-brand to-down"
+          style={{ width: `${pct}%` }}
+        />
+        <div
+          className="pointer-events-none absolute top-1/2 size-7 -translate-x-1/2 -translate-y-1/2 rounded-full border-[3px] border-panel bg-ink shadow-[0_4px_14px_rgba(12,52,32,0.4)]"
+          style={{ left: `${pct}%` }}
+        />
+        <input
+          type="range"
+          min={TP_MIN_PCT}
+          max={TP_MAX_PCT}
+          step={5}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+          aria-label="Take-profit per deposit"
+          aria-valuetext={`+${value}%`}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {TP_PRESETS.map((p) => (
+          <button
+            key={p.pct}
+            type="button"
+            onClick={() => onChange(p.pct)}
+            className={`num rounded-full border px-3 py-1 text-xs transition-colors ${
+              value === p.pct ? "border-brand bg-brand-soft font-semibold text-brand" : "border-line text-ink-2 hover:border-line-2"
+            }`}
+          >
+            +{p.pct}% {p.label}
+          </button>
+        ))}
+      </div>
+
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={a.title}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.22 }}
+          className="mt-5 rounded-[14px] border border-line bg-panel p-4 sm:p-5"
+        >
+          <div className="font-display text-xl font-semibold text-ink">{a.title}</div>
+          <p className="mt-1.5 text-sm leading-relaxed text-ink-2">{a.text}</p>
+          <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-4">
+            <div>
+              <dt className="text-2xs text-ink-3">Banks when {market} moves</dt>
+              <dd className="num mt-0.5 text-lg font-semibold text-ink">
+                {need.toFixed(need < 10 ? 1 : 0)}% {up ? "up" : "down"}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-2xs text-ink-3">$100 deposit, when it banks</dt>
+              <dd className="num mt-0.5 text-lg font-semibold text-brand">${(value * 0.75).toFixed(0)} bought back</dd>
+            </div>
+          </dl>
+          {far && (
+            <p className="mt-4 rounded-lg bg-[color-mix(in_oklch,var(--color-down),transparent_90%)] px-3 py-2 text-xs leading-relaxed text-ink">
+              At {leverage}x this needs a {need.toFixed(0)}% move without ever going about {liqAway.toFixed(liqAway < 10 ? 1 : 0)}% the
+              other way, where a deposit is liquidated. Possible, rarely.
+            </p>
+          )}
+          <p className="mt-3 text-xs leading-relaxed text-ink-3">
+            A deposit that has not banked after {TP_DECAY.startDays} days starts lowering its target, down to +{TP_DECAY.floorPct}% by
+            day {TP_DECAY.endDays}, so profit never sits in the market forever.
+          </p>
+        </motion.div>
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** the side change, as a flood of the new side's ink from the click, gone in under a second */
+function SideWash({ wash }: { wash: { x: number; y: number; to: "long" | "short"; id: number } | null }) {
+  const reduced = useReducedMotion();
+  if (!wash || reduced) return null;
+  const colour = wash.to === "short" ? "rgba(179,38,30,0.32)" : "rgba(15,107,63,0.3)";
+  return (
+    <motion.div
+      key={wash.id}
+      aria-hidden
+      className="pointer-events-none fixed inset-0 z-[55]"
+      style={{ background: colour }}
+      initial={{ clipPath: `circle(0px at ${wash.x}px ${wash.y}px)`, opacity: 1 }}
+      animate={{ clipPath: `circle(150% at ${wash.x}px ${wash.y}px)`, opacity: 0 }}
+      transition={{ clipPath: { duration: 0.7, ease: [0.16, 1, 0.3, 1] }, opacity: { duration: 0.9, ease: "easeIn" } }}
+    />
   );
 }

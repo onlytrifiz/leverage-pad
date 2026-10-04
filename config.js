@@ -68,18 +68,28 @@ module.exports = {
   OPEN_GATE_USD: Number(process.env.PERPSPAD_OPEN_GATE_USD || 20),   // apre il perp quando la riserva arriva qui
   TOPUP_STEP_USD: Number(process.env.PERPSPAD_TOPUP_STEP_USD || 20), // ogni +N$ di riserva → top-up collaterale
 
-  // ── profili di rischio del take-profit (scelti al lancio, --risk) ───────────
-  // Il TP e' PER TRANCHE: ogni deposito/topup e' una tranche col suo entry, e
-  // quando il suo PnL raggiunge +triggerPct (sul collaterale della tranche, cioe'
-  // il sottostante si muove di triggerPct/leva dal suo entry) la tranche si
-  // chiude TUTTA e realizza. Niente diluizione da topup: ogni dollaro di fee
-  // corre verso il proprio target.
-  // Override via env (utili per tuning e per i test end-to-end: abbassare il
-  // trigger fa scattare il take-profit senza aspettare il movimento reale).
+  // ── take-profit (per coin, chosen at launch and stored on the router) ───────
+  // The TP is PER TRANCHE: every deposit/top-up is a tranche with its own entry, and when its
+  // PnL reaches +takeProfitPct% of the tranche's collateral (the underlying moves by
+  // takeProfitPct/leverage from that entry) the whole tranche closes and banks. Top-ups do not
+  // dilute older tranches. The bounds mirror the router's engineConfig (integer percent).
+  TP_MIN_PCT: Number(process.env.PERPSPAD_TP_MIN_PCT ?? 10),
+  TP_MAX_PCT: Number(process.env.PERPSPAD_TP_MAX_PCT ?? 500),
+  // Time decay: a tranche that has not reached its target after TP_DECAY_START_DAYS sees it
+  // lowered linearly, reaching TP_DECAY_FLOOR_PCT at TP_DECAY_END_DAYS, so a +500% target that
+  // never prints does not hold the fees hostage forever. A target already at or below the
+  // floor never moves.
+  TP_DECAY_START_DAYS: Number(process.env.PERPSPAD_TP_DECAY_START_DAYS ?? 7),
+  TP_DECAY_END_DAYS: Number(process.env.PERPSPAD_TP_DECAY_END_DAYS ?? 30),
+  TP_DECAY_FLOOR_PCT: Number(process.env.PERPSPAD_TP_DECAY_FLOOR_PCT ?? 10),
+  // Legacy: the three risk profiles coins carried before the take-profit became a free percent.
+  // Only used to map old registry records (`riskProfile`, no `takeProfitPct`) and by the V3
+  // launcher (launchCoin.js); nothing is decided from them for coins launched after the upgrade.
+  LEGACY_RISK_TP_PCT: { safe: 20, balanced: 50, degen: 100 },
   RISK_PROFILES: {
-    safe: { triggerPct: Number(process.env.PERPSPAD_RISK_SAFE ?? 0.20) },          // ogni tranche incassa a +20%
-    balanced: { triggerPct: Number(process.env.PERPSPAD_RISK_BALANCED ?? 0.50) },  // ogni tranche incassa a +50%
-    degen: { triggerPct: Number(process.env.PERPSPAD_RISK_DEGEN ?? 1.00) },        // ogni tranche incassa a +100%
+    safe: { triggerPct: 0.20 },
+    balanced: { triggerPct: 0.50 },
+    degen: { triggerPct: 1.00 },
   },
   DEFAULT_RISK: 'balanced',
   // Preleva il profitto realizzato da Lighter sopra questa soglia. Lighter rifiuta

@@ -7,11 +7,9 @@ import { cn } from "cn";
 import { motion } from "motion/react";
 import { Container } from "@/components/ui/container";
 import { WalletButton } from "@/components/wallet";
-import { CHAIN } from "@/lib/clientConfig";
-import { LivePulse } from "@/components/motion";
 
 const LINKS = [
-  { href: "/", label: "Market" },
+  { href: "/market", label: "Market" },
   { href: "/launch", label: "Launch" },
   { href: "/stats", label: "Stats" },
   { href: "/docs", label: "Docs" },
@@ -26,7 +24,7 @@ const LINKS = [
 export default function Nav() {
   const pathname = usePathname();
   const isActive = (href: string) =>
-    href === "/" ? pathname === "/" : pathname.startsWith(href);
+    pathname.startsWith(href);
 
   /*
    * The active item carries a shared `layoutId`, so the marker travels between
@@ -69,10 +67,6 @@ export default function Nav() {
             {navLinks("desktop")}
           </nav>
           <div className="ml-auto flex shrink-0 items-center gap-3">
-            <span className="hidden items-center gap-1.5 text-xs text-ink-3 lg:flex">
-              <LivePulse />
-              {CHAIN.name} · {CHAIN.id}
-            </span>
             <WalletButton />
           </div>
         </div>

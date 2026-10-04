@@ -59,14 +59,28 @@ async function markets() {
   }
   return _markets;
 }
-// symbol → {index, sizeDec, priceDec, status, minBaseUnits}
-async function market(symbol) {
-  const m = await markets();
-  const info = m[symbol];
+// Highest leverage the market allows, from its minimum initial margin fraction (basis points
+// of 1e4: 200 = 2% = 50x). The epsilon keeps 3333 at 3x rather than a float's 2.9999x.
+// null when the sidecar could not read it: no cap known, nothing is blocked on a guess.
+function maxLeverageFromImf(minImf) {
+  const imf = Number(minImf);
+  return imf > 0 ? Math.floor(10000 / imf + 1e-9) : null;
+}
+
+// the sidecar's market entry → what the keeper uses (pure, testable without the venue)
+function parseMarket(symbol, info) {
   if (!info) throw new Error(`mercato Lighter "${symbol}" inesistente sul profilo ${config.LIGHTER_PROFILE}`);
   const minBaseUnits = info.min_base ? Math.max(1, Math.round(parseFloat(info.min_base) * 10 ** info.size_dec)) : 1;
   const minQuoteUsd = info.min_quote ? parseFloat(info.min_quote) : 0;
-  return { index: info.index, sizeDec: info.size_dec, priceDec: info.price_dec, status: info.status, minBaseUnits, minQuoteUsd };
+  return {
+    index: info.index, sizeDec: info.size_dec, priceDec: info.price_dec, status: info.status, minBaseUnits, minQuoteUsd,
+    maxLeverage: maxLeverageFromImf(info.min_imf),
+  };
+}
+
+// symbol → {index, sizeDec, priceDec, status, minBaseUnits, minQuoteUsd, maxLeverage}
+async function market(symbol) {
+  return parseMarket(symbol, (await markets())[symbol]);
 }
 
 const selftest = () => call('selftest');
@@ -91,6 +105,6 @@ const withdraw = ({ accountIndex, amount, apiPrivKey, apiKeyIndex = 4 }) =>
 
 module.exports = {
   enabled, simulate, mode: MODE,
-  selftest, markets, market, resolveAccount, account,
+  selftest, markets, market, parseMarket, maxLeverageFromImf, resolveAccount, account,
   intentAddress, depositLatest, registerKey, setLeverage, open, close, addMargin, withdraw,
 };

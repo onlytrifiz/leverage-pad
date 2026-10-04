@@ -3,7 +3,7 @@ const config = require('../config');
 const { provider, gasPrice } = require('../lib/chain');
 const { validateLaunchParams } = require('../lib/launchParams');
 const { deriveSubWallet, checkFingerprint } = require('../lib/subwallet');
-const { ROUTER_IFACE, SIDES, RISKS } = require('../lib/routerCoins');
+const { ROUTER_IFACE, SIDES } = require('../lib/routerCoins');
 
 /**
  * launchRouter.js — launch a coin through the MultiplyLaunchRouter from the CLI.
@@ -13,22 +13,25 @@ const { ROUTER_IFACE, SIDES, RISKS } = require('../lib/routerCoins');
  * keeper learns about the coin. Nothing is written to the registry here: the keeper's sync does
  * that on its next tick, from the chain.
  *
- * The engine (market, side, leverage, risk) goes on-chain in the launch input and comes back
+ * The engine (market, side, leverage, take-profit, managed) goes on-chain in the launch input and comes back
  * in the MultiplyEngine event: that is what the keeper reads. The tokenURI is only for
  * terminals (logo, description): `--token-uri ipfs://…` pinned through the site's
  * /api/metadata, or empty for a test coin.
  *
  * Usage: node scripts/launchRouter.js --name "Test 8" --symbol TEST8 --market NVDA --side long --lev 3
- *          [--risk balanced] [--fee-bps 300] [--snipe] [--mcap 4000] [--first-buy 5]
+ *          [--tp 50] [--managed] [--fee-bps 300] [--snipe] [--mcap 4000] [--first-buy 5]
  *          [--token-uri ipfs://…] [--broadcast]
+ * --tp is the take-profit in integer percent (10..500, default 50); --managed lets the creator
+ * retune leverage and take-profit later, after the router's notice period.
  * Without --broadcast: simulation only (eth_call on router.launch), nothing sent.
  */
 
 const ROUTER_ABI = new ethers.utils.Interface([
-  'function launch((string name,string symbol,string tokenURI,uint24 fee,bool antiSnipe,uint256 mcap,uint128 firstBuy,bytes32 salt,string market,uint8 side,uint8 leverage,uint8 risk) input) returns (address asset,bytes32 poolId,uint128 firstBuyOut)',
+  'function launch((string name,string symbol,string tokenURI,uint24 fee,bool antiSnipe,uint256 mcap,uint128 firstBuy,bytes32 salt,string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed) input) returns (address asset,bytes32 poolId,uint128 firstBuyOut)',
   'function predictSink(address launcher,bytes32 salt) view returns (address)',
   'function sinkConfig() view returns ((address implementation,address keeper,address treasury,uint16 treasuryBps))',
   'function paused() view returns (bool)',
+  'function engineConfig() view returns ((uint64 leverageMask,uint16 minTakeProfitPct,uint16 maxTakeProfitPct,uint32 managedDelay))',
 ]);
 const ERC20_IFACE = new ethers.utils.Interface(['function allowance(address,address) view returns (uint256)', 'function approve(address,uint256) returns (bool)']);
 
@@ -43,11 +46,13 @@ async function main() {
   if (!config.DEPLOYER_KEY) throw new Error('DEPLOYER_PRIVATE_KEY missing in .env');
   checkFingerprint();
   const launcher = new ethers.Wallet(config.DEPLOYER_KEY, provider);
+  // the risk profiles are gone: a leftover --risk would otherwise be dropped without a word
+  if (process.argv.includes('--risk')) throw new Error('--risk was replaced by --tp <percent> (safe = 20, balanced = 50, degen = 100)');
 
   // the same validation the keeper applies when it reads the metadata back
   const p = validateLaunchParams({
     name: arg('name', ''), symbol: arg('symbol', ''), market: arg('market', ''), side: arg('side', ''),
-    leverage: Number(arg('lev', '0')), riskProfile: arg('risk', config.DEFAULT_RISK), creator: arg('creator', launcher.address),
+    leverage: Number(arg('lev', '0')), takeProfitPct: arg('tp', '50'), managed: flag('managed'), creator: arg('creator', launcher.address),
   });
   const feePips = Number(arg('fee-bps', '300')) * 100;
   const antiSnipe = flag('snipe');
@@ -58,7 +63,7 @@ async function main() {
   const tokenURI = arg('token-uri', '');
   const input = {
     name: p.name, symbol: p.symbol, tokenURI, fee: feePips, antiSnipe, mcap: mcapRaw, firstBuy, salt,
-    market: p.market, side: SIDES.indexOf(p.side), leverage: p.leverage, risk: RISKS.indexOf(p.riskProfile),
+    market: p.market, side: SIDES.indexOf(p.side), leverage: p.leverage, takeProfitPct: p.takeProfitPct, managed: p.managed,
   };
 
   const router = new ethers.Contract(config.LAUNCH_ROUTER, ROUTER_ABI, provider);
@@ -84,12 +89,13 @@ async function main() {
   } catch (e) {
     if (!firstBuy.isZero() && !broadcast) simNote = 'first buy needs the USDG approval first (sent only with --broadcast): simulation skipped';
     else if (/data="0x"/.test(e.message) && !sinkCfg) throw new Error('router.launch reverts with no data and the router has no sinkConfig(): the live router predates the on-chain engine and sinks. Broadcast script/UpgradeRouterSink.s.sol first.');
+    else if (!(await router.engineConfig().then(() => true, () => false))) throw new Error('router.launch reverts and the router has no engineConfig(): the live router predates the take-profit engine. Broadcast script/UpgradeRouterEngine.s.sol first.');
     else throw new Error('router.launch reverts in simulation: ' + e.message.slice(0, 200));
   }
   const gas = simNote ? null : await provider.estimateGas({ from: launcher.address, to: config.LAUNCH_ROUTER, data });
 
   console.log(`launch via MultiplyLaunchRouter ${config.LAUNCH_ROUTER}`);
-  console.log(` coin       : ${p.name} (${p.symbol}) · ${p.market} ${p.side} ${p.leverage}x · ${p.riskProfile}`);
+  console.log(` coin       : ${p.name} (${p.symbol}) · ${p.market} ${p.side} ${p.leverage}x · take-profit +${p.takeProfitPct}%${p.managed ? ' · managed' : ''}`);
   console.log(` fee        : ${feePips / 10_000}% hook fee in USDG${antiSnipe ? ' · protection on (80% → fee in 10 s)' : ' · flat'}`);
   console.log(` mcap       : ${mcapRaw.isZero() ? 'policy default' : '$' + ethers.utils.formatUnits(mcapRaw, 6)}`);
   console.log(` token      : ${asset || '(not simulated)'}${poolId ? '  pool ' + poolId : ''}`);
@@ -111,7 +117,7 @@ async function main() {
       const ev = ROUTER_IFACE.parseLog(l);
       if (ev.name === 'MultiplyLaunch') console.log(`\n✓ launched ${ev.args.asset} (pool ${ev.args.poolId}) at block ${l.blockNumber}`);
       if (ev.name === 'FeeSink') console.log(`  fee sink ${ev.args.sink}`);
-      if (ev.name === 'MultiplyEngine') console.log(`  engine ${ev.args.market} side ${ev.args.side} ${ev.args.leverage}x risk ${ev.args.risk}`);
+      if (ev.name === 'MultiplyEngine') console.log(`  engine ${ev.args.market} side ${ev.args.side} ${ev.args.leverage}x +${ev.args.takeProfitPct}%${ev.args.managed ? ' managed' : ''}`);
     } catch { /* other event */ }
   }
   console.log('  the keeper adopts the coin on its next tick (sync from MultiplyLaunch → setDestination on the sink)');

@@ -9,17 +9,19 @@ import { cn } from "cn";
  *
  * `page`  — reading widths: token detail, stats, launch, docs.
  * `wide`  — the three-column market view.
+ * `landing` — the home page's story sections: wider than prose, narrower than
+ *             the market, so a split layout does not drift apart on a big screen.
  */
 export function Container({
   width = "page",
   className,
   ...props
-}: React.ComponentProps<"div"> & { width?: "page" | "wide" }) {
+}: React.ComponentProps<"div"> & { width?: "page" | "wide" | "landing" }) {
   return (
     <div
       className={cn(
         "mx-auto w-full px-4 sm:px-5",
-        width === "page" ? "max-w-[1200px]" : "max-w-[1680px]",
+        width === "page" ? "max-w-[1200px]" : width === "landing" ? "max-w-[1320px]" : "max-w-[1680px]",
         className
       )}
       {...props}

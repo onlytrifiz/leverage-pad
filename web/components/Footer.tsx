@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Container } from "@/components/ui/container";
 import { CHAIN, explorerAddr } from "@/lib/clientConfig";
+import { IntroLink } from "@/components/intro/IntroButton";
 
 /**
  * Provenance belongs where somebody looking for it goes to look: the launch
@@ -14,6 +15,7 @@ export default function Footer({ router }: { router?: string }) {
           multiply.cash · liquidity locked forever · fees → perp → buyback &amp; burn
         </span>
         <span className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+          <IntroLink className="transition-colors hover:text-ink" />
           <Link href="/docs" className="transition-colors hover:text-ink">
             Docs
           </Link>

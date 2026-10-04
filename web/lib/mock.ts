@@ -81,7 +81,9 @@ const specCoin = (s: DemoSpec): Coin => ({
   market: s.market,
   side: s.side,
   leverage: s.leverage,
-  riskProfile: s.risk,
+  takeProfitPct: s.risk === "safe" ? 20 : s.risk === "degen" ? 100 : 50,
+  managed: false,
+  pendingEngine: null,
   createdAt: new Date(Date.now() - s.ageDays * 86_400_000).toISOString(),
 });
 
@@ -181,6 +183,8 @@ function demoTranches(s: DemoSpec): TrancheView[] {
       collateralUsd: collateral,
       ts: DEMO_NOW - (i + 1) * 86_400 - Math.floor(r() * 40_000),
       synthetic: false,
+      takeProfitPct: trigger * 100,
+      leverage: s.leverage,
     });
   }
   return out.sort((a, b) => b.progress - a.progress);
@@ -195,6 +199,7 @@ export function demoDetail(address: string): CoinDetail | null {
   const r = rng(s.seed + 7);
   return {
     demo: true,
+    engineBlocked: null,
     coin: specCoin(s),
     stats: {
       priceUsd: price,

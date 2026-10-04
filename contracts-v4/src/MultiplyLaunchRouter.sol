@@ -42,6 +42,13 @@ import {MultiplyFeeSink} from "./MultiplyFeeSink.sol";
  * immutable. Upgradeability (UUPS) and the owner-set config therefore only govern FUTURE
  * launches; they keep the address stable for indexers when Doppler rotates a module.
  *
+ * Each coin's engine (what its fees trade) is stored here. Market and side are fixed forever.
+ * Leverage and take-profit are fixed too unless the coin was launched `managed`: then its
+ * creator may retune them, each change announced on-chain and effective only after
+ * `managedDelay`, so holders see it coming. The owner may override any coin immediately, the
+ * escape hatch for a venue that lowers a market's leverage cap or delists it. Nothing here
+ * moves funds: the keeper reads `engineOf` and runs the position accordingly.
+ *
  * Time is `block.timestamp` only: on Robinhood Chain `block.number` is the L1 block number.
  */
 contract MultiplyLaunchRouter is
@@ -106,15 +113,39 @@ contract MultiplyLaunchRouter is
         // a gateway to learn it; validated here in the same ranges the keeper accepts.
         string market; // Lighter perp symbol, 2-12 chars of A-Z 0-9 (existence is checked off-chain)
         uint8 side; // 0 = long, 1 = short
-        uint8 leverage; // one of 2, 3, 5, 10, 20
-        uint8 risk; // 0 = safe (+20%), 1 = balanced (+50%), 2 = degen (+100%)
+        uint8 leverage; // a stop allowed by `engineConfig.leverageMask` (the venue's cap is checked off-chain)
+        uint16 takeProfitPct; // each deposit banks at +takeProfitPct% on its collateral
+        bool managed; // the creator may retune leverage and take-profit later, after a delay
     }
 
     uint8 public constant SIDE_LONG = 0;
     uint8 public constant SIDE_SHORT = 1;
-    uint8 public constant RISK_MAX = 2;
-    /// bit n set = leverage n allowed: 2, 3, 5, 10, 20
-    uint32 public constant LEVERAGE_MASK = (1 << 2) | (1 << 3) | (1 << 5) | (1 << 10) | (1 << 20);
+    /// upper bound for `EngineConfig.maxTakeProfitPct`: +10,000% (100x the collateral)
+    uint16 public constant TAKE_PROFIT_CEILING = 10_000;
+    /// upper bound for `EngineConfig.managedDelay`
+    uint32 public constant MAX_MANAGED_DELAY = 30 days;
+
+    /// @notice What launches and later changes may set. Owner config, like the policy.
+    struct EngineConfig {
+        uint64 leverageMask; // bit n set = leverage n allowed (n < 64): 2,3,5,10,20,25,50 today
+        uint16 minTakeProfitPct; // +10 today
+        uint16 maxTakeProfitPct; // +500 today
+        uint32 managedDelay; // seconds between a creator's proposal and its effect (12 h today)
+    }
+
+    /// @notice A coin's engine. `pending*` is a managed coin's announced change, effective at
+    /// `pendingAt` (0 = none). Read it through `engineOf`, which applies a change already due.
+    struct Engine {
+        string market;
+        uint8 side;
+        uint8 leverage;
+        uint16 takeProfitPct;
+        bool managed;
+        address creator;
+        uint8 pendingLeverage;
+        uint16 pendingTakeProfitPct;
+        uint64 pendingAt;
+    }
 
     /// @notice Per-coin fee sink. `implementation == 0` disables it (fees go to `policy.feeHub`).
     struct SinkConfig {
@@ -131,6 +162,9 @@ contract MultiplyLaunchRouter is
         // appended by the sink upgrade: the members above keep their slots
         SinkConfig sink;
         mapping(address asset => address sink) sinkOf;
+        // appended by the engine upgrade
+        EngineConfig engineConfig;
+        mapping(address asset => Engine) engines;
     }
 
     // keccak256(abi.encode(uint256(keccak256("multiply.launch-router")) - 1)) & ~bytes32(uint256(0xff))
@@ -149,15 +183,34 @@ contract MultiplyLaunchRouter is
         string tokenURI
     );
     event FeeSink(address indexed asset, address indexed sink);
-    /// @notice The coin's engine, fixed at launch. The keeper reads this, nothing else.
-    event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint8 risk);
+    /// @notice The coin's engine at launch. Later changes arrive as the two events below.
+    event MultiplyEngine(
+        address indexed asset,
+        string market,
+        uint8 side,
+        uint8 leverage,
+        uint16 takeProfitPct,
+        bool managed,
+        address indexed creator
+    );
+    /// @notice A managed coin's creator announced a change, effective at `effectiveAt`.
+    event EngineProposed(address indexed asset, uint8 leverage, uint16 takeProfitPct, uint64 effectiveAt);
+    event EngineProposalCancelled(address indexed asset, address indexed by);
+    /// @notice The owner retuned a coin, effective immediately (pending proposal dropped).
+    event EngineOverridden(address indexed asset, uint8 leverage, uint16 takeProfitPct, address indexed by);
     event ModulesSet(Modules modules);
     event PolicySet(Policy policy);
     event SinkConfigSet(SinkConfig config);
+    event EngineConfigSet(EngineConfig config);
 
     error FeeOutOfRange(uint24 fee, uint24 min, uint24 max);
     error InvalidSinkConfig();
     error InvalidEngine();
+    error InvalidEngineConfig();
+    error UnknownCoin(address asset);
+    error NotManaged(address asset);
+    error NotCreator(address asset);
+    error NothingPending(address asset);
     error McapOutOfRange(uint256 mcap, uint256 min, uint256 max);
     error EmptyName();
     error TickOutOfRange(int24 tick);
@@ -198,7 +251,7 @@ contract MultiplyLaunchRouter is
         Modules memory m = $.modules;
 
         if (bytes(input.name).length == 0 || bytes(input.symbol).length == 0) revert EmptyName();
-        if (!validEngine(input.market, input.side, input.leverage, input.risk)) revert InvalidEngine();
+        if (!validEngine(input.market, input.side, input.leverage, input.takeProfitPct)) revert InvalidEngine();
         if (input.fee < p.minFee || input.fee > p.maxFee) revert FeeOutOfRange(input.fee, p.minFee, p.maxFee);
         uint256 mcap = input.mcap == 0 ? p.defaultMcap : input.mcap;
         if (mcap < p.minMcap || mcap > p.maxMcap) revert McapOutOfRange(mcap, p.minMcap, p.maxMcap);
@@ -234,7 +287,16 @@ contract MultiplyLaunchRouter is
             asset, msg.sender, poolId, input.fee, input.antiSnipe, mcap, tick, input.firstBuy, firstBuyOut, input.tokenURI
         );
 
-        emit MultiplyEngine(asset, input.market, input.side, input.leverage, input.risk);
+        Engine storage e = $.engines[asset];
+        e.market = input.market;
+        e.side = input.side;
+        e.leverage = input.leverage;
+        e.takeProfitPct = input.takeProfitPct;
+        e.managed = input.managed;
+        e.creator = msg.sender;
+        emit MultiplyEngine(
+            asset, input.market, input.side, input.leverage, input.takeProfitPct, input.managed, msg.sender
+        );
 
         if (sink != address(0)) {
             MultiplyFeeSink(sink).initialize(asset, p.numeraire, s.treasuryBps, SINK_RECEIVED_BPS);
@@ -243,17 +305,98 @@ contract MultiplyLaunchRouter is
         }
     }
 
-    /// @notice The engine ranges the keeper serves: market 2-12 chars of [A-Z0-9], side 0/1,
-    /// leverage in {2,3,5,10,20}, risk 0-2.
-    function validEngine(string calldata market, uint8 side, uint8 leverage, uint8 risk) public pure returns (bool) {
+    /// @notice The engine ranges launches accept: market 2-12 chars of [A-Z0-9], side 0/1,
+    /// leverage and take-profit inside `engineConfig`.
+    function validEngine(string calldata market, uint8 side, uint8 leverage, uint16 takeProfitPct)
+        public
+        view
+        returns (bool)
+    {
         bytes calldata m = bytes(market);
         if (m.length < 2 || m.length > 12) return false;
         for (uint256 i; i < m.length; i++) {
             bytes1 c = m[i];
             if (!((c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A))) return false;
         }
-        if (side > SIDE_SHORT || risk > RISK_MAX) return false;
-        return leverage < 32 && (LEVERAGE_MASK >> leverage) & 1 == 1;
+        if (side > SIDE_SHORT) return false;
+        return validTuning(leverage, takeProfitPct);
+    }
+
+    /// @notice Leverage and take-profit inside the owner's bounds: what launches, proposals and
+    /// overrides may set.
+    function validTuning(uint8 leverage, uint16 takeProfitPct) public view returns (bool) {
+        EngineConfig storage c = _s().engineConfig;
+        if (takeProfitPct < c.minTakeProfitPct || takeProfitPct > c.maxTakeProfitPct) return false;
+        return leverage < 64 && (c.leverageMask >> leverage) & 1 == 1;
+    }
+
+    // ──────────────────────────────────────────────────────────── engine ──
+
+    /**
+     * @notice A managed coin's creator announces new leverage and take-profit. They take effect
+     * after `managedDelay`; a new proposal replaces the previous one and restarts the clock (one
+     * already due has become current first). Market and side can never change.
+     */
+    function proposeEngine(address asset, uint8 leverage, uint16 takeProfitPct) external whenNotPaused {
+        Engine storage e = _s().engines[asset];
+        if (e.creator == address(0)) revert UnknownCoin(asset);
+        if (!e.managed) revert NotManaged(asset);
+        if (msg.sender != e.creator) revert NotCreator(asset);
+        if (!validTuning(leverage, takeProfitPct)) revert InvalidEngine();
+        _settle(e);
+        uint64 at = uint64(block.timestamp) + _s().engineConfig.managedDelay;
+        e.pendingLeverage = leverage;
+        e.pendingTakeProfitPct = takeProfitPct;
+        e.pendingAt = at;
+        emit EngineProposed(asset, leverage, takeProfitPct, at);
+    }
+
+    /// @notice Withdraws a proposal not yet in effect. The creator or the owner.
+    function cancelEngineProposal(address asset) external {
+        Engine storage e = _s().engines[asset];
+        if (e.creator == address(0)) revert UnknownCoin(asset);
+        if (msg.sender != e.creator && msg.sender != owner()) revert NotCreator(asset);
+        if (e.pendingAt == 0 || block.timestamp >= e.pendingAt) revert NothingPending(asset);
+        _clearPending(e);
+        emit EngineProposalCancelled(asset, msg.sender);
+    }
+
+    /// @notice The owner retunes any coin, managed or not, effective immediately.
+    function overrideEngine(address asset, uint8 leverage, uint16 takeProfitPct) external onlyOwner {
+        Engine storage e = _s().engines[asset];
+        if (e.creator == address(0)) revert UnknownCoin(asset);
+        if (!validTuning(leverage, takeProfitPct)) revert InvalidEngine();
+        e.leverage = leverage;
+        e.takeProfitPct = takeProfitPct;
+        _clearPending(e);
+        emit EngineOverridden(asset, leverage, takeProfitPct, msg.sender);
+    }
+
+    /// @notice A coin's engine as it stands now: a proposal already due is shown as current,
+    /// one still in the future as pending. Zero creator = not launched here.
+    function engineOf(address asset) external view returns (Engine memory e) {
+        e = _s().engines[asset];
+        if (e.pendingAt != 0 && block.timestamp >= e.pendingAt) {
+            e.leverage = e.pendingLeverage;
+            e.takeProfitPct = e.pendingTakeProfitPct;
+            e.pendingLeverage = 0;
+            e.pendingTakeProfitPct = 0;
+            e.pendingAt = 0;
+        }
+    }
+
+    function _settle(Engine storage e) private {
+        if (e.pendingAt != 0 && block.timestamp >= e.pendingAt) {
+            e.leverage = e.pendingLeverage;
+            e.takeProfitPct = e.pendingTakeProfitPct;
+            _clearPending(e);
+        }
+    }
+
+    function _clearPending(Engine storage e) private {
+        e.pendingLeverage = 0;
+        e.pendingTakeProfitPct = 0;
+        e.pendingAt = 0;
     }
 
     /// @notice The sink a launch by `launcher` with `salt` will get (zero when sinks are disabled).
@@ -413,6 +556,18 @@ contract MultiplyLaunchRouter is
         emit SinkConfigSet(config);
     }
 
+    /// @notice Bounds for engines: launches and proposals after this call. Coins already running
+    /// keep their values (an override or a proposal must itself fit the new bounds).
+    function setEngineConfig(EngineConfig calldata config) external onlyOwner {
+        if (
+            config.leverageMask == 0 || config.leverageMask & 3 != 0 // no 0x, no 1x
+                || config.minTakeProfitPct == 0 || config.minTakeProfitPct > config.maxTakeProfitPct
+                || config.maxTakeProfitPct > TAKE_PROFIT_CEILING || config.managedDelay > MAX_MANAGED_DELAY
+        ) revert InvalidEngineConfig();
+        _s().engineConfig = config;
+        emit EngineConfigSet(config);
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -427,6 +582,10 @@ contract MultiplyLaunchRouter is
 
     function policy() external view returns (Policy memory) {
         return _s().policy;
+    }
+
+    function engineConfig() external view returns (EngineConfig memory) {
+        return _s().engineConfig;
     }
 
     function sinkConfig() external view returns (SinkConfig memory) {

@@ -84,11 +84,7 @@ export default function HedgeCard({ detail }: { detail: CoinDetail }) {
           Perp hedge · {coin.leverage}× {coin.side} {coin.market}
         </span>
         <span className="flex items-center gap-2 text-xs text-brand">
-          {coin.riskProfile && (
-            <span className="rounded-full bg-panel px-2 py-0.5 text-xs font-medium capitalize">
-              {coin.riskProfile}
-            </span>
-          )}
+          <span className="num rounded-full bg-panel px-2 py-0.5 text-xs font-medium">TP +{coin.takeProfitPct}%</span>
           {open ? (
             <span className="flex items-center gap-1.5">
               <LivePulse tone="brand" />

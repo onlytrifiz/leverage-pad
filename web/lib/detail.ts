@@ -4,22 +4,26 @@ import { poolCandles, coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd } f
 import { resolveAccountIndex, perpPosition } from "./lighter";
 import { demoCoins, demoDetail, demoCandles, demoFeed, demoPositions } from "./mock";
 import { FORCE_DEMO } from "./config";
+import { decayedTakeProfitPct } from "./doppler";
 import type { Candle, Coin, CoinDetail, CoinListItem, FeedItem, OpenPosition, TrancheView } from "./types";
 
-/** trigger dei profili di rischio (speculare a config.js del keeper) */
-export const RISK_TRIGGERS: Record<string, number> = { safe: 0.2, balanced: 0.5, degen: 1.0 };
-
-/** costruisce la vista ladder delle tranche dal registry + mark live */
+/**
+ * The tranche ladder from the keeper's book and the live mark. Each tranche runs to its own
+ * target: entry × (1 ± take-profit / leverage), with the leverage it was opened at and the
+ * take-profit after the decay of its age (the keeper's rule, mirrored by decayedTakeProfitPct).
+ */
 export function buildTrancheViews(
   raw: RegistryTranche[] | undefined,
-  coin: Pick<Coin, "side" | "leverage" | "market" | "riskProfile">,
-  mark: number | null
+  coin: Pick<Coin, "side" | "leverage" | "market" | "takeProfitPct">,
+  mark: number | null,
+  nowMs = Date.now()
 ): TrancheView[] {
   if (!raw?.length) return [];
-  const trigger = RISK_TRIGGERS[coin.riskProfile ?? "balanced"] ?? 0.5;
-  const move = trigger / coin.leverage;
   return raw
     .map((t) => {
+      const leverage = t.leverage ?? coin.leverage;
+      const takeProfitPct = decayedTakeProfitPct(coin.takeProfitPct, (nowMs - t.ts) / 86_400_000);
+      const move = takeProfitPct / 100 / leverage;
       const target = coin.side === "short" ? t.entryMark * (1 - move) : t.entryMark * (1 + move);
       const m = mark ?? t.entryMark;
       const span = target - t.entryMark;
@@ -35,6 +39,8 @@ export function buildTrancheViews(
         collateralUsd: t.collateralUsd,
         ts: t.ts,
         synthetic: !!t.synthetic,
+        takeProfitPct,
+        leverage,
       };
     })
     .sort((a, b) => b.progress - a.progress);
@@ -149,6 +155,7 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
     },
     perp,
     tranches,
+    engineBlocked: st?.engineBlocked ?? null,
     subWallet: {
       address: coin.subWallet,
       quoteBalanceUsd: chain.subQuote,

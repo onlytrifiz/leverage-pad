@@ -5,7 +5,9 @@ libs = ["lib"]
 solc_version = "0.8.26"
 evm_version = "cancun"
 optimizer = true
-optimizer_runs = 200
+# 50, not 200: the router with stored engines is 24,689 bytes at 200 runs, over the 24,576 limit;
+# at 50 it is 24,063 (513 bytes of room). The cost is a little gas per call, paid by launchers.
+optimizer_runs = 50
 via_ir = true
 
 # Fork tests and scripts against live Robinhood Chain contracts (Doppler is compiled for cancun).

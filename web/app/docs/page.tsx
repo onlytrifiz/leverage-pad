@@ -83,8 +83,9 @@ const PARAMS = [
   { label: "launch protection", value: `${SNIPE.startFee / 10_000}% → fee in ${SNIPE.seconds}s, opt-in` },
   { label: "perp opens at", value: fmtThreshold(OPEN_GATE_USD) },
   { label: "top-up step", value: fmtThreshold(TOPUP_STEP_USD) },
-  { label: "leverage", value: "2–20x isolated" },
-  { label: "take profit", value: "+20/50/100%" },
+  { label: "leverage", value: "2x to 50x isolated, within the market's cap" },
+  { label: "take profit", value: "+10% to +500% per deposit" },
+  { label: "engine control", value: "fixed, or managed with 12 h notice" },
   { label: "profit split", value: "75% burn · 25% treasury" },
   { label: "keeper tick", value: "15s" },
 ];
@@ -157,7 +158,7 @@ export default function DocsPage() {
               └─ ${FEE_SPLIT_PCT.engine}% the coin's sub-wallet
                     └─ deposits to Lighter at the ${fmtThreshold(OPEN_GATE_USD)} gate
                        opens/tops-up the position chosen at launch
-                       (market · direction · leverage · risk profile)
+                       (market · direction · leverage · take-profit)
 
 realized profit → withdrawn on-chain
   ├─ 75% buys the coin from the pool and burns it
@@ -211,7 +212,7 @@ realized profit → withdrawn on-chain
             </p>
             <p>
               <K>The metadata.</K> Name, ticker, the coin&apos;s seal and the engine
-              settings (market, direction, leverage, risk profile) are pinned to IPFS and
+              settings (market, direction, leverage, take-profit) are pinned to IPFS and
               written into the token, signed by the launching wallet. Terminals and
               explorers read the logo from there; the keeper reads the engine settings.
             </p>
@@ -352,7 +353,10 @@ realized profit → withdrawn on-chain
             </p>
             <p>
               At launch the creator picks the market, the side (long or short) and the
-              leverage: <N>2x, 3x, 5x, 10x or 20x</N>. Positions run{" "}
+              leverage: <N>2x, 3x, 5x, 10x, 20x, 25x or 50x</N>, never above what Lighter allows
+              on that market (50x on BTC, ETH, SPY and QQQ, 3x on the newest memecoins). If the
+              venue later lowers a market&apos;s cap below a coin&apos;s leverage, the keeper stops
+              opening and says so on the coin&apos;s page until the leverage fits again. Positions run{" "}
               <K>isolated margin</K>: a coin&apos;s position can only ever lose the
               collateral it has posted, never more. Higher leverage means faster burns on
               a good call, faster liquidation on a bad one.
@@ -427,13 +431,15 @@ realized profit → withdrawn on-chain
               when the underlying moves <N>trigger ÷ leverage</N> from <em>its</em> entry:
               which is exactly <N>+trigger</N> on that tranche&apos;s own collateral.
               New fees never dilute an old tranche&apos;s progress. The trigger is the
-              coin&apos;s risk profile, fixed at launch:
+              coin&apos;s take-profit, chosen at launch anywhere from <N>+10%</N> to <N>+500%</N>.
+              The usual picks:
             </p>
-            <StatGrid cols={3} className="grid-cols-1">
+            <StatGrid cols={4} className="grid-cols-2">
               {[
                 { k: "Safe", t: "+20%", d: "banks early, banks often" },
                 { k: "Balanced", t: "+50%", d: "the middle path" },
-                { k: "Degen", t: "+100%", d: "maximum conviction" },
+                { k: "Degen", t: "+100%", d: "about doubles each deposit" },
+                { k: "Moon", t: "+300%", d: "rides for a multiple" },
               ].map((p) => (
                 <div key={p.k} className="bg-card px-5 py-4">
                   <div className="text-sm font-semibold text-brand">{p.k}</div>
@@ -443,8 +449,25 @@ realized profit → withdrawn on-chain
               ))}
             </StatGrid>
             <p>
-              Concretely: a 5x <K>safe</K> coin banks each tranche on a 4% move of the
-              underlying; a 2x <K>degen</K> coin demands 50%.
+              Concretely: a 5x coin at +20% banks each tranche on a 4% move of the
+              underlying; a 2x coin at +100% demands 50%.
+            </p>
+            <p>
+              <K>Targets that come down with time.</K> A target far away can leave a deposit in
+              profit but never banked. So a tranche that has not matured after{" "}
+              <N>7 days</N> starts lowering its own target, in a straight line, down to{" "}
+              <N>+10%</N> by day <N>30</N>. A tranche in profit therefore banks eventually; one
+              underwater waits as before, and its worst case stays the liquidation of its own
+              collateral.
+            </p>
+            <p>
+              <K>Managed coins.</K> At launch the creator chooses whether the engine is fixed
+              forever or <K>managed</K>. A managed coin&apos;s creator can retune leverage and
+              take-profit later: every change is announced on-chain by the router and takes
+              effect <N>12 hours</N> after, and the coin carries a Managed badge everywhere.
+              Market and side never change. Independently, the router&apos;s owner can override
+              any coin&apos;s leverage or take-profit immediately, the escape hatch for a venue
+              that lowers a cap or delists a market; every override is a public event.
             </p>
             <p>
               <K>Banking a tranche.</K> When a tranche matures, the keeper closes exactly
