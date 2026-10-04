@@ -56,7 +56,7 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       {/* on a phone the body reserves the bottom bar's height, safe area included */}
-      <body className="min-h-screen pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-0">
+      <body className="min-h-screen pb-[calc(84px+env(safe-area-inset-bottom))] sm:pb-0">
         {/* first paint for a first-time visitor is the intro's night, not a flash of the market */}
         <Script id="intro-boot" strategy="beforeInteractive">
           {INTRO_BOOT_SCRIPT}

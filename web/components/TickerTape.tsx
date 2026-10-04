@@ -11,8 +11,8 @@ import type { MarketRow } from "@/lib/lighter";
  * positions run on. Pauses on hover, still with prefers-reduced-motion (where it
  * degrades to a scrollable static list rather than disappearing).
  *
- * It sticks at `--nav-h`, not at a hard-coded 64px: on a phone the nav is taller
- * because the links wrap, and the tape used to cover them.
+ * It scrolls away with the page: the header floats as a pill, and a tape pinned under it
+ * would leave a strip of page scrolling between the two.
  */
 export default function TickerTape() {
   const { markets, loaded } = useMarkets();
@@ -21,7 +21,7 @@ export default function TickerTape() {
   if (!rows.length) {
     return (
       <div
-        className="sticky top-[var(--nav-h)] z-20 h-[var(--tape-h)] border-b border-border bg-card"
+        className="relative h-[var(--tape-h)] border-y border-border bg-card"
         aria-hidden={!loaded}
       />
     );
@@ -42,7 +42,7 @@ export default function TickerTape() {
 
   return (
     <motion.div
-      className="group sticky top-[var(--nav-h)] z-20 overflow-hidden border-b border-border bg-card"
+      className="group relative overflow-hidden border-y border-border bg-card"
       aria-label="Lighter perp prices"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}

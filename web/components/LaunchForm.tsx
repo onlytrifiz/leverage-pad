@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
+import { ChevronDown, ImagePlus, X } from "lucide-react";
+import { cn } from "cn";
 import { useWallet, ChainGate } from "@/components/wallet";
 import { useMarkets } from "./markets-provider";
 import AssetIcon from "./AssetIcon";
@@ -12,7 +14,6 @@ import { OptionCard, OptionGroup } from "@/components/ui/option-card";
 import { CoinSeal } from "@/components/brand/CoinSeal";
 import { Banknote } from "@/components/brand/Banknote";
 import { EngravedArt } from "@/components/brand/EngravedArt";
-import { OPEN_GATE_USD, fmtThreshold } from "@/lib/thresholds";
 import { fmtChange } from "@/lib/format";
 import { USDG, LAUNCH_FEE_HUB, LAUNCH_ROUTER, explorerTx, explorerToken, explorerAddr } from "@/lib/clientConfig";
 import { multicall } from "@/lib/multicall";
@@ -31,6 +32,9 @@ import {
   routerSalt,
   readProtocolOwner,
   metadataSignMessage,
+  metadataContentHash,
+  IMAGE_MAX_BYTES,
+  type MetadataContent,
   type RouterInput,
   routerEngine,
   NAME_MAX,
@@ -42,9 +46,9 @@ import {
   FEE_SPLIT_PCT,
   ROUTER_LEVERAGES,
   TP_MIN_PCT,
-  TP_MAX_PCT,
   TP_PRESETS,
-  TP_DECAY,
+  TP_MOVE_MAX_PCT,
+  maxTakeProfitPct,
   MANAGED_DELAY_HOURS,
   MANAGED_LIVE,
   type EngineParams,
@@ -54,37 +58,15 @@ import AssetPicker from "@/components/launch/AssetPicker";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 /**
- * Launch configurator: direction → underlying → leverage → take-profit → control → fee →
- * protection → identity, then the launch itself, signed by the connected
+ * Launch configurator: direction → underlying → leverage → take-profit → fee → identity
+ * (name, logo, links), with engine control and launch protection folded under Advanced,
+ * then the launch itself, signed by the connected
  * wallet. The deploy goes through the multiply launch router, which builds the
  * Doppler launch on-chain from these inputs; see `lib/doppler.ts` for the
  * mirror encoders used to predict the token address before signing.
  */
 
 const LEVERAGES: readonly number[] = ROUTER_LEVERAGES;
-
-/** what a take-profit means as a way of running the coin, by band */
-function approachFor(tp: number) {
-  if (tp <= 30)
-    return {
-      title: "Bank small, bank often",
-      text: "Each deposit closes on a short move, so buybacks arrive steadily and little sits in the market for long. Suits calm assets and high leverage.",
-    };
-  if (tp <= 75)
-    return {
-      title: "Let it run, then bank",
-      text: "Fewer take-profits, each one bigger. The usual choice for an asset with a trend behind it.",
-    };
-  if (tp <= 150)
-    return {
-      title: "Double or nothing, per deposit",
-      text: "Every deposit holds until it has about doubled its collateral. When the call is right the burns are big; on a choppy asset deposits wait underwater for a long time.",
-    };
-  return {
-    title: "Moonshot",
-    text: "Deposits ride for a multiple of their collateral. Most of the time they wait; when the asset runs hard, a single take-profit can burn a large slice of supply.",
-  };
-}
 
 const dirCurve = (up: boolean) => (
   <svg viewBox="0 0 64 24" className="h-6 w-16" aria-hidden>
@@ -111,10 +93,16 @@ type Launched = { asset: string; poolId: string; hash: string; symbol: string; t
  */
 async function pinMetadata(
   provider: NonNullable<ReturnType<typeof useWallet>["provider"]>,
-  input: { name: string; symbol: string; creator: string; engine: EngineParams }
+  input: { name: string; symbol: string; creator: string; engine: EngineParams },
+  content: { description: string; socials: MetadataContent["socials"]; logo: Logo | null }
 ) {
   const ts = Math.floor(Date.now() / 1000);
-  const message = metadataSignMessage({ ...input, ts });
+  const contentHash = metadataContentHash({
+    description: content.description,
+    socials: content.socials,
+    imageHash: content.logo?.hash ?? "",
+  });
+  const message = metadataSignMessage({ ...input, ts, contentHash });
   const signature = (await provider.request({
     method: "personal_sign",
     params: [ethers.utils.hexlify(ethers.utils.toUtf8Bytes(message)), input.creator],
@@ -122,11 +110,41 @@ async function pinMetadata(
   const res = await fetch("/api/metadata", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...input, ts, signature }),
+    body: JSON.stringify({
+      ...input,
+      description: content.description,
+      socials: content.socials,
+      image: content.logo?.dataUrl,
+      ts,
+      signature,
+    }),
   });
   const json = (await res.json()) as { tokenURI?: string; gatewayUrl?: string; error?: string };
   if (!res.ok || !json.tokenURI) throw new Error(json.error ?? "Could not pin the metadata.");
   return { tokenURI: json.tokenURI, metadataUrl: json.gatewayUrl ?? `https://ipfs.io/ipfs/${json.tokenURI.replace("ipfs://", "")}` };
+}
+
+/** an uploaded logo: what gets sent (data URL) and what gets signed (sha256 of its bytes) */
+type Logo = { dataUrl: string; hash: string; name: string };
+const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+const DESCRIPTION_MAX = 280;
+const LINK_MAX = 200;
+
+/**
+ * The same cleaning the metadata endpoint applies, so the digest the wallet signs matches the
+ * one the server recomputes: control characters (newlines included) out, trimmed, capped.
+ */
+const cleanText = (s: string, max: number) =>
+  // trimmed again after the cap: a cut can leave a trailing space the server would trim
+  s.replace(/[\r\n]+/g, " ").replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, max).trim();
+
+/** a link as typed ("x.com/foo", "@foo", "http://…") turned into the https URL that gets pinned */
+function normalizeLink(raw: string, kind: "website" | "x" | "telegram"): string {
+  const v = raw.trim();
+  if (!v) return "";
+  if (v.startsWith("@") && kind !== "website") return `https://${kind === "x" ? "x.com" : "t.me"}/${v.slice(1)}`;
+  const url = /^https?:\/\//i.test(v) ? v.replace(/^http:\/\//i, "https://") : `https://${v}`;
+  return /^https:\/\/[^\s]+$/i.test(url) ? url.slice(0, LINK_MAX) : "";
 }
 
 /** USDG has 6 decimals: anything finer would make parseUnits throw and silently drop the first buy. */
@@ -149,13 +167,22 @@ export default function LaunchForm({
   const [side, setSide] = useState<"long" | "short">(initialSide);
   const [market, setMarket] = useState(initialMarket);
   const [lev, setLev] = useState(3);
-  const [tp, setTp] = useState(50);
+  // the pick is kept as chosen; what applies is capped by the leverage, so lowering the
+  // leverage pulls the target in and raising it again gives the pick back
+  const [tpPick, setTp] = useState(50);
+  const tpMax = maxTakeProfitPct(lev);
+  const tp = Math.min(tpPick, tpMax);
   const [managed, setManaged] = useState(false);
-  const [feeBps, setFeeBps] = useState<number>(300);
+  const [feeBps, setFeeBps] = useState<number>(200);
   const [antiSnipe, setAntiSnipe] = useState(false);
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [firstBuy, setFirstBuy] = useState("");
+  const [description, setDescription] = useState("");
+  const [links, setLinks] = useState({ website: "", x: "", telegram: "" });
+  const [logo, setLogo] = useState<Logo | null>(null);
+  const [logoError, setLogoError] = useState<string | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   const [salt, setSalt] = useState<string>(() => randomSalt());
 
   const [predicted, setPredicted] = useState<{ asset: string; gas: ethers.BigNumber | null; firstBuyOut: ethers.BigNumber | null } | null>(null);
@@ -292,9 +319,6 @@ export default function LaunchForm({
   const enginePct = feeSplit ? feeSplit.engineBps / 100 : splitKnown ? 95 : FEE_SPLIT_PCT.engine;
   const treasuryPct = feeSplit ? feeSplit.treasuryBps / 100 : splitKnown ? 0 : FEE_SPLIT_PCT.treasury;
   const viaHub = splitKnown && !feeSplit;
-  const feeWords = viaHub
-    ? "95% feeds the coin's engine; 5% is the Doppler protocol fee."
-    : `${enginePct}% feeds the coin's engine, ${treasuryPct}% is the protocol's share, 5% is the Doppler protocol fee.`;
 
   /*
    * Dry-run on every change, debounced: the token address depends on the salt
@@ -360,7 +384,19 @@ export default function LaunchForm({
         if (rc.status !== "success") throw new Error("The approval reverted.");
       }
       setBusy("Sign to pin metadata");
-      const { tokenURI, metadataUrl } = await pinMetadata(provider, { name: name.trim(), symbol, creator: address, engine });
+      const { tokenURI, metadataUrl } = await pinMetadata(
+        provider,
+        { name: name.trim(), symbol, creator: address, engine },
+        {
+          description: cleanText(description, DESCRIPTION_MAX),
+          socials: {
+            website: normalizeLink(links.website, "website"),
+            x: normalizeLink(links.x, "x"),
+            telegram: normalizeLink(links.telegram, "telegram"),
+          },
+          logo,
+        }
+      );
       const finalInput: RouterInput = { ...routerInput, tokenURI };
       setBusy(withFirstBuy ? "Launching and buying" : "Launching");
       // final dry-run on the router with the pinned calldata: the exact call the wallet signs
@@ -382,9 +418,6 @@ export default function LaunchForm({
   const up = side === "long";
   const move10 = 10 * lev;
   const liqAway = 100 / lev;
-  const engineShare = enginePct / 100;
-  const volToOpen = OPEN_GATE_USD / ((feeBps / 10_000) * engineShare);
-  const engineOn100k = 100_000 * (feeBps / 10_000) * engineShare;
   const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
   const launchButton = (
@@ -411,7 +444,7 @@ export default function LaunchForm({
     <div data-side={side} className="launch-root">
       <SideWash wash={wash} />
       {/* ── the night band: what this page does, in one line ─────────────── */}
-      <section className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
+      <section className="intro-night behind-nav relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
         <div aria-hidden className="pointer-events-none absolute top-1/2 right-[-6%] -z-10 -translate-y-1/2 text-mint/[0.2]">
           <CoinSeal leverage={lev} side={side} takeProfitPct={tp} size={760} rings={4} spin={120} className="w-[110vw] max-w-[760px]" />
         </div>
@@ -568,42 +601,10 @@ export default function LaunchForm({
           </Step>
 
           <Step n={4} title="When it takes profit" meta="Per deposit">
-            <TakeProfitSlider value={tp} onChange={setTp} market={market} leverage={lev} up={up} />
+            <TakeProfitSlider value={tp} max={tpMax} onChange={setTp} market={market} leverage={lev} up={up} />
           </Step>
 
-          <Step n={5} title="Who can change it" meta="Market and side never change">
-            <OptionGroup label="Engine control" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <OptionCard selected={!managed} onClick={() => setManaged(false)}>
-                <span className="font-semibold text-ink">Fixed forever</span>
-                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                  Leverage and take-profit stay as launched. Holders buy a rule that cannot move.
-                </span>
-              </OptionCard>
-              <OptionCard
-                selected={managed}
-                disabled={!MANAGED_LIVE}
-                onClick={() => setManaged(true)}
-                className="disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border disabled:hover:bg-card"
-              >
-                <span className="flex items-baseline justify-between gap-2">
-                  <span className={MANAGED_LIVE ? "font-semibold text-brand" : "font-semibold text-ink-2"}>Managed by you</span>
-                  {MANAGED_LIVE ? (
-                    <span className="text-xs text-ink-3">{MANAGED_DELAY_HOURS}h notice</span>
-                  ) : (
-                    <span className="rounded-full border border-line-2 px-2 py-px text-2xs font-medium tracking-wide text-ink-3 uppercase">
-                      Soon
-                    </span>
-                  )}
-                </span>
-                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                  You can retune leverage and take-profit later. Every change is announced on-chain and lands{" "}
-                  {MANAGED_DELAY_HOURS} hours after, and the coin carries a Managed badge everywhere.
-                </span>
-              </OptionCard>
-            </OptionGroup>
-          </Step>
-
-          <Step n={6} title="The trading fee" meta="Fixed forever at launch">
+          <Step n={5} title="The trading fee" meta="Fixed forever at launch">
             <OptionGroup label="Trading fee" className="grid grid-cols-4 gap-2">
               {FEE_PRESETS.map((f) => (
                 <OptionCard
@@ -616,57 +617,9 @@ export default function LaunchForm({
                 </OptionCard>
               ))}
             </OptionGroup>
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <Readout label="Engine gets, per $100k traded" value={usd0(engineOn100k)} note={`${enginePct}% of the fee, in USDG`} />
-              <Readout label="Position opens after about" value={usd0(volToOpen)} note={`of trading (gate ${fmtThreshold(OPEN_GATE_USD)})`} />
-            </div>
-            <p className="mt-3 text-xs leading-relaxed text-ink-3">
-              Charged on every buy and sell for the life of the pool, always settled in USDG. {feeWords} A higher fee feeds the
-              position faster and slows trading down.
-            </p>
           </Step>
 
-          <Step n={7} title="Launch protection" meta="Anti-snipe, off by default">
-            <OptionGroup label="Launch protection" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <OptionCard selected={!antiSnipe} onClick={() => setAntiSnipe(false)}>
-                <span className="font-semibold text-ink">Off</span>
-                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                  Everyone pays the flat {feeLabel} from the first block. Your first buy pays only Doppler&apos;s slice,{" "}
-                  {firstBuyDopplerCostPct(feeBps, false).toFixed(2)}% of the tokens.
-                </span>
-              </OptionCard>
-              <OptionCard selected={antiSnipe} onClick={() => setAntiSnipe(true)}>
-                <span className="flex items-baseline justify-between gap-2">
-                  <span className="font-semibold text-brand">On</span>
-                  <span className="num text-xs text-ink-3">
-                    {SNIPE.startFee / 10_000}% → {feeLabel} in {SNIPE.seconds}s
-                  </span>
-                </span>
-                <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                  The fee opens high and falls to {feeLabel} in {SNIPE.seconds} seconds. Bots buying the launch block keep little.
-                </span>
-              </OptionCard>
-            </OptionGroup>
-            <AnimatePresence initial={false}>
-              {antiSnipe && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden"
-                >
-                  <ProtectionCurve endPct={feeBps / 100} />
-                  <p className="mt-2 text-xs leading-relaxed text-ink-3">
-                    The opening fee goes where the normal one goes: to the engine in USDG, minus Doppler&apos;s 5%. Your bundled
-                    first buy pays Doppler&apos;s slice of the opening rate,{" "}
-                    <span className="num">{firstBuyDopplerCostPct(feeBps, true).toFixed(0)}%</span> of its tokens.
-                  </p>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </Step>
-
-          <Step n={8} title="Name it" meta="This is what gets printed" last>
+          <Step n={6} title="Name it" meta="This is what gets printed">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_200px]">
               <label className="block">
                 <span className="mb-1.5 flex justify-between text-xs text-ink-3">
@@ -697,6 +650,75 @@ export default function LaunchForm({
                   className="num h-12 text-lg"
                 />
               </label>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-[112px_minmax(0,1fr)]">
+              <LogoPicker
+                logo={logo}
+                error={logoError}
+                onPick={async (file) => {
+                  setLogoError(null);
+                  if (!LOGO_TYPES.includes(file.type)) return setLogoError("PNG, JPEG, WebP or GIF.");
+                  if (file.size > IMAGE_MAX_BYTES) return setLogoError("Under 1 MB, please.");
+                  const bytes = new Uint8Array(await file.arrayBuffer());
+                  const dataUrl = await new Promise<string>((resolve, reject) => {
+                    const r = new FileReader();
+                    r.onload = () => resolve(String(r.result));
+                    r.onerror = () => reject(r.error);
+                    r.readAsDataURL(file);
+                  });
+                  setLogo({ dataUrl, hash: ethers.utils.sha256(bytes), name: file.name });
+                }}
+                onClear={() => {
+                  setLogo(null);
+                  setLogoError(null);
+                }}
+                fallback={<CoinSeal leverage={lev} side={side} takeProfitPct={tp} size={96} rings={3} spin={0} />}
+              />
+              <label className="block min-w-0">
+                <span className="mb-1.5 flex justify-between text-xs text-ink-3">
+                  <span>Description, optional</span>
+                  <span className="num">
+                    {description.length}/{DESCRIPTION_MAX}
+                  </span>
+                </span>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value.slice(0, DESCRIPTION_MAX))}
+                  rows={4}
+                  placeholder={`What this coin is about. Left empty, it says what its fees trade.`}
+                  className="block w-full resize-none rounded-[10px] border border-input bg-card px-3 py-2.5 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
+                />
+              </label>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {(
+                [
+                  { key: "website", label: "Website", placeholder: "yourcoin.xyz" },
+                  { key: "x", label: "X", placeholder: "@yourcoin" },
+                  { key: "telegram", label: "Telegram", placeholder: "@yourcoin" },
+                ] as const
+              ).map((f) => {
+                const raw = links[f.key];
+                const bad = raw.trim() !== "" && !normalizeLink(raw, f.key);
+                return (
+                  <label key={f.key} className="block min-w-0">
+                    <span className="mb-1.5 block text-xs text-ink-3">{f.label}, optional</span>
+                    <Input
+                      value={raw}
+                      onChange={(e) => setLinks((l) => ({ ...l, [f.key]: e.target.value.slice(0, LINK_MAX) }))}
+                      placeholder={f.placeholder}
+                      aria-invalid={bad || undefined}
+                      inputMode="url"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      className="h-10"
+                    />
+                  </label>
+                );
+              })}
             </div>
 
             <div className="mt-4 rounded-[14px] border border-line bg-panel px-4 py-4">
@@ -762,6 +784,116 @@ export default function LaunchForm({
             </div>
           </Step>
 
+          {/* the choices most launches leave alone, folded away so the flow stays short */}
+          <li className="relative list-none pb-10 pl-11 sm:pl-14">
+            <span
+              aria-hidden
+              className="absolute top-0 left-0 flex size-8 items-center justify-center rounded-full border border-dashed border-line-2 bg-panel text-ink-3 sm:size-10"
+            >
+              <ChevronDown size={16} className={cn("transition-transform", advanced && "rotate-180")} />
+            </span>
+            <button
+              type="button"
+              aria-expanded={advanced}
+              onClick={() => setAdvanced((v) => !v)}
+              className="flex min-h-8 w-full flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-left sm:min-h-10"
+            >
+              <span className="font-display text-xl font-semibold text-ink sm:text-2xl">Advanced</span>
+              <span className="text-sm text-ink-3">{advanced ? "Hide" : `${managed ? "Managed by you" : "Fixed forever"} · Protection ${antiSnipe ? "on" : "off"}`}</span>
+            </button>
+            <AnimatePresence initial={false}>
+              {advanced && (
+                <motion.div
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  className="overflow-hidden"
+                >
+                  <div className="space-y-8 pt-5">
+                    <section>
+                      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                        <h3 className="text-base font-semibold text-ink">Who can change it</h3>
+                        <span className="text-sm text-ink-3">Market and side never change</span>
+                      </div>
+                      <OptionGroup label="Engine control" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <OptionCard selected={!managed} onClick={() => setManaged(false)}>
+                          <span className="font-semibold text-ink">Fixed forever</span>
+                          <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                            Leverage and take-profit stay as launched. Holders buy a rule that cannot move.
+                          </span>
+                        </OptionCard>
+                        <OptionCard
+                          selected={managed}
+                          disabled={!MANAGED_LIVE}
+                          onClick={() => setManaged(true)}
+                          className="disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border disabled:hover:bg-card"
+                        >
+                          <span className="flex items-baseline justify-between gap-2">
+                            <span className={MANAGED_LIVE ? "font-semibold text-brand" : "font-semibold text-ink-2"}>Managed by you</span>
+                            {MANAGED_LIVE ? (
+                              <span className="text-xs text-ink-3">{MANAGED_DELAY_HOURS}h notice</span>
+                            ) : (
+                              <span className="rounded-full border border-line-2 px-2 py-px text-2xs font-medium tracking-wide text-ink-3 uppercase">
+                                Soon
+                              </span>
+                            )}
+                          </span>
+                          <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                            You can retune leverage and take-profit later. Every change is announced on-chain and lands{" "}
+                            {MANAGED_DELAY_HOURS} hours after, and the coin carries a Managed badge everywhere.
+                          </span>
+                        </OptionCard>
+                      </OptionGroup>
+                    </section>
+                    <section>
+                      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                        <h3 className="text-base font-semibold text-ink">Launch protection</h3>
+                        <span className="text-sm text-ink-3">Anti-snipe, off by default</span>
+                      </div>
+                      <OptionGroup label="Launch protection" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <OptionCard selected={!antiSnipe} onClick={() => setAntiSnipe(false)}>
+                          <span className="font-semibold text-ink">Off</span>
+                          <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                            Everyone pays the flat {feeLabel} from the first block. Your first buy pays only Doppler&apos;s slice,{" "}
+                            {firstBuyDopplerCostPct(feeBps, false).toFixed(2)}% of the tokens.
+                          </span>
+                        </OptionCard>
+                        <OptionCard selected={antiSnipe} onClick={() => setAntiSnipe(true)}>
+                          <span className="flex items-baseline justify-between gap-2">
+                            <span className="font-semibold text-brand">On</span>
+                            <span className="num text-xs text-ink-3">
+                              {SNIPE.startFee / 10_000}% → {feeLabel} in {SNIPE.seconds}s
+                            </span>
+                          </span>
+                          <span className="mt-1 block text-xs leading-relaxed text-ink-3">
+                            The fee opens high and falls to {feeLabel} in {SNIPE.seconds} seconds. Bots buying the launch block keep little.
+                          </span>
+                        </OptionCard>
+                      </OptionGroup>
+                      <AnimatePresence initial={false}>
+                        {antiSnipe && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            exit={{ opacity: 0, height: 0 }}
+                            className="overflow-hidden"
+                          >
+                            <ProtectionCurve endPct={feeBps / 100} />
+                            <p className="mt-2 text-xs leading-relaxed text-ink-3">
+                              The opening fee goes where the normal one goes: to the engine in USDG, minus Doppler&apos;s 5%. Your bundled
+                              first buy pays Doppler&apos;s slice of the opening rate,{" "}
+                              <span className="num">{firstBuyDopplerCostPct(feeBps, true).toFixed(0)}%</span> of its tokens.
+                            </p>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </section>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </li>
+
           {/* a phone gets the launch panel at the end of the flow */}
           <li className="mt-8 list-none lg:hidden">
             <LaunchPanel
@@ -817,7 +949,7 @@ function Readout({ label, value, note, tone }: { label: string; value: string; n
         key={value}
         initial={{ opacity: 0.4, y: 4 }}
         animate={{ opacity: 1, y: 0 }}
-        className={`num mt-1 text-2xl font-semibold ${tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-ink"}`}
+        className={`num mt-1 text-2xl font-semibold whitespace-nowrap max-[359px]:text-xl ${tone === "up" ? "text-up" : tone === "down" ? "text-down" : "text-ink"}`}
       >
         {value}
       </motion.div>
@@ -1058,7 +1190,7 @@ function LaunchPanel({
       )}
 
       <p className="mt-4 text-xs leading-relaxed text-ink-3">
-        You sign twice: once to pin the seal and metadata to IPFS (no gas), once for the launch. One transaction through the
+        You sign twice: once to pin the logo and metadata to IPFS (no gas), once for the launch. One transaction through the
         multiply router{" "}
         <a className="num underline underline-offset-2" href={explorerAddr(LAUNCH_ROUTER)} target="_blank" rel="noreferrer">
           {short(LAUNCH_ROUTER)}
@@ -1069,30 +1201,31 @@ function LaunchPanel({
   );
 }
 
+const fmtMove = (pct: number) => `${pct.toFixed(pct < 10 ? 1 : 0)}%`;
+
 /**
- * The take-profit as a slider from +10% to +500%, with the old profiles as shortcuts and a
- * reading of the approach underneath: what the target means at this leverage on this asset,
- * what one deposit returns to the coin, and a warning when the target sits much further away
- * than the liquidation.
+ * The take-profit as a slider from +10% up to what the leverage allows (20× the leverage,
+ * +500% at most), with the old profiles as shortcuts and two numbers underneath: how far the
+ * asset has to move for a deposit to bank, and how far the other way loses its fees.
  */
 function TakeProfitSlider({
   value,
+  max,
   onChange,
   market,
   leverage,
   up,
 }: {
   value: number;
+  max: number;
   onChange: (v: number) => void;
   market: string;
   leverage: number;
   up: boolean;
 }) {
-  const a = approachFor(value);
-  const pct = ((value - TP_MIN_PCT) / (TP_MAX_PCT - TP_MIN_PCT)) * 100;
+  const pct = max > TP_MIN_PCT ? ((value - TP_MIN_PCT) / (max - TP_MIN_PCT)) * 100 : 100;
   const need = value / leverage;
   const liqAway = 100 / leverage;
-  const far = need > liqAway * 2;
   const tone = value > 150 ? "text-down" : value <= 30 ? "text-up" : "text-brand";
   const band = value <= 30 ? "safe" : value <= 75 ? "balanced" : value <= 150 ? "degen" : "moon";
   return (
@@ -1115,7 +1248,7 @@ function TakeProfitSlider({
         <input
           type="range"
           min={TP_MIN_PCT}
-          max={TP_MAX_PCT}
+          max={max}
           step={5}
           value={value}
           onChange={(e) => onChange(Number(e.target.value))}
@@ -1124,56 +1257,53 @@ function TakeProfitSlider({
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
         />
       </div>
-      <div className="mt-2 flex flex-wrap gap-1.5">
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {TP_PRESETS.map((p) => (
           <button
             key={p.pct}
             type="button"
+            disabled={p.pct > max}
             onClick={() => onChange(p.pct)}
-            className={`num rounded-full border px-3 py-1 text-xs transition-colors ${
+            className={`num rounded-full border px-3 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-35 ${
               value === p.pct ? "border-brand bg-brand-soft font-semibold text-brand" : "border-line text-ink-2 hover:border-line-2"
             }`}
           >
             +{p.pct}% {p.label}
           </button>
         ))}
+        <span className="ml-auto text-xs text-ink-3">
+          Up to <span className="num">+{max}%</span> at {leverage}x
+        </span>
       </div>
+      {max < TP_PRESETS[TP_PRESETS.length - 1].pct && (
+        <p className="mt-2 text-xs text-ink-3">
+          A target stays within a {TP_MOVE_MAX_PCT}% move of the asset, so it can actually be reached. More leverage, higher
+          targets.
+        </p>
+      )}
 
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div
-          key={a.title}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: -6 }}
-          transition={{ duration: 0.22 }}
-          className="mt-5 rounded-[14px] border border-line bg-panel p-4 sm:p-5"
-        >
-          <div className="font-display text-xl font-semibold text-ink">{a.title}</div>
-          <p className="mt-1.5 text-sm leading-relaxed text-ink-2">{a.text}</p>
-          <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-4">
-            <div>
-              <dt className="text-2xs text-ink-3">Banks when {market} moves</dt>
-              <dd className="num mt-0.5 text-lg font-semibold text-ink">
-                {need.toFixed(need < 10 ? 1 : 0)}% {up ? "up" : "down"}
-              </dd>
-            </div>
-            <div>
-              <dt className="text-2xs text-ink-3">$100 deposit, when it banks</dt>
-              <dd className="num mt-0.5 text-lg font-semibold text-brand">${(value * 0.75).toFixed(0)} bought back</dd>
-            </div>
-          </dl>
-          {far && (
-            <p className="mt-4 rounded-lg bg-[color-mix(in_oklch,var(--color-down),transparent_90%)] px-3 py-2 text-xs leading-relaxed text-ink">
-              At {leverage}x this needs a {need.toFixed(0)}% move without ever going about {liqAway.toFixed(liqAway < 10 ? 1 : 0)}% the
-              other way, where a deposit is liquidated. Possible, rarely.
-            </p>
-          )}
-          <p className="mt-3 text-xs leading-relaxed text-ink-3">
-            A deposit that has not banked after {TP_DECAY.startDays} days starts lowering its target, down to +{TP_DECAY.floorPct}% by
-            day {TP_DECAY.endDays}, so profit never sits in the market forever.
-          </p>
-        </motion.div>
-      </AnimatePresence>
+      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <Readout
+          tone="up"
+          label={`Takes profit when ${market} moves`}
+          value={`${fmtMove(need)} ${up ? "up" : "down"}`}
+          note="from each deposit's entry"
+        />
+        <Readout
+          tone="up"
+          label="At take-profit the fees become"
+          value={`×${(1 + value / 100).toFixed(2).replace(/\.?0+$/, "")}`}
+          note="each deposit, when it banks"
+        />
+        <div className="col-span-2 sm:col-span-1">
+          <Readout
+            tone="down"
+            label={`Fees lost if ${market} moves`}
+            value={`~${fmtMove(liqAway)} ${up ? "down" : "up"}`}
+            note="liquidation: the fees, nothing more"
+          />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1193,5 +1323,73 @@ function SideWash({ wash }: { wash: { x: number; y: number; to: "long" | "short"
       animate={{ clipPath: `circle(150% at ${wash.x}px ${wash.y}px)`, opacity: 0 }}
       transition={{ clipPath: { duration: 0.7, ease: [0.16, 1, 0.3, 1] }, opacity: { duration: 0.9, ease: "easeIn" } }}
     />
+  );
+}
+
+/**
+ * The coin's logo: the creator's upload, or the seal generated from its settings when there is
+ * none. The file never leaves the browser until the metadata is pinned at launch.
+ */
+function LogoPicker({
+  logo,
+  error,
+  onPick,
+  onClear,
+  fallback,
+}: {
+  logo: Logo | null;
+  error: string | null;
+  onPick: (file: File) => void;
+  onClear: () => void;
+  fallback: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <span className="mb-1.5 block text-xs text-ink-3">Logo, optional</span>
+      <div className="flex items-start gap-3 sm:block">
+        <label className="group relative flex size-[112px] shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-[14px] border border-dashed border-line-2 bg-panel transition-colors hover:border-brand/50">
+          <input
+            type="file"
+            accept={LOGO_TYPES.join(",")}
+            className="sr-only"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) onPick(f);
+              e.target.value = "";
+            }}
+          />
+          {logo ? (
+            // a data: URL from the user's own file; next/image has nothing to optimise here
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logo.dataUrl} alt="" className="size-full object-cover" />
+          ) : (
+            <span className="pointer-events-none opacity-60 transition-opacity group-hover:opacity-30">{fallback}</span>
+          )}
+          <span
+            className={cn(
+              "absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-ink/70 py-1 text-2xs font-medium text-white transition-opacity",
+              logo ? "opacity-0 group-hover:opacity-100" : "opacity-100"
+            )}
+          >
+            <ImagePlus size={12} aria-hidden />
+            {logo ? "Replace" : "Upload"}
+          </span>
+        </label>
+        <div className="min-w-0 pt-1 text-2xs leading-relaxed text-ink-3 sm:mt-2 sm:pt-0">
+          {logo ? (
+            <button type="button" onClick={onClear} className="inline-flex items-center gap-1 text-ink-2 hover:text-ink">
+              <X size={11} aria-hidden /> Use the seal
+            </button>
+          ) : (
+            <span className="sm:hidden">Square, under 1 MB. Without one, the coin uses its seal.</span>
+          )}
+          {error && (
+            <span className="mt-1 block text-down" role="alert">
+              {error}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

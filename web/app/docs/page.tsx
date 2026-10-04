@@ -16,7 +16,7 @@ export default function DocsIndex() {
   const first = DOC_GROUPS[0].pages[0];
   return (
     <>
-      <section className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
+      <section className="intro-night behind-nav relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
         <div aria-hidden className="pointer-events-none absolute top-[30%] right-[-14%] -z-10 text-mint/[0.1]">
           <Guilloche teeth={27} reach={0.8} rings={4} size={900} spin={180} className="w-[120vw] max-w-[900px]" />
         </div>

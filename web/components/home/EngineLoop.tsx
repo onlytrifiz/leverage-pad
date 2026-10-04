@@ -25,7 +25,7 @@ const STEPS = [
     text: `1 to 5%, converted inside the same swap. ${FEE_SPLIT_PCT.engine}% lands in the coin's wallet.`,
   },
   { icon: TrendingUp, title: "A leveraged perp", text: "Opened on Lighter at the asset, side and leverage set at launch." },
-  { icon: Target, title: "Take profit", text: "Each deposit banks at the take-profit set at launch, from +10% to +500%." },
+  { icon: Target, title: "Take profit", text: "Each deposit banks at the take-profit set at launch, up to +500% at high leverage." },
   { icon: Flame, title: "Buyback & burn", text: "75% of the profit buys the coin and burns it." },
 ];
 

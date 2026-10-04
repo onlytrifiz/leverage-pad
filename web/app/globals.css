@@ -134,9 +134,10 @@
   /*
    * Header height as one value instead of the magic numbers that used to be
    * spread across the ticker (top-[64px]), the rails (top:118px) and the home
-   * grid. One row at every width: on a phone the links live in the bottom bar.
+   * grid. The floating header's pill plus its margins; one row at every width, since on a
+   * phone the links live in the bottom bar.
    */
-  --nav-h: 64px;
+  --nav-h: 76px;
   --tape-h: 37px;
   --header-h: calc(var(--nav-h) + var(--tape-h));
 }
@@ -242,6 +243,16 @@
 }
 
 @layer components {
+  /*
+   * A page's opening night band runs up under the floating header: pulled up by the
+   * header's height and padded back down by the same amount, so the green fills the strip
+   * behind the glass pill while the content starts where it always did.
+   */
+  .behind-nav {
+    margin-top: calc(var(--nav-h) * -1);
+    padding-top: var(--nav-h);
+  }
+
   /* mono is reserved for data: figures, prices, addresses, commands */
   .num {
     font-family: var(--font-mono);

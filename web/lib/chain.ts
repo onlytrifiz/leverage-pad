@@ -136,6 +136,10 @@ type Metadata = {
   name?: string;
   symbol?: string;
   image?: string;
+  description?: string;
+  website?: string;
+  x?: string;
+  telegram?: string;
   multiply?: {
     market?: string;
     side?: string;
@@ -150,6 +154,13 @@ type Metadata = {
 
 const metadataCache = new Map<string, Promise<Metadata | null>>();
 
+const IPFS_HOST = PINATA_GATEWAY ? `https://${PINATA_GATEWAY}/ipfs/` : "https://ipfs.io/ipfs/";
+/** an ipfs:// image as a URL a browser can load; https passes through, anything else is dropped */
+const imageUrl = (u?: string) =>
+  !u ? undefined : u.startsWith("ipfs://") ? IPFS_HOST + u.slice(7) : /^https:\/\//.test(u) ? u : undefined;
+/** a social link from metadata, shown only when it is plain https */
+const link = (u?: string) => (typeof u === "string" && /^https:\/\/[^\s"<>]+$/.test(u) ? u : undefined);
+
 /** ipfs:// JSON through the dedicated gateway, data: URIs decoded inline; cached per URI */
 function fetchMetadata(uri: string): Promise<Metadata | null> {
   if (!uri) return Promise.resolve(null);
@@ -163,8 +174,7 @@ function fetchMetadata(uri: string): Promise<Metadata | null> {
         if (uri.startsWith("data:application/json,")) return JSON.parse(decodeURIComponent(uri.slice(22))) as Metadata;
         if (uri.startsWith("ipfs://")) {
           const cid = uri.slice(7);
-          const host = PINATA_GATEWAY ? `https://${PINATA_GATEWAY}/ipfs/` : "https://ipfs.io/ipfs/";
-          const r = await fetch(host + cid, { next: { revalidate: 3600 } });
+          const r = await fetch(IPFS_HOST + cid, { next: { revalidate: 3600 } });
           if (!r.ok) return null;
           return (await r.json()) as Metadata;
         }
@@ -319,7 +329,8 @@ async function scanRouterCoins(): Promise<Coin[]> {
           ? { leverage: Number(live.pendingLeverage), takeProfitPct: Number(live.pendingTakeProfitPct), effectiveAt: pendingAt }
           : null,
       tokenURI: String(ev.tokenURI),
-      image: m?.image,
+      image: imageUrl(m?.image),
+      socials: { website: link(m?.website), x: link(m?.x), telegram: link(m?.telegram) },
       initialSupply: INITIAL_SUPPLY,
       launchBlock: log.blockNumber,
       createdAt: new Date(tOf(log.blockNumber) * 1000).toISOString(),

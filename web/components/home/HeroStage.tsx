@@ -80,7 +80,7 @@ export default function HeroStage({
     <section
       ref={ref}
       onPointerMove={onMove}
-      className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]"
+      className="intro-night behind-nav relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]"
     >
       {/* moire: two rosettes turning against each other */}
       <div aria-hidden className="pointer-events-none absolute inset-0 -z-10">

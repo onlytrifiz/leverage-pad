@@ -249,7 +249,7 @@ function MarketsBody() {
         The menu is Lighter&apos;s, not ours: any perp listed on Lighter&apos;s
         Robinhood deployment can back a coin: crypto majors, US stocks, pre-IPO
         names. The catalog is re-synced from the venue as markets are listed,
-        roughly <N>39 markets</N> today.
+        more than <N>50 markets</N> today.
       </p>
       <p>
         At launch the creator picks the market, the side (long or short) and the
@@ -345,7 +345,9 @@ function TranchesBody() {
         when the underlying moves <N>trigger ÷ leverage</N> from <em>its</em> entry:
         which is exactly <N>+trigger</N> on that tranche&apos;s own collateral.
         New fees never dilute an old tranche&apos;s progress. The trigger is the
-        coin&apos;s take-profit, chosen at launch anywhere from <N>+10%</N> to <N>+500%</N>.
+        coin&apos;s take-profit, chosen at launch from <N>+10%</N> up to <N>20×</N> the leverage, so a
+        target never needs more than a <N>20%</N> move of the asset: <N>+40%</N> at 2x, <N>+200%</N> at
+        10x, the <N>+500%</N> ceiling from 25x up.
         The usual picks:
       </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -364,7 +366,7 @@ function TranchesBody() {
       </div>
       <p>
         Concretely: a 5x coin at +20% banks each tranche on a 4% move of the
-        underlying; a 2x coin at +100% demands 50%.
+        underlying; a 2x coin at its +40% ceiling needs 20%.
       </p>
       <p>
         <K>Targets that come down with time.</K> A target far away can leave a deposit in

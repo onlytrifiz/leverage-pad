@@ -39,8 +39,6 @@ export default async function Home() {
   return (
     <SmoothScroll>
       <MarketsProvider>
-        <TickerTape />
-
         <HeroStage
           featured={pickFeatured(coins)}
           coins={coins.length}
@@ -48,6 +46,10 @@ export default async function Home() {
           totalFees={totalFees}
           totalBurned={totalBurned}
         />
+        {/* the venue's pulse, right under the hero, which now runs up behind the header */}
+        <div className="mt-6">
+          <TickerTape />
+        </div>
 
         {/* the asymmetry, as an instrument */}
         <Container width="landing" className="pt-20 sm:pt-28">

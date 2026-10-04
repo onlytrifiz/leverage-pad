@@ -13,6 +13,7 @@ import { Banknote } from "@/components/brand/Banknote";
 import { Guilloche } from "@/components/brand/Guilloche";
 import { AnimatedNumber, LivePulse } from "@/components/motion";
 import AssetIcon from "@/components/AssetIcon";
+import { CoinAvatar } from "@/components/brand/CoinAvatar";
 
 /**
  * A coin's page opens on its banknote, at night, like the home page.
@@ -43,7 +44,7 @@ export default function TokenHero({ detail, poolHref }: { detail: CoinDetail; po
   };
 
   return (
-    <section className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
+    <section className="intro-night behind-nav relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
       <div aria-hidden className="pointer-events-none absolute top-1/2 left-[30%] -z-10 -translate-x-1/2 -translate-y-1/2 text-mint/[0.1]">
         <Guilloche
           teeth={17 + coin.leverage}
@@ -82,6 +83,7 @@ export default function TokenHero({ detail, poolHref }: { detail: CoinDetail; po
 
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
+              <CoinAvatar image={coin.image} symbol={coin.symbol} size={44} className="mr-1 border-night-line" />
               <h1 className="font-display text-3xl font-bold tracking-[-0.03em] text-night-ink sm:text-4xl">
                 ${coin.symbol}
                 <span className="text-night-ink-2"> / {coin.pairSymbol}</span>
@@ -167,6 +169,25 @@ export default function TokenHero({ detail, poolHref }: { detail: CoinDetail; po
               </button>
             </div>
             <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-xs">
+              {(
+                [
+                  ["Website", coin.socials?.website],
+                  ["X", coin.socials?.x],
+                  ["Telegram", coin.socials?.telegram],
+                ] as const
+              ).map(([label, href]) =>
+                href ? (
+                  <a
+                    key={label}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer nofollow"
+                    className="inline-flex items-center gap-1 font-medium text-night-ink hover:text-mint"
+                  >
+                    {label} <ArrowUpRight size={12} aria-hidden />
+                  </a>
+                ) : null
+              )}
               <a href={poolHref} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-night-ink-2 hover:text-night-ink">
                 Pool <ArrowUpRight size={12} aria-hidden />
               </a>

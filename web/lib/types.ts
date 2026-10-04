@@ -33,8 +33,10 @@ export type Coin = {
   /** a managed coin's announced change, not in effect yet */
   pendingEngine: { leverage: number; takeProfitPct: number; effectiveAt: number } | null;
   tokenURI: string;
-  /** ipfs:// image from the metadata, when pinned to the standard */
+  /** the metadata's image as a loadable URL (the creator's logo, or the generated seal) */
   image?: string;
+  /** links from the metadata, https only */
+  socials?: { website?: string; x?: string; telegram?: string };
   /** supply at launch: burned = initial − totalSupply */
   initialSupply?: number;
   launchBlock: number;

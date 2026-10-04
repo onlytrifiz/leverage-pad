@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { LAUNCH_ROUTER } from "@/lib/clientConfig";
 import { sendGuardedTx, waitForReceipt, txErrorMessage } from "@/lib/tx";
-import { ROUTER_IFACE, ROUTER_LEVERAGES, TP_MIN_PCT, TP_MAX_PCT, TP_PRESETS, MANAGED_DELAY_HOURS } from "@/lib/doppler";
+import { ROUTER_IFACE, ROUTER_LEVERAGES, TP_MIN_PCT, TP_PRESETS, MANAGED_DELAY_HOURS, maxTakeProfitPct } from "@/lib/doppler";
 
 /**
  * The creator's controls for a managed coin: announce new leverage and take-profit, or withdraw
@@ -26,7 +26,9 @@ export default function ManageEngine({ coin }: { coin: Coin }) {
   const { markets } = useMarkets();
   const cap = markets.find((m) => m.symbol === coin.market)?.maxLeverage ?? null;
   const [lev, setLev] = useState(coin.pendingEngine?.leverage ?? coin.leverage);
-  const [tp, setTp] = useState(coin.pendingEngine?.takeProfitPct ?? coin.takeProfitPct);
+  const [tpPick, setTp] = useState(coin.pendingEngine?.takeProfitPct ?? coin.takeProfitPct);
+  const tpMax = maxTakeProfitPct(lev);
+  const tp = Math.min(tpPick, tpMax);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -92,7 +94,7 @@ export default function ManageEngine({ coin }: { coin: Coin }) {
           id="manage-tp"
           type="range"
           min={TP_MIN_PCT}
-          max={TP_MAX_PCT}
+          max={tpMax}
           step={5}
           value={tp}
           onChange={(e) => setTp(Number(e.target.value))}
@@ -103,9 +105,10 @@ export default function ManageEngine({ coin }: { coin: Coin }) {
             <button
               key={p.pct}
               type="button"
+              disabled={p.pct > tpMax}
               onClick={() => setTp(p.pct)}
               className={cn(
-                "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+                "rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-35",
                 tp === p.pct ? "border-brand bg-brand-soft text-brand" : "border-line text-ink-2 hover:border-line-2"
               )}
             >

@@ -33,8 +33,7 @@ export default async function MarketPage() {
 
   return (
     <MarketsProvider>
-      <TickerTape />
-      <section className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
+      <section className="intro-night behind-nav relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
         <div aria-hidden className="pointer-events-none absolute top-[38%] right-[-10%] -z-10 text-mint/[0.12]">
           <Guilloche teeth={39} reach={0.85} rings={4} size={900} spin={150} className="w-[120vw] max-w-[900px]" />
         </div>
@@ -62,6 +61,9 @@ export default async function MarketPage() {
           </div>
         </div>
       </section>
+      <div className="mt-6">
+        <TickerTape />
+      </div>
 
       <Container width="wide">
         <div className="mt-14 grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_300px]">

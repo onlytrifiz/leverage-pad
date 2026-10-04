@@ -6,6 +6,7 @@ import { fmtUsd, fmtInt } from "@/lib/format";
 import { Container } from "@/components/ui/container";
 import AutoRefresh from "@/components/AutoRefresh";
 import AssetIcon from "@/components/AssetIcon";
+import { CoinAvatar } from "@/components/brand/CoinAvatar";
 import { AnimatedNumber, LivePulse, Reveal, RevealItem } from "@/components/motion";
 import { Guilloche } from "@/components/brand/Guilloche";
 import { Bar, BarGroup } from "@/components/stats/Bars";
@@ -52,7 +53,7 @@ export default async function StatsPage() {
 
   return (
     <>
-      <section className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
+      <section className="intro-night behind-nav relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
         <div aria-hidden className="pointer-events-none absolute top-[44%] left-[62%] -z-10 text-mint/[0.11]">
           <Guilloche teeth={31} reach={0.82} rings={4} size={900} spin={170} direction={-1} className="w-[120vw] max-w-[900px]" />
         </div>
@@ -146,10 +147,13 @@ function LedgerRow({ row, rank, burnedFrac }: { row: CoinListItem; rank: number;
     >
       <span className="num hidden text-sm text-ink-3 md:block">{rank}</span>
 
-      <div className="flex min-w-0 items-baseline justify-between gap-3 md:block">
-        <div className="min-w-0">
-          <div className="truncate font-semibold text-ink group-hover:text-brand">${coin.symbol}</div>
-          <div className="truncate text-xs text-ink-3">{coin.name}</div>
+      <div className="flex min-w-0 items-center justify-between gap-3 md:block">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <CoinAvatar image={coin.image} symbol={coin.symbol} size={30} />
+          <div className="min-w-0">
+            <div className="truncate font-semibold text-ink group-hover:text-brand">${coin.symbol}</div>
+            <div className="truncate text-xs text-ink-3">{coin.name}</div>
+          </div>
         </div>
         <span className="num shrink-0 font-semibold text-ink md:hidden">{fmtUsd(marketCapUsd)}</span>
       </div>

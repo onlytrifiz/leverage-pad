@@ -32,7 +32,7 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
 
   return (
     <>
-      <section className="intro-night relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
+      <section className="intro-night behind-nav relative isolate overflow-hidden rounded-b-[28px] text-night-ink sm:rounded-b-[40px]">
         <div aria-hidden className="pointer-events-none absolute top-1/2 right-[-18%] -z-10 -translate-y-1/2 text-mint/[0.1] sm:right-[-6%]">
           <Guilloche
             teeth={17 + page.n * 2}

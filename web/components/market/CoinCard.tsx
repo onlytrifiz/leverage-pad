@@ -8,6 +8,7 @@ import { OPEN_GATE_USD, fmtThreshold } from "@/lib/thresholds";
 import { useMarkets } from "@/components/markets-provider";
 import { CoinSeal } from "@/components/brand/CoinSeal";
 import AssetIcon from "@/components/AssetIcon";
+import { CoinAvatar } from "@/components/brand/CoinAvatar";
 import { LivePulse } from "@/components/motion";
 
 /**
@@ -55,7 +56,8 @@ export default function CoinCard({ item, pnlUsd }: { item: CoinListItem; pnlUsd:
         </div>
       </div>
 
-      <div className="mt-4 flex items-baseline gap-2">
+      <div className="mt-4 flex items-center gap-2.5">
+        <CoinAvatar image={coin.image} symbol={coin.symbol} size={32} />
         <h3 className="truncate font-display text-2xl leading-none font-bold tracking-[-0.02em] text-ink">${coin.symbol}</h3>
         {item.demo && <span className="shrink-0 rounded-full bg-panel-2 px-2 py-0.5 text-2xs text-ink-3">demo</span>}
       </div>

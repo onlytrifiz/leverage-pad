@@ -51,7 +51,7 @@ const QA: { q: string; a: React.ReactNode }[] = [
     q: "When does a buyback happen?",
     a: (
       <p>
-        Every deposit is a tranche with its own target: the take-profit set at launch, anywhere from +10% to +500% on
+        Every deposit is a tranche with its own target: the take-profit set at launch, from +10% up to 20 times the leverage (+500% at most) on
         its collateral. A deposit that has not banked after a week starts lowering its target, so profit never waits
         forever. When one matures it closes, and 75% of the profit buys the coin on its pool
         and burns it. The other 25% goes to the protocol.

@@ -75,6 +75,14 @@ export type EngineParams = {
 export const ROUTER_LEVERAGES = [2, 3, 5, 10, 20, 25, 50] as const;
 export const TP_MIN_PCT = 10;
 export const TP_MAX_PCT = 500;
+/**
+ * The highest take-profit a leverage may ask for: one the asset can reach with a move of at
+ * most TP_MOVE_MAX_PCT (2x → +40%, 10x → +200%, 25x and up → the +500% ceiling). A target
+ * further than that would leave deposits waiting on a move that rarely comes.
+ */
+export const TP_MOVE_MAX_PCT = 20;
+export const maxTakeProfitPct = (leverage: number) =>
+  Math.min(TP_MAX_PCT, Math.max(TP_MIN_PCT, Math.floor(leverage * TP_MOVE_MAX_PCT)));
 /** shortcuts on the take-profit slider: the three profiles every coin used to pick from */
 export const TP_PRESETS = [
   { pct: 20, label: "safe" },
@@ -281,13 +289,48 @@ export async function readProtocolOwner(): Promise<string> {
 }
 
 /** The message a creator signs so only the wallet that launches can pin metadata under its address. */
-export function metadataSignMessage(input: { name: string; symbol: string; creator: string; engine: EngineParams; ts: number }) {
+/** a token logo is pinned as uploaded: keep it small enough for a JSON body and a fast gateway */
+export const IMAGE_MAX_BYTES = 1_000_000;
+
+/** the free-form parts of a coin's metadata, as the creator typed them */
+export type MetadataContent = {
+  description: string;
+  socials: { website: string; x: string; telegram: string };
+  /** sha256 of the uploaded image's bytes, or "" for the generated seal */
+  imageHash: string;
+};
+
+/**
+ * One digest over description, links and image, so the signature covers them without
+ * spelling a whole description or an image into the wallet prompt. The key order is fixed
+ * here and nowhere else: browser and server both call this.
+ */
+export function metadataContentHash(c: MetadataContent) {
+  const canonical = JSON.stringify({
+    d: c.description,
+    w: c.socials.website,
+    x: c.socials.x,
+    t: c.socials.telegram,
+    i: c.imageHash,
+  });
+  return ethers.utils.sha256(ethers.utils.toUtf8Bytes(canonical));
+}
+
+export function metadataSignMessage(input: {
+  name: string;
+  symbol: string;
+  creator: string;
+  engine: EngineParams;
+  ts: number;
+  contentHash: string;
+}) {
   const e = input.engine;
   return [
     "multiply.cash metadata",
     `name: ${input.name}`,
     `symbol: ${input.symbol}`,
     `engine: ${e.market} ${e.side} ${e.leverage}x +${e.takeProfitPct}%${e.managed ? " managed" : ""}`,
+    `content: ${input.contentHash}`,
     `creator: ${input.creator.toLowerCase()}`,
     `ts: ${input.ts}`,
   ].join("\n");
