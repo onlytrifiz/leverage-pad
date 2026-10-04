@@ -1,0 +1,27 @@
+# Only the keeper goes into the image (see Dockerfile). Everything else stays out,
+# secrets and local state first.
+.env
+.env.*
+state/
+logs/
+*.local.md
+*.local.json
+secrets*
+
+node_modules/
+lighter/.venv/
+**/__pycache__/
+
+web/
+contracts/
+contracts-v4/
+docs/
+test/
+scripts/
+.claude/
+.agents/
+.playwright-mcp/
+*.png
+*.bak
+*.md
+.git/

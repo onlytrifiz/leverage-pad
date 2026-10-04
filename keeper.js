@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { ethers } = require('ethers');
 const config = require('./config');
 const { provider, erc20, priceUsd, usdOf, rawFromUsd, gasPrice } = require('./lib/chain');
@@ -74,7 +75,7 @@ const SINK_ABI = [
   'function flush() returns (uint256 toTreasury, uint256 toDestination, uint256 burned)',
   'event Flushed(uint256 toTreasury, uint256 toDestination, uint256 burned)',
 ];
-const LOCKFILE = path.resolve(__dirname, 'state', 'keeper.lock');
+const LOCKFILE = path.join(config.STATE_DIR, 'keeper.lock');
 const Q96 = BN(2).pow(96);
 // un log che deve comparire una volta per coin, non a ogni tick
 function logOnce(st, key, checkpoint, msg) {
@@ -970,14 +971,30 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   }
 }
 
+/**
+ * Is the process recorded in a lockfile still alive? Pure, so it is testable.
+ *
+ * A lock written on ANOTHER host (a previous Railway container, whose volume this one now
+ * mounts) is stale by construction: a volume is mounted by one container at a time, and PIDs
+ * restart from 1 in every container, so `kill(pid, 0)` would find an unrelated live process,
+ * very often this very keeper. A lock with OUR pid is stale for the same reason. Otherwise
+ * EPERM from kill(pid, 0) means alive (another user's process), anything else means dead.
+ */
+function lockHolderAlive(lock, { pid = process.pid, host = os.hostname(), kill = process.kill.bind(process) } = {}) {
+  const lpid = Number(lock && lock.pid);
+  if (!(lpid > 0)) return false;
+  if (lock.host && lock.host !== host) return false;
+  if (lpid === pid) return false;
+  try { kill(lpid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+
 // lockfile single-instance: creazione ATOMICA (flag wx) — due keeper avviati
-// insieme non possono piu' passare entrambi il check. EPERM su kill(pid, 0)
-// significa processo VIVO di un altro utente, non morto.
+// insieme non possono piu' passare entrambi il check.
 function acquireLock() {
   fs.mkdirSync(path.dirname(LOCKFILE), { recursive: true });
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      fs.writeFileSync(LOCKFILE, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+      fs.writeFileSync(LOCKFILE, JSON.stringify({ pid: process.pid, host: os.hostname(), at: new Date().toISOString() }), { flag: 'wx' });
       const release = () => { try { if (JSON.parse(fs.readFileSync(LOCKFILE, 'utf8')).pid === process.pid) fs.unlinkSync(LOCKFILE); } catch {} };
       process.on('exit', release);
       process.on('SIGINT', () => { release(); process.exit(0); });
@@ -985,12 +1002,11 @@ function acquireLock() {
       return;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      let pid = 0;
-      try { pid = Number(JSON.parse(fs.readFileSync(LOCKFILE, 'utf8')).pid); } catch { /* file corrotto: trattalo come stantio */ }
-      let alive = false;
-      try { if (pid > 0) { process.kill(pid, 0); alive = true; } } catch (err) { alive = err.code === 'EPERM'; }
-      if (alive) throw new Error(`un altro keeper e' gia' attivo (pid ${pid}). Chiudilo o cancella ${LOCKFILE} se e' morto male.`);
-      console.log(`lockfile stantio (pid ${pid} morto), lo rilevo`);
+      let lock = null;
+      try { lock = JSON.parse(fs.readFileSync(LOCKFILE, 'utf8')); } catch { /* file corrotto: trattalo come stantio */ }
+      const pid = Number(lock && lock.pid) || 0;
+      if (lockHolderAlive(lock)) throw new Error(`un altro keeper e' gia' attivo (pid ${pid}). Chiudilo o cancella ${LOCKFILE} se e' morto male.`);
+      console.log(`lockfile stantio (pid ${pid}${lock && lock.host ? ' su ' + lock.host : ''}), lo rilevo`);
       try { fs.unlinkSync(LOCKFILE); } catch { /* perso la corsa con un altro processo: il retry fallira' su EEXIST */ }
     }
   }
@@ -1036,8 +1052,18 @@ async function main() {
   validateSplit();
   if (!config.LOCKER) throw new Error('PERPSPAD_LOCKER mancante nel .env');
   if (!config.MASTER_SECRET) throw new Error('PERPSPAD_MASTER_SECRET mancante nel .env');
+  // A state dir marked MOVED belongs to a keeper that now runs elsewhere (Railway since
+  // 2026-10-04). Two keepers on the same sub-wallets collide on nonces and keep two diverging
+  // registries, so a local start from the old state is refused outright.
+  const moved = path.join(config.STATE_DIR, 'MOVED.json');
+  if (fs.existsSync(moved) && !flag('i-know-the-keeper-moved')) {
+    throw new Error(`this state was moved (${moved}): the keeper runs elsewhere now. Do not start it from here.`);
+  }
+  // primo avvio su un volume nuovo (Railway): il registry arriva dal seed, mai sovrascritto
+  require('./lib/stateSeed').applySeed(process.env.PERPSPAD_STATE_SEED);
   checkFingerprint(); // stesso master secret con cui sono stati lockati i sub-wallet?
   acquireLock();
+  require('./lib/publicServer').startPublicServer();
 
   const keeper = keeperWallet();
   const locker = new ethers.Contract(config.LOCKER, LOCKER_ABI, keeper);
@@ -1074,4 +1100,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { trancheTargetMark, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow };
+module.exports = { trancheTargetMark, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

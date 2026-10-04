@@ -1,4 +1,8 @@
 const path = require('path');
+// Where the keeper's state lives (registry, fingerprint, lock, public snapshot). Locally the repo's
+// state/; on Railway a mounted volume (PERPSPAD_STATE_DIR=/data), since the container filesystem
+// is wiped on every redeploy.
+const STATE_DIR = process.env.PERPSPAD_STATE_DIR || path.resolve(__dirname, 'state');
 // standalone: perpspad/.env ha la precedenza; fallback al .env del monorepo se presente.
 // dotenv non sovrascrive variabili gia' settate, quindi il primo caricato vince.
 require('dotenv').config({ path: path.resolve(__dirname, '.env') });        // perpspad/.env (repo leverage-pad)
@@ -100,7 +104,7 @@ module.exports = {
   // probe per il fingerprint del master secret (H3): address stabile derivato dal
   // secret, salvato in state/ e verificato a ogni lancio e all'avvio del keeper
   FINGERPRINT_PROBE: 'perpspad:fingerprint:v1',
-  FINGERPRINT_PATH: path.resolve(__dirname, 'state', 'fingerprint.json'),
+  FINGERPRINT_PATH: path.join(STATE_DIR, 'fingerprint.json'),
 
   // ── gamba perp: Lighter (profilo ROBINHOOD nativo, api.rh.lighter.xyz) ───────
   // Il collaterale entra da Robinhood Chain (4663) via intent-address; ogni
@@ -131,5 +135,6 @@ module.exports = {
   DEPLOYER_KEY: process.env.DEPLOYER_PRIVATE_KEY || process.env.LAUNCHER_PRIVATE_KEY || '',
 
   // file di stato
-  REGISTRY_PATH: path.resolve(__dirname, 'state', 'registry.json'),
+  STATE_DIR,
+  REGISTRY_PATH: path.join(STATE_DIR, 'registry.json'),
 };
