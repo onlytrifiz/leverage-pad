@@ -46,6 +46,7 @@ import {
   TP_PRESETS,
   TP_DECAY,
   MANAGED_DELAY_HOURS,
+  MANAGED_LIVE,
   type EngineParams,
 } from "@/lib/doppler";
 import { AnimatedNumber } from "@/components/motion";
@@ -578,10 +579,21 @@ export default function LaunchForm({
                   Leverage and take-profit stay as launched. Holders buy a rule that cannot move.
                 </span>
               </OptionCard>
-              <OptionCard selected={managed} onClick={() => setManaged(true)}>
+              <OptionCard
+                selected={managed}
+                disabled={!MANAGED_LIVE}
+                onClick={() => setManaged(true)}
+                className="disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border disabled:hover:bg-card"
+              >
                 <span className="flex items-baseline justify-between gap-2">
-                  <span className="font-semibold text-brand">Managed by you</span>
-                  <span className="text-xs text-ink-3">{MANAGED_DELAY_HOURS}h notice</span>
+                  <span className={MANAGED_LIVE ? "font-semibold text-brand" : "font-semibold text-ink-2"}>Managed by you</span>
+                  {MANAGED_LIVE ? (
+                    <span className="text-xs text-ink-3">{MANAGED_DELAY_HOURS}h notice</span>
+                  ) : (
+                    <span className="rounded-full border border-line-2 px-2 py-px text-2xs font-medium tracking-wide text-ink-3 uppercase">
+                      Soon
+                    </span>
+                  )}
                 </span>
                 <span className="mt-1 block text-xs leading-relaxed text-ink-3">
                   You can retune leverage and take-profit later. Every change is announced on-chain and lands{" "}
@@ -1170,7 +1182,7 @@ function TakeProfitSlider({
 function SideWash({ wash }: { wash: { x: number; y: number; to: "long" | "short"; id: number } | null }) {
   const reduced = useReducedMotion();
   if (!wash || reduced) return null;
-  const colour = wash.to === "short" ? "rgba(179,38,30,0.32)" : "rgba(15,107,63,0.3)";
+  const colour = wash.to === "short" ? "rgba(179,38,30,0.14)" : "rgba(15,107,63,0.14)";
   return (
     <motion.div
       key={wash.id}

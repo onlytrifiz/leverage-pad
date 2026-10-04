@@ -9,7 +9,7 @@ import { gsap } from "@/lib/gsap";
 import { SLIDES } from "./slides";
 
 /**
- * The story: how a coin works, told in seven chapters before the site.
+ * The story: how a coin works, told in six chapters before the site.
  *
  * It behaves like the stories format people already know. It plays by itself,
  * a tap on the right goes forward and on the left goes back, a swipe does the

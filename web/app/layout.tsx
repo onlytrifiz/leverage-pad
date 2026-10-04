@@ -1,8 +1,8 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import { Familjen_Grotesk, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
-import Nav from "@/components/Nav";
+import Nav, { BottomBar } from "@/components/Nav";
 import Footer from "@/components/Footer";
 import { WalletProvider } from "@/components/wallet";
 import { MotionProvider } from "@/components/motion";
@@ -32,6 +32,10 @@ const plexMono = IBM_Plex_Mono({
   variable: "--font-plex-mono",
 });
 
+// cover: the page runs under the notch and the home indicator, and the bottom bar and the
+// intro pad themselves with env(safe-area-inset-*), which is zero without it
+export const viewport: Viewport = { viewportFit: "cover" };
+
 export const metadata: Metadata = {
   title: {
     default: "multiply.cash: coins backed by Lighter perps",
@@ -51,7 +55,8 @@ export default function RootLayout({
       className={`${familjen.variable} ${plexSans.variable} ${plexMono.variable}`}
       suppressHydrationWarning
     >
-      <body className="min-h-screen">
+      {/* on a phone the body reserves the bottom bar's height, safe area included */}
+      <body className="min-h-screen pb-[calc(4rem+env(safe-area-inset-bottom))] sm:pb-0">
         {/* first paint for a first-time visitor is the intro's night, not a flash of the market */}
         <Script id="intro-boot" strategy="beforeInteractive">
           {INTRO_BOOT_SCRIPT}
@@ -63,6 +68,7 @@ export default function RootLayout({
               {/* width is the page's decision: the market view is wide, prose is not */}
               <main className="w-full pb-16">{children}</main>
               <Footer router={LAUNCH_ROUTER} />
+              <BottomBar />
             </IntroProvider>
           </WalletProvider>
         </MotionProvider>

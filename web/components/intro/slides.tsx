@@ -11,12 +11,14 @@ import AssetIcon from "@/components/AssetIcon";
 import { FEE_SPLIT_PCT } from "@/lib/doppler";
 
 /**
- * The seven chapters of the intro.
+ * The six chapters of the intro.
  *
  * One worked example runs through all of them so the numbers add up from
  * chapter to chapter: $110,000 of volume at a 2% fee is $2,200 of fees, the
- * engine's 80% is $1,760 of collateral, at 10x that is a $17,600 position, an
- * 8% move on NVDA is $1,408 of profit and 75% of it, $1,056, buys the coin back.
+ * engine's 80% is $1,760 of collateral, at 50x that is an $88,000 position, a
+ * 4% move is $3,520 of profit and 75% of it, $2,640, buys the coin back. The
+ * leverage is illustrative: the launch form caps each market at Lighter's own
+ * limit.
  * Every plate that shows those figures says it is an example.
  *
  * Each chapter is one GSAP timeline built in `useChapter`. The shell pauses it
@@ -26,6 +28,7 @@ import { FEE_SPLIT_PCT } from "@/lib/doppler";
 export type SlideProps = { paused: boolean; reduced: boolean; onClose: () => void };
 
 const EX = {
+  asset: "NVDA",
   volume: 110_000,
   feePct: 2,
   get fees() {
@@ -34,11 +37,11 @@ const EX = {
   get collateral() {
     return (this.fees * FEE_SPLIT_PCT.engine) / 100;
   },
-  leverage: 10,
+  leverage: 50,
   get notional() {
     return this.collateral * this.leverage;
   },
-  pump: 8,
+  pump: 4,
   get profit() {
     return (this.notional * this.pump) / 100;
   },
@@ -49,7 +52,6 @@ const EX = {
 };
 
 const usd = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
-const int = (n: number) => Math.round(n).toLocaleString("en-US");
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -121,13 +123,19 @@ function Frame({
   scope,
   title,
   accent,
+  after,
   body,
+  keepBody = false,
   children,
 }: {
   scope: React.RefObject<HTMLDivElement | null>;
   title: string;
   accent: string;
+  /** words after the accent, back in the headline colour */
+  after?: string;
   body: React.ReactNode;
+  /** the body carries something to act on (the last chapter's buttons): never hide it */
+  keepBody?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -138,8 +146,20 @@ function Frame({
       <div className="min-w-0">
         <h2 className="font-display text-[clamp(34px,9.4vw,46px)] leading-[1.02] font-bold tracking-[-0.03em] text-night-ink lg:text-[clamp(44px,5.4vw,74px)]">
           <Words text={title} /> <Words text={accent} className="text-mint" />
+          {after && (
+            <>
+              {" "}
+              <Words text={after} />
+            </>
+          )}
         </h2>
-        <p className="js-body mt-3 max-w-[44ch] text-[15px] leading-relaxed text-night-ink-2 sm:mt-6 sm:text-lg">
+        {/* a short phone keeps the headline and the plate; the paragraph only repeats them */}
+        <p
+          className={cn(
+            "js-body mt-3 max-w-[44ch] text-[15px] leading-relaxed text-night-ink-2 sm:mt-6 sm:text-lg",
+            !keepBody && "max-lg:[@media(max-height:720px)]:hidden"
+          )}
+        >
           {body}
         </p>
       </div>
@@ -157,20 +177,6 @@ function Plate({ children, className }: { children: React.ReactNode; className?:
       <p className="mt-2 text-right text-2xs tracking-wide text-night-ink-2/70">Example figures</p>
     </div>
   );
-}
-
-/** a polyline through `values`, scaled into a w×h box */
-function linePath(values: number[], w: number, h: number, pad = 4, lo?: number, hi?: number) {
-  const min = lo ?? Math.min(...values);
-  const max = hi ?? Math.max(...values);
-  const span = max - min || 1;
-  return values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * w;
-      const y = pad + (1 - (v - min) / span) * (h - pad * 2);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join("");
 }
 
 /* deterministic walks: the same chart on every visit */
@@ -197,13 +203,13 @@ function Intro(props: SlideProps) {
       <div className="js-rosette pointer-events-none absolute inset-0 flex items-center justify-center text-mint/30">
         <Guilloche teeth={33} reach={0.8} rings={6} size={760} spin={90} className="w-[min(130vw,760px)]" />
       </div>
-      <h2 className="relative text-center font-display text-[clamp(40px,8vw,118px)] leading-[0.98] font-bold tracking-[-0.035em]">
+      <h2 className="relative text-center font-display text-[clamp(40px,7.4vw,104px)] leading-[0.98] font-bold tracking-[-0.035em] text-balance">
         <span className="block text-night-ink">
-          <Words text="Every launchpad takes a fee." />
+          <Words text="Launchpads keep the fees." />
         </span>
         <span className="js-line2 mt-2 block text-mint">
           {/* own words: they rise after the first line has landed */}
-          {"Here, the fee trades.".split(" ").map((w, i, a) => (
+          {"Here, they pump the coin.".split(" ").map((w, i, a) => (
             <span key={i}>
               <span className="-mb-[0.14em] inline-block overflow-hidden pb-[0.14em] align-bottom">
                 <span className="js-word2 inline-block">{w}</span>
@@ -217,126 +223,35 @@ function Intro(props: SlideProps) {
   );
 }
 
-const TICKETS = [
-  { side: "Buy", amount: 12_400 },
-  { side: "Sell", amount: 3_800 },
-  { side: "Buy", amount: 26_500 },
-  { side: "Buy", amount: 9_200 },
-  { side: "Sell", amount: 41_000 },
-  { side: "Buy", amount: 17_100 },
-] as const;
-
-function Fee(props: SlideProps) {
-  const scope = useChapter(props, (t, q) => {
-    const rows = q(".js-ticket");
-    const fill = q(".js-fill")[0];
-    t.from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.3);
-    let acc = 0;
-    rows.forEach((row, i) => {
-      const fee = (TICKETS[i].amount * EX.feePct) / 100;
-      const before = acc;
-      acc += fee;
-      const at = 0.9 + i * 0.55;
-      t.from(row, { x: -18, autoAlpha: 0, duration: 0.4 }, at)
-        .fromTo(
-          row.querySelector(".js-fee"),
-          { color: "#6fe3a1", scale: 1.25 },
-          { color: "#9fc4ad", scale: 1, duration: 0.6 },
-          at + 0.2
-        )
-        .to(fill, { scaleY: acc / EX.fees, duration: 0.45, ease: "power2.out" }, at + 0.25);
-      count(t, q(".js-collateral")[0], (before * FEE_SPLIT_PCT.engine) / 100, (acc * FEE_SPLIT_PCT.engine) / 100, usd, at + 0.25, 0.45);
-    });
-  });
-
-  return (
-    <Frame
-      scope={scope}
-      title="Every swap pays a fee."
-      accent="It goes to work."
-      body={
-        <>
-          1 to 5% on every buy and sell, settled in USDG. {FEE_SPLIT_PCT.engine}% of it goes straight into a
-          leveraged position that the coin owns.
-        </>
-      }
-    >
-      <Plate>
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-5 sm:gap-8">
-          <ul className="space-y-2">
-            {TICKETS.map((tk, i) => (
-              <li
-                key={i}
-                className={cn(
-                  "js-ticket flex items-center justify-between gap-3 rounded-lg border border-night-line bg-night/60 px-3 py-2",
-                  i > 3 && "max-sm:hidden"
-                )}
-              >
-                <span className="flex min-w-0 items-center gap-2.5">
-                  <span
-                    className={cn(
-                      "w-9 shrink-0 text-2xs font-semibold tracking-wide uppercase",
-                      tk.side === "Buy" ? "text-night-up" : "text-night-down"
-                    )}
-                  >
-                    {tk.side}
-                  </span>
-                  <span className="num truncate text-sm text-night-ink">
-                    {int(tk.amount)}
-                    <span className="max-[359px]:hidden"> USDG</span>
-                  </span>
-                </span>
-                <span className="js-fee num inline-block shrink-0 text-sm text-night-ink-2">
-                  +{usd((tk.amount * EX.feePct) / 100)}
-                </span>
-              </li>
-            ))}
-          </ul>
-          <div className="flex flex-col items-center gap-2">
-            <span className="text-2xs tracking-wide text-night-ink-2 uppercase">Position</span>
-            <div className="relative h-[200px] w-[72px] overflow-hidden rounded-[14px] border border-night-line bg-night/60 sm:h-[260px] sm:w-[88px]">
-              <div className="js-fill absolute inset-x-0 bottom-0 h-full origin-bottom scale-y-0 bg-gradient-to-t from-step-3 to-mint" />
-              <div className="absolute inset-0 bg-[repeating-linear-gradient(-45deg,rgba(6,26,16,0.25)_0_1px,transparent_1px_6px)]" />
-            </div>
-            <span className="js-collateral num text-lg font-semibold text-night-ink">$0</span>
-          </div>
-        </div>
-      </Plate>
-    </Frame>
-  );
-}
-
 const ASSETS = ["BTC", "ETH", "SOL", "SPY", "XAU", "QQQ", "ANTHROPIC", "NVDA"];
-const LEVERAGES = [2, 3, 5, 10, 20];
 
 function Bet(props: SlideProps) {
   const scope = useChapter(props, (t, q) => {
     const tiles = q(".js-tile");
-    const chips = q(".js-lev");
     const lit = { borderColor: "#8ce8b0", backgroundColor: "rgba(140,232,176,0.14)" };
     const dim = { borderColor: "#1d4430", backgroundColor: "rgba(6,26,16,0.6)" };
     t.from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.3);
-    // a scanner pass over the menu, landing on the last tile: NVDA
+    // a scanner pass over the menu, landing on the last tile: the example asset
     tiles.forEach((tile, i) => {
       const at = 1 + i * 0.13;
       t.to(tile, { ...lit, duration: 0.08 }, at);
       if (i < tiles.length - 1) t.to(tile, { ...dim, duration: 0.25 }, at + 0.13);
     });
     t.from(q(".js-readout"), { y: 12, autoAlpha: 0, duration: 0.5 }, 2.2);
-    chips.forEach((chip, i) => {
-      const at = 2.6 + i * 0.22;
-      t.to(chip, { ...lit, color: "#e9f6ee", duration: 0.1 }, at);
-      if (LEVERAGES[i] !== EX.leverage) t.to(chip, { ...dim, color: "#9fc4ad", duration: 0.2 }, at + 0.22);
-    });
+    // the leverage slider runs all the way up
+    t.fromTo(q(".js-levfill"), { scaleX: 0 }, { scaleX: 1, duration: 1.1, ease: "power2.inOut" }, 2.7)
+      .fromTo(q(".js-levthumb"), { left: "0%" }, { left: "100%", duration: 1.1, ease: "power2.inOut" }, 2.7);
+    count(t, q(".js-levval")[0], 1, EX.leverage, (n) => `${Math.round(n)}x`, 2.7, 1.1);
     count(t, q(".js-notional")[0], EX.collateral, EX.notional, usd, 3.6, 1.1);
   });
 
   return (
     <Frame
       scope={scope}
-      title="Pointed at an asset."
-      accent="With leverage."
-      body="The creator picks the market, long or short, the leverage up to 50x and when each deposit takes profit."
+      title="The fees open a"
+      accent="leveraged"
+      after="trade."
+      body="Every buy and sell pays a fee in USDG. The creator points it at a market, long or short, up to 50x, and picks when each deposit takes profit."
     >
       <Plate>
         <div className="grid grid-cols-4 gap-2">
@@ -353,21 +268,28 @@ function Bet(props: SlideProps) {
         <div className="js-readout mt-4 rounded-lg border border-night-line bg-night/60 p-3 sm:mt-5 sm:p-4">
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
             <span className="font-display text-2xl font-bold text-night-ink sm:text-3xl">
-              Long <span className="text-mint">NVDA</span>
+              Long <span className="text-mint">{EX.asset}</span>
             </span>
             <span className="text-sm text-night-ink-2">
               <span className="num js-notional text-night-ink">{usd(EX.collateral)}</span> at work
             </span>
           </div>
-          <div className="mt-3 flex flex-wrap gap-1.5">
-            {LEVERAGES.map((l) => (
-              <span
-                key={l}
-                className="js-lev num rounded-md border border-night-line bg-night/60 px-2.5 py-1 text-sm text-night-ink-2"
-              >
-                {l}x
-              </span>
-            ))}
+          <div className="mt-1 text-2xs text-night-ink-2">
+            from <span className="num">{usd(EX.collateral)}</span> of fees × {EX.leverage}
+          </div>
+          <div className="mt-4">
+            <div className="flex items-baseline justify-between text-2xs tracking-wide text-night-ink-2 uppercase">
+              <span>Leverage</span>
+              <span className="js-levval num text-lg font-semibold tracking-normal text-night-ink normal-case">1x</span>
+            </div>
+            <div className="relative mt-2 h-2 rounded-full border border-night-line bg-night/80">
+              <div className="js-levfill absolute inset-0 origin-left scale-x-0 rounded-full bg-gradient-to-r from-step-3 to-mint" />
+              <div className="js-levthumb absolute top-1/2 left-0 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-night bg-mint shadow-[0_0_0_4px_rgba(140,232,176,0.18)]" />
+            </div>
+            <div className="num mt-1.5 flex justify-between text-2xs text-night-ink-2">
+              <span>1x</span>
+              <span>{EX.leverage}x</span>
+            </div>
           </div>
         </div>
       </Plate>
@@ -375,198 +297,487 @@ function Bet(props: SlideProps) {
   );
 }
 
-const PUMP_LINE = walk(40, 0.0021, 0.006, 11);
-const COIN_FLAT = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2.2, 2.2, 2.2, 2.2, 2.2, 2.2, 2.2, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6, 3.6];
+/*
+ * One move on NVDA, read as cause and effect on a shared time axis: the asset
+ * line on top crosses a take-profit, a guide drops to the coin's chart below,
+ * and the coin prints a big green candle as the buyback hits its pool.
+ */
+const PUMP_N = 18;
+const PUMP_TPS = [5, 11];
+const PUMP_LINE = walk(PUMP_N, 0.0035, 0.008, 11);
+const PUMP_CANDLES = (() => {
+  let seed = 5;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+  const out: { open: number; close: number; high: number; low: number; tp: boolean }[] = [];
+  let price = 100;
+  for (let i = 0; i < PUMP_N; i++) {
+    const tp = PUMP_TPS.includes(i);
+    const open = price;
+    // a slight upward drift between take-profits: the coin never bleeds while it waits
+    const close = tp ? open * 1.14 : open * (1 + 0.006 + rnd() * 0.016);
+    const high = Math.max(open, close) * (1 + Math.abs(rnd()) * 0.01);
+    const low = Math.min(open, close) * (1 - Math.abs(rnd()) * 0.01);
+    out.push({ open, close, high, low, tp });
+    price = close;
+  }
+  return out;
+})();
+const pumpX = (i: number) => (i + 0.5) / PUMP_N;
 
 function Pump(props: SlideProps) {
+  const DRAW = 3.6;
+  const tpAt = (i: number) => 0.9 + DRAW * pumpX(i);
   const scope = useChapter(props, (t, q) => {
-    t.from(q(".js-art"), { autoAlpha: 0, x: 30, duration: 1.2 }, 0.9)
-      .from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.4)
-      .from(q(".js-asset-line"), { drawSVG: 0, duration: 2, ease: "power1.inOut" }, 0.9);
-    count(t, q(".js-move")[0], 0, EX.pump, (n) => `+${n.toFixed(1)}%`, 0.9, 2);
-    count(t, q(".js-pnl")[0], 0, EX.profit, (n) => `+${usd(n)}`, 1.4, 1.8);
-    t.from(q(".js-coin-line"), { drawSVG: 0, duration: 2.2, ease: "power1.inOut" }, 2.6);
-    q(".js-burn").forEach((b, i) => t.from(b, { scale: 0, autoAlpha: 0, transformOrigin: "50% 50%", duration: 0.35, ease: "back.out(3)" }, 3.2 + i * 0.6));
-    count(t, q(".js-buyback")[0], 0, EX.buyback, usd, 3.1, 1.6);
+    t.from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.4)
+      .from(q(".js-art"), { autoAlpha: 0, x: -80, duration: 2.4, ease: "power2.out" }, 0.9)
+      .fromTo(q(".js-pump-reveal"), { attr: { width: 0 } }, { attr: { width: 400 }, duration: DRAW, ease: "none" }, 0.9);
+    count(t, q(".js-move")[0], 0, EX.pump, (n) => `+${n.toFixed(1)}%`, 0.9, DRAW);
+    // the coin's candles print as time passes; the take-profit ones land with a jolt
+    q(".js-candle").forEach((c, i) => {
+      if (PUMP_CANDLES[i].tp) t.from(c, { scaleY: 0, transformOrigin: "50% 100%", duration: 0.35, ease: "back.out(2.4)" }, tpAt(i) + 0.25);
+      else t.from(c, { autoAlpha: 0, duration: 0.15 }, tpAt(i));
+    });
+    PUMP_TPS.forEach((idx, k) => {
+      const at = tpAt(idx);
+      t.from(q(".js-tp-mark")[k], { scale: 0, autoAlpha: 0, transformOrigin: "50% 100%", duration: 0.3, ease: "back.out(3)" }, at)
+        .fromTo(q(".js-guide")[k], { scaleY: 0 }, { scaleY: 1, duration: 0.3, ease: "power2.in" }, at)
+        .from(q(".js-buy")[k], { y: 6, autoAlpha: 0, duration: 0.3 }, at + 0.35);
+      const n = PUMP_TPS.length;
+      count(t, q(".js-pnl")[0], (EX.profit * k) / n, (EX.profit * (k + 1)) / n, (v) => `+${usd(v)}`, at, 0.4);
+      count(t, q(".js-buyback")[0], (EX.buyback * k) / n, (EX.buyback * (k + 1)) / n, usd, at + 0.3, 0.4);
+    });
   });
 
   const W = 400;
+  const LH = 90;
+  const CH = 120;
+  const lLo = Math.min(...PUMP_LINE);
+  const lHi = Math.max(...PUMP_LINE);
+  const ly = (v: number) => 6 + (1 - (v - lLo) / (lHi - lLo)) * (LH - 12);
+  const linePts = PUMP_LINE.map((v, i) => `${i === 0 ? "M" : "L"}${(pumpX(i) * W).toFixed(1)},${ly(v).toFixed(1)}`).join("");
+  const cLo = Math.min(...PUMP_CANDLES.map((c) => c.low));
+  // headroom above the last candle for its buyback label
+  const cHi = Math.max(...PUMP_CANDLES.map((c) => c.high)) * 1.1;
+  const cy = (v: number) => 4 + (1 - (v - cLo) / (cHi - cLo)) * (CH - 8);
+  const bodyW = (W / PUMP_N) * 0.58;
+  const perTp = EX.buyback / PUMP_TPS.length;
+
   return (
     <Frame
       scope={scope}
-      title="NVDA rips."
+      title={`${EX.asset} rips.`}
       accent="The coin gets bought."
       body="The position takes its profit and 75% of it buys the coin on its own pool, then burns it. The chart climbs even with no new buyers."
     >
-      {/* the bull stands on the plate's top edge, a vignette rather than a backdrop */}
+      {/* the bull charges in along with the move and stops on the plate's top edge */}
       <div className="relative w-full max-w-[560px] min-[360px]:mt-16 lg:mt-0">
-        <div className="js-art pointer-events-none absolute right-4 bottom-[calc(100%-18px)] z-10 w-[30%] max-w-[280px] text-mint/90 max-[359px]:hidden sm:right-6 sm:bottom-[calc(100%-34px)] sm:w-[48%]">
+        <div className="js-art pointer-events-none absolute right-4 bottom-[calc(100%-18px)] z-10 w-[30%] max-w-[280px] text-mint/90 max-[359px]:hidden sm:right-6 sm:bottom-[calc(100%-34px)] sm:w-[48%] lg:w-[36%]">
           <EngravedArt name="bull" />
         </div>
-      <Plate>
-        <div className="flex items-center gap-2 pt-1">
-          <AssetIcon symbol="NVDA" size={20} />
-          <span className="text-sm font-semibold text-night-ink">NVDA</span>
-          <span className="js-move num text-sm font-semibold text-night-up">+0.0%</span>
-        </div>
-        <svg viewBox={`0 0 ${W} 90`} className="mt-2 h-[64px] w-full sm:h-[90px]" preserveAspectRatio="none" aria-hidden>
-          <path className="js-asset-line" d={linePath(PUMP_LINE, W, 90)} fill="none" stroke="#6fe3a1" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-        </svg>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
-            <div className="text-2xs text-night-ink-2">Position profit, 10x</div>
-            <div className="js-pnl num text-lg font-semibold text-night-up">+$0</div>
+        <Plate>
+          <div className="flex items-center gap-2 pt-1">
+            <AssetIcon symbol={EX.asset} size={20} />
+            <span className="text-sm font-semibold text-night-ink">{EX.asset}</span>
+            <span className="js-move num text-sm font-semibold text-night-up">+0.0%</span>
           </div>
-          <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
-            <div className="text-2xs text-night-ink-2">Buyback &amp; burn</div>
-            <div className="js-buyback num text-lg font-semibold text-mint">$0</div>
+
+          <div className="relative mt-2">
+            {/* guides: one per take-profit, dropping from the asset to the coin */}
+            {PUMP_TPS.map((idx) => (
+              <span
+                key={idx}
+                aria-hidden
+                className="js-guide absolute top-0 bottom-0 w-px origin-top border-l border-dashed border-mint/40"
+                style={{ left: `${pumpX(idx) * 100}%` }}
+              />
+            ))}
+
+            <div className="relative h-[64px] sm:h-[90px]">
+              <svg viewBox={`0 0 ${W} ${LH}`} className="h-full w-full" preserveAspectRatio="none" aria-hidden>
+                <defs>
+                  <clipPath id="pump-reveal">
+                    <rect className="js-pump-reveal" x="0" y="0" width={W} height={LH} />
+                  </clipPath>
+                </defs>
+                <path clipPath="url(#pump-reveal)" d={linePts} fill="none" stroke="#6fe3a1" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              </svg>
+              {PUMP_TPS.map((idx) => (
+                <span
+                  key={idx}
+                  className="absolute -translate-x-1/2 -translate-y-full"
+                  style={{ left: `${pumpX(idx) * 100}%`, top: `${(ly(PUMP_LINE[idx]) / LH) * 100}%` }}
+                >
+                  <span className="js-tp-mark flex flex-col items-center">
+                    <span className="num rounded-full border border-mint/40 bg-night px-1.5 py-px text-[10px] font-semibold text-mint">TP</span>
+                    <span className="mt-0.5 size-1.5 rounded-full bg-mint" />
+                  </span>
+                </span>
+              ))}
+            </div>
+
+            <div className="relative flex items-center justify-between bg-night-2 py-2 text-sm">
+              <span className="font-semibold text-night-ink">The coin</span>
+              <span className="text-2xs text-night-ink-2">bought at every take-profit</span>
+            </div>
+
+            <div className="relative h-[90px] sm:h-[120px]">
+              <svg viewBox={`0 0 ${W} ${CH}`} className="h-full w-full" preserveAspectRatio="none" aria-hidden>
+                {PUMP_CANDLES.map((c, i) => {
+                  const x = pumpX(i) * W;
+                  const up = c.close >= c.open;
+                  const colour = c.tp ? "#8ce8b0" : up ? "rgba(140,232,176,0.85)" : "rgba(255,138,122,0.85)";
+                  return (
+                    <g key={i} className="js-candle">
+                      <line x1={x} x2={x} y1={cy(c.high)} y2={cy(c.low)} stroke={colour} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                      <rect
+                        x={x - bodyW / 2}
+                        width={bodyW}
+                        y={cy(Math.max(c.open, c.close))}
+                        height={Math.max(1.5, Math.abs(cy(c.open) - cy(c.close)))}
+                        fill={colour}
+                      />
+                    </g>
+                  );
+                })}
+              </svg>
+              {/* the outer span positions, the inner one animates: GSAP's transform would drop the centring */}
+              {PUMP_TPS.map((idx) => (
+                <span
+                  key={idx}
+                  className="absolute -translate-x-1/2 -translate-y-[calc(100%+6px)]"
+                  style={{ left: `${pumpX(idx) * 100}%`, top: `${(cy(PUMP_CANDLES[idx].high) / CH) * 100}%` }}
+                >
+                  <span className="js-buy num block rounded-md bg-mint px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap text-night">
+                    +{usd(perTp)}
+                  </span>
+                </span>
+              ))}
+            </div>
           </div>
-        </div>
-        <div className="mt-4 flex items-center justify-between text-sm">
-          <span className="font-semibold text-night-ink">The coin</span>
-          <span className="text-2xs text-night-ink-2">bought back in three take-profits</span>
-        </div>
-        <svg viewBox={`0 0 ${W} 80`} className="mt-1 h-[56px] w-full overflow-visible sm:h-[80px]" preserveAspectRatio="none" aria-hidden>
-          <path className="js-coin-line" d={linePath(COIN_FLAT, W, 80, 10, 0, 4)} fill="none" stroke="#8ce8b0" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
-        </svg>
-        <div className="relative -mt-[56px] h-[56px] sm:-mt-[80px] sm:h-[80px]">
-          {[12, 20, 27].map((idx) => (
-            <span
-              key={idx}
-              className="js-burn absolute size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-mint ring-4 ring-mint/25"
-              style={{
-                left: `${(idx / (COIN_FLAT.length - 1)) * 100}%`,
-                top: `${(10 + (1 - COIN_FLAT[idx] / 4) * 60) / 0.8}%`,
-              }}
-            />
-          ))}
-        </div>
-      </Plate>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
+              <div className="text-2xs text-night-ink-2">Position profit, {EX.leverage}x</div>
+              <div className="js-pnl num text-lg font-semibold text-night-up">+$0</div>
+            </div>
+            <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
+              <div className="text-2xs text-night-ink-2">Buyback &amp; burn</div>
+              <div className="js-buyback num text-lg font-semibold text-mint">$0</div>
+            </div>
+          </div>
+        </Plate>
       </div>
     </Frame>
   );
 }
 
-const DUMP_LINE = walk(40, -0.0034, 0.006, 29);
-const COIN_HOLD = Array.from({ length: 40 }, () => 1);
+/*
+ * The mirror of the pump: NVDA falls, the 50x position is liquidated, and the
+ * coin's candles below keep their slow climb. The guide at the liquidation
+ * drops to the coin and finds nothing to sell.
+ */
+const DUMP_N = 24;
+const DUMP_LIQ = 15;
+const DUMP_LINE = walk(DUMP_N, -0.0055, 0.008, 29);
+const DUMP_CANDLES = (() => {
+  let seed = 13;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+  const out: { open: number; close: number; high: number; low: number }[] = [];
+  let price = 100;
+  for (let i = 0; i < DUMP_N; i++) {
+    const open = price;
+    const close = open * (1 + 0.006 + rnd() * 0.018);
+    const high = Math.max(open, close) * (1 + Math.abs(rnd()) * 0.01);
+    const low = Math.min(open, close) * (1 - Math.abs(rnd()) * 0.01);
+    out.push({ open, close, high, low });
+    price = close;
+  }
+  return out;
+})();
+const dumpX = (i: number) => (i + 0.5) / DUMP_N;
 
 function Dump(props: SlideProps) {
+  const DRAW = 3.6;
+  const atX = (i: number) => 0.9 + DRAW * dumpX(i);
   const scope = useChapter(props, (t, q) => {
-    t.from(q(".js-art"), { autoAlpha: 0, y: 16, duration: 1.2 }, 0.9)
-      .from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.4)
-      .from(q(".js-asset-line"), { drawSVG: 0, duration: 2, ease: "power1.inOut" }, 0.9)
-      .from(q(".js-coin-line"), { drawSVG: 0, duration: 2, ease: "power1.inOut" }, 0.9);
-    count(t, q(".js-move")[0], 0, -EX.dump, (n) => `${n.toFixed(1)}%`, 0.9, 2);
-    t.from(q(".js-fact"), { y: 10, autoAlpha: 0, duration: 0.45, stagger: 0.25 }, 2.8);
+    t.from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.4)
+      .from(q(".js-art"), { autoAlpha: 0, x: 80, duration: 2.4, ease: "power2.out" }, 0.9)
+      .fromTo(q(".js-dump-reveal"), { attr: { width: 0 } }, { attr: { width: 400 }, duration: DRAW, ease: "none" }, 0.9);
+    count(t, q(".js-move")[0], 0, -EX.dump, (n) => `${n.toFixed(1)}%`, 0.9, DRAW);
+    q(".js-candle").forEach((c, i) => t.from(c, { autoAlpha: 0, duration: 0.15 }, atX(i)));
+    const liq = atX(DUMP_LIQ);
+    t.from(q(".js-liq-mark"), { scale: 0, autoAlpha: 0, transformOrigin: "50% 100%", duration: 0.3, ease: "back.out(3)" }, liq)
+      .fromTo(q(".js-liq-guide"), { scaleY: 0 }, { scaleY: 1, duration: 0.3, ease: "power2.in" }, liq)
+      .from(q(".js-nosell"), { y: 6, autoAlpha: 0, duration: 0.3 }, liq + 0.35);
+    count(t, q(".js-lost")[0], 0, EX.collateral, (n) => `−${usd(n)}`, liq, 0.4);
   });
 
   const W = 400;
+  const LH = 90;
+  const CH = 120;
+  const lLo = Math.min(...DUMP_LINE);
+  const lHi = Math.max(...DUMP_LINE);
+  const ly = (v: number) => 6 + (1 - (v - lLo) / (lHi - lLo)) * (LH - 12);
+  const linePts = DUMP_LINE.map((v, i) => `${i === 0 ? "M" : "L"}${(dumpX(i) * W).toFixed(1)},${ly(v).toFixed(1)}`).join("");
+  const cLo = Math.min(...DUMP_CANDLES.map((c) => c.low)) * 0.97;
+  const cHi = Math.max(...DUMP_CANDLES.map((c) => c.high)) * 1.03;
+  const cy = (v: number) => 4 + (1 - (v - cLo) / (cHi - cLo)) * (CH - 8);
+  const bodyW = (W / DUMP_N) * 0.58;
+
   return (
     <Frame
       scope={scope}
-      title="NVDA dumps."
+      title={`${EX.asset} dumps.`}
       accent="Nothing sells the coin."
-      body="The position can only lose the fees it was given, money other launchpads keep for themselves anyway. Holders' tokens and the pool are never touched."
+      body="The position can only lose the fees it was given. The engine never sells the coin, so its chart keeps going where its traders take it."
     >
+      {/* the bear charges in from the other side and stops on the plate's top edge */}
       <div className="relative w-full max-w-[560px] min-[360px]:mt-12 lg:mt-0">
-        <div className="js-art pointer-events-none absolute right-4 bottom-[calc(100%-12px)] z-10 w-[36%] max-w-[320px] text-mint/90 max-[359px]:hidden sm:right-6 sm:bottom-[calc(100%-22px)] sm:w-[56%]">
+        <div className="js-art pointer-events-none absolute right-4 bottom-[calc(100%-12px)] z-10 w-[36%] max-w-[320px] text-mint/90 max-[359px]:hidden sm:right-6 sm:bottom-[calc(100%-22px)] sm:w-[56%] lg:w-[42%]">
           <EngravedArt name="bear" />
         </div>
-      <Plate>
-        <div className="flex items-center gap-2 pt-1">
-          <AssetIcon symbol="NVDA" size={20} />
-          <span className="text-sm font-semibold text-night-ink">NVDA</span>
-          <span className="js-move num text-sm font-semibold text-night-down">0.0%</span>
-        </div>
-        <div className="relative mt-2">
-          <svg viewBox={`0 0 ${W} 120`} className="h-[96px] w-full sm:h-[130px]" preserveAspectRatio="none" aria-hidden>
-            <path className="js-asset-line" d={linePath(DUMP_LINE, W, 120)} fill="none" stroke="#ff8a7a" strokeWidth={2} vectorEffect="non-scaling-stroke" />
-            <path className="js-coin-line" d={linePath(COIN_HOLD, W, 120, 4, -1, 1.7)} fill="none" stroke="#8ce8b0" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
-          </svg>
-          <span className="absolute top-0 right-0 text-2xs font-semibold text-mint">The coin, flat</span>
-        </div>
-        <dl className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-          {[
-            ["Coins sold by the engine", "0"],
-            ["Pool liquidity", "Locked"],
-            ["At risk", "Fees only"],
-          ].map(([k, v]) => (
-            <div key={k} className="js-fact flex items-baseline justify-between gap-2 rounded-lg border border-night-line bg-night/60 px-3 py-2 sm:block">
-              <dt className="text-2xs text-night-ink-2">{k}</dt>
-              <dd className="num text-base font-semibold text-night-ink sm:text-lg">{v}</dd>
+        <Plate>
+          <div className="flex items-center gap-2 pt-1">
+            <AssetIcon symbol={EX.asset} size={20} />
+            <span className="text-sm font-semibold text-night-ink">{EX.asset}</span>
+            <span className="js-move num text-sm font-semibold text-night-down">0.0%</span>
+          </div>
+
+          <div className="relative mt-2">
+            <span
+              aria-hidden
+              className="js-liq-guide absolute top-0 bottom-0 w-px origin-top border-l border-dashed border-night-down/50"
+              style={{ left: `${dumpX(DUMP_LIQ) * 100}%` }}
+            />
+
+            <div className="relative h-[64px] sm:h-[90px]">
+              <svg viewBox={`0 0 ${W} ${LH}`} className="h-full w-full" preserveAspectRatio="none" aria-hidden>
+                <defs>
+                  <clipPath id="dump-reveal">
+                    <rect className="js-dump-reveal" x="0" y="0" width={W} height={LH} />
+                  </clipPath>
+                </defs>
+                <path clipPath="url(#dump-reveal)" d={linePts} fill="none" stroke="#ff8a7a" strokeWidth={2} vectorEffect="non-scaling-stroke" />
+              </svg>
+              <span
+                className="absolute -translate-x-1/2 -translate-y-full"
+                style={{ left: `${dumpX(DUMP_LIQ) * 100}%`, top: `${(ly(DUMP_LINE[DUMP_LIQ]) / LH) * 100}%` }}
+              >
+                <span className="js-liq-mark flex flex-col items-center">
+                  <span className="num rounded-full border border-night-down/50 bg-night px-1.5 py-px text-[10px] font-semibold text-night-down">LIQ</span>
+                  <span className="mt-0.5 size-1.5 rounded-full bg-night-down" />
+                </span>
+              </span>
             </div>
-          ))}
-        </dl>
-      </Plate>
+
+            <div className="relative flex items-center justify-between bg-night-2 py-2 text-sm">
+              <span className="font-semibold text-night-ink">The coin</span>
+              <span className="text-2xs text-night-ink-2">no forced selling</span>
+            </div>
+
+            <div className="relative h-[90px] sm:h-[120px]">
+              <svg viewBox={`0 0 ${W} ${CH}`} className="h-full w-full" preserveAspectRatio="none" aria-hidden>
+                {DUMP_CANDLES.map((c, i) => {
+                  const x = dumpX(i) * W;
+                  const colour = c.close >= c.open ? "rgba(140,232,176,0.85)" : "rgba(255,138,122,0.85)";
+                  return (
+                    <g key={i} className="js-candle">
+                      <line x1={x} x2={x} y1={cy(c.high)} y2={cy(c.low)} stroke={colour} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                      <rect
+                        x={x - bodyW / 2}
+                        width={bodyW}
+                        y={cy(Math.max(c.open, c.close))}
+                        height={Math.max(1.5, Math.abs(cy(c.open) - cy(c.close)))}
+                        fill={colour}
+                      />
+                    </g>
+                  );
+                })}
+              </svg>
+              <span
+                className="absolute -translate-x-1/2 -translate-y-[calc(100%+6px)]"
+                style={{ left: `${dumpX(DUMP_LIQ) * 100}%`, top: `${(cy(DUMP_CANDLES[DUMP_LIQ].high) / CH) * 100}%` }}
+              >
+                <span className="js-nosell num block rounded-md border border-night-line bg-night px-1.5 py-0.5 text-[10px] font-semibold whitespace-nowrap text-night-ink">
+                  0 coins sold
+                </span>
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
+              <div className="text-2xs text-night-ink-2">Position lost, {EX.leverage}x</div>
+              <div className="js-lost num text-lg font-semibold text-night-down">−$0</div>
+            </div>
+            <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
+              <div className="text-2xs text-night-ink-2">Coins sold by the engine</div>
+              <div className="num text-lg font-semibold text-mint">0</div>
+            </div>
+          </div>
+        </Plate>
       </div>
     </Frame>
   );
 }
 
-/* compounding: two sources stacked over time, the asset's share accelerating */
-const STEPS = 24;
-const TRADERS = Array.from({ length: STEPS }, (_, i) => 6 + i * 1.1);
-const ASSET = Array.from({ length: STEPS }, (_, i) => Math.pow(1.17, i) - 1);
-
-function areaPath(top: number[], base: number[], w: number, h: number, max: number) {
-  const x = (i: number) => (i / (top.length - 1)) * w;
-  const y = (v: number) => h - (v / max) * h;
-  const upper = top.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join("");
-  const lower = base
-    .map((v, i) => [x(i), y(v)] as const)
-    .reverse()
-    .map(([px, py]) => `L${px.toFixed(1)},${py.toFixed(1)}`)
-    .join("");
-  return `${upper}${lower}Z`;
-}
+/*
+ * The same coin twice, on the same trading: once on its own, once with the
+ * engine. Both lines share the drift; the engine's line also steps up at each
+ * take-profit on a high-leverage position and hands part of it back, the rest
+ * holds. The shaded gap between them is what leverage added.
+ */
+const EDGE_N = 64;
+const EDGE_SPIKES = [
+  { at: 12, jump: 0.14 },
+  { at: 26, jump: 0.22 },
+  { at: 39, jump: 0.18 },
+  { at: 53, jump: 0.32 },
+];
+const { EDGE_BASE, EDGE_LINE } = (() => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;
+  const base = [100];
+  const line = [100];
+  let mult = 1;
+  let retrace = 0;
+  let left = 0;
+  for (let i = 1; i < EDGE_N; i++) {
+    base.push(base[i - 1] * (1 + 0.0026 + rnd() * 0.01));
+    const spike = EDGE_SPIKES.find((sp) => sp.at === i);
+    if (spike) {
+      mult *= 1 + spike.jump;
+      retrace = (spike.jump * 0.3) / 4;
+      left = 4;
+    } else if (left > 0) {
+      mult *= 1 - retrace;
+      left--;
+    }
+    line.push(base[i] * mult);
+  }
+  return { EDGE_BASE: base, EDGE_LINE: line };
+})();
+const EDGE_LO = Math.min(...EDGE_BASE) * 0.97;
+const EDGE_HI = Math.max(...EDGE_LINE) * 1.08;
+const EDGE_ALONE = (EDGE_BASE[EDGE_N - 1] / EDGE_BASE[0] - 1) * 100;
+const EDGE_WITH = (EDGE_LINE[EDGE_N - 1] / EDGE_LINE[0] - 1) * 100;
 
 function Edge(props: SlideProps) {
+  const DRAW = 4;
+  const end = 0.9 + DRAW;
   const scope = useChapter(props, (t, q) => {
-    t.from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.3)
-      .fromTo(q(".js-reveal"), { attr: { width: 0 } }, { attr: { width: 400 }, duration: 3.2, ease: "power1.inOut" }, 0.9)
-      .from(q(".js-legend"), { autoAlpha: 0, y: 8, stagger: 0.3, duration: 0.4 }, 1.6);
+    t.from(q(".js-plate"), { y: 24, autoAlpha: 0, duration: 0.7 }, 0.3).fromTo(
+      q(".js-reveal"),
+      { attr: { width: 0 } },
+      { attr: { width: 400 }, duration: DRAW, ease: "none" },
+      0.9
+    );
+    q(".js-tp").forEach((m, k) => {
+      const at = 0.9 + (DRAW * EDGE_SPIKES[k].at) / (EDGE_N - 1);
+      t.from(m, { scale: 0, autoAlpha: 0, duration: 0.3, ease: "back.out(3)" }, at);
+    });
+    count(t, q(".js-alone")[0], 0, EDGE_ALONE, (n) => `+${Math.round(n)}%`, 0.9, DRAW);
+    count(t, q(".js-with")[0], 0, EDGE_WITH, (n) => `+${Math.round(n)}%`, 0.9, DRAW);
+    t.from(q(".js-endtag"), { x: -6, autoAlpha: 0, duration: 0.35, stagger: 0.12 }, end)
+      .from(q(".js-gap"), { autoAlpha: 0, y: 6, duration: 0.45 }, end + 0.2);
   });
 
   const W = 400;
   const H = 220;
-  const total = TRADERS.map((v, i) => v + ASSET[i]);
-  const max = Math.max(...total) * 1.06;
-  const zero = TRADERS.map(() => 0);
+  const xOf = (i: number) => (i / (EDGE_N - 1)) * W;
+  const yOf = (v: number) => (1 - (v - EDGE_LO) / (EDGE_HI - EDGE_LO)) * H;
+  const path = (vals: number[]) => vals.map((v, i) => `${i === 0 ? "M" : "L"}${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join("");
+  const withLine = path(EDGE_LINE);
+  const aloneLine = path(EDGE_BASE);
+  const gap = `${withLine}${EDGE_BASE.map((v, i) => [xOf(i), yOf(v)] as const)
+    .reverse()
+    .map(([x, y]) => `L${x.toFixed(1)},${y.toFixed(1)}`)
+    .join("")}Z`;
+  const pct = (v: number) => (yOf(v) / H) * 100;
+  const gapAt = 46;
 
   return (
     <Frame
       scope={scope}
-      title="Two engines."
-      accent="One coin."
-      body="People trading the coin, and the trend of the asset behind it. Pair the right asset at the right moment and the two can compound."
+      title="Trading moves the coin."
+      accent="Leverage pumps it."
+      body={`Same coin, same traders. Every take-profit on a ${EX.leverage}x position adds buys on top, and the gap keeps growing. The right asset at the right time keeps it coming.`}
     >
       <Plate>
-        <svg viewBox={`0 0 ${W} ${H}`} className="h-[180px] w-full sm:h-[240px]" preserveAspectRatio="none" aria-hidden>
-          <defs>
-            <clipPath id="edge-reveal">
-              <rect className="js-reveal" x="0" y="0" width={W} height={H} />
-            </clipPath>
-            <pattern id="edge-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(-45)">
-              <rect width="6" height="6" fill="rgba(159,196,173,0.18)" />
-              <line x1="0" y1="0" x2="0" y2="6" stroke="rgba(159,196,173,0.45)" strokeWidth="1" />
-            </pattern>
-          </defs>
-          <g clipPath="url(#edge-reveal)">
-            <path d={areaPath(TRADERS, zero, W, H, max)} fill="url(#edge-hatch)" />
-            <path d={areaPath(total, TRADERS, W, H, max)} fill="rgba(140,232,176,0.35)" />
-            <path d={linePath(total, W, H, 0, 0, max)} fill="none" stroke="#8ce8b0" strokeWidth={2.5} vectorEffect="non-scaling-stroke" />
-          </g>
-          <line x1="0" y1={H - 0.5} x2={W} y2={H - 0.5} stroke="#1d4430" />
-        </svg>
-        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
-          <span className="js-legend flex items-center gap-2 text-night-ink-2">
-            <span className="size-3 rounded-sm border border-night-ink-2/50 bg-[repeating-linear-gradient(-45deg,rgba(159,196,173,0.5)_0_1px,transparent_1px_4px)]" />
-            Buys from traders
-          </span>
-          <span className="js-legend flex items-center gap-2 text-night-ink">
-            <span className="size-3 rounded-sm bg-mint/60" />
-            Buybacks from the asset&apos;s trend
-          </span>
+        <div className="relative pr-12 sm:pr-14">
+          <svg viewBox={`0 0 ${W} ${H}`} className="h-[170px] w-full sm:h-[240px]" preserveAspectRatio="none" aria-hidden>
+            <defs>
+              <clipPath id="edge-reveal">
+                <rect className="js-reveal" x="0" y="0" width={W} height={H} />
+              </clipPath>
+            </defs>
+            <g clipPath="url(#edge-reveal)">
+              <path d={gap} fill="rgba(140,232,176,0.16)" />
+              <path d={aloneLine} fill="none" stroke="rgba(159,196,173,0.7)" strokeWidth={1.75} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
+              <path d={withLine} fill="none" stroke="#8ce8b0" strokeWidth={2.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+            </g>
+            <line x1="0" y1={H - 0.5} x2={W} y2={H - 0.5} stroke="#1d4430" />
+          </svg>
+
+          {/* overlays share the chart's box: the right padding is room for the end tags */}
+          <div className="pointer-events-none absolute inset-y-0 right-12 left-0 sm:right-14">
+            {EDGE_SPIKES.map((sp) => (
+              <span
+                key={sp.at}
+                className="absolute -translate-x-1/2 -translate-y-1/2"
+                style={{ left: `${(sp.at / (EDGE_N - 1)) * 100}%`, top: `${pct(EDGE_LINE[sp.at])}%` }}
+              >
+                <span className="js-tp block size-2 rounded-full bg-mint shadow-[0_0_0_3px_rgba(140,232,176,0.25)]" />
+              </span>
+            ))}
+            <span
+              className="absolute left-full ml-1.5 -translate-y-1/2"
+              style={{ top: `${pct(EDGE_LINE[EDGE_N - 1])}%` }}
+            >
+              <span className="js-endtag num block rounded-md bg-mint px-1.5 py-0.5 text-[11px] font-semibold text-night">
+                +{Math.round(EDGE_WITH)}%
+              </span>
+            </span>
+            <span
+              className="absolute left-full ml-1.5 -translate-y-1/2"
+              style={{ top: `${pct(EDGE_BASE[EDGE_N - 1])}%` }}
+            >
+              <span className="js-endtag num block rounded-md border border-night-line bg-night px-1.5 py-0.5 text-[11px] font-semibold text-night-ink-2">
+                +{Math.round(EDGE_ALONE)}%
+              </span>
+            </span>
+            <span
+              className="absolute -translate-x-1/2"
+              style={{
+                left: `${(gapAt / (EDGE_N - 1)) * 100}%`,
+                top: `${(pct(EDGE_LINE[gapAt]) + pct(EDGE_BASE[gapAt])) / 2}%`,
+              }}
+            >
+              <span className="js-gap block text-center text-[10px] leading-tight font-semibold whitespace-nowrap text-mint sm:text-2xs">
+                buy pressure
+                <br />
+                from leverage
+              </span>
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
+            <div className="flex items-center gap-1.5 text-2xs text-night-ink-2">
+              <span aria-hidden className="w-3 border-t border-dashed border-night-ink-2" />
+              Trading alone
+            </div>
+            <div className="js-alone num text-lg font-semibold text-night-ink">+0%</div>
+          </div>
+          <div className="rounded-lg border border-mint/30 bg-mint/[0.07] px-3 py-2">
+            <div className="flex items-center gap-1.5 text-2xs text-night-ink-2">
+              <span aria-hidden className="w-3 border-t-2 border-mint" />
+              <span className="max-[359px]:hidden">With {EX.leverage}x take-profits</span>
+              <span className="min-[360px]:hidden">With leverage</span>
+            </div>
+            <div className="js-with num text-lg font-semibold text-mint">+0%</div>
+          </div>
         </div>
       </Plate>
     </Frame>
@@ -593,6 +804,7 @@ function Start(props: SlideProps) {
       scope={scope}
       title="Pick an asset."
       accent="Launch the coin."
+      keepBody
       body={
         <>
           Every coin opens at the same ~$4,000 valuation, with liquidity locked from the first block. You choose
@@ -632,7 +844,6 @@ function Start(props: SlideProps) {
 
 export const SLIDES = [
   { key: "intro", label: "Intro", seconds: 5.5, Component: Intro },
-  { key: "fee", label: "The fee", seconds: 7, Component: Fee },
   { key: "bet", label: "The bet", seconds: 7, Component: Bet },
   { key: "pump", label: "Pump", seconds: 8, Component: Pump },
   { key: "dump", label: "Dump", seconds: 8, Component: Dump },

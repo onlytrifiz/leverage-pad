@@ -74,14 +74,13 @@ export default function AssetPicker({
     return c;
   }, [markets]);
 
-  const movers = useMemo(
-    () =>
-      [...markets]
-        .filter((m) => m.change24h != null)
-        .sort((a, b) => Math.abs(b.change24h!) - Math.abs(a.change24h!))
-        .slice(0, 6),
-    [markets]
-  );
+  // the two biggest risers (a long idea) and the two biggest fallers (a short one)
+  const movers = useMemo(() => {
+    const moved = markets.filter((m) => m.change24h != null);
+    const up = moved.filter((m) => m.change24h! > 0).sort((a, b) => b.change24h! - a.change24h!).slice(0, 2);
+    const down = moved.filter((m) => m.change24h! < 0).sort((a, b) => a.change24h! - b.change24h!).slice(0, 2);
+    return [...up, ...down];
+  }, [markets]);
 
   const { visible, hidden } = useMemo(() => {
     const needle = q.trim().toLowerCase();

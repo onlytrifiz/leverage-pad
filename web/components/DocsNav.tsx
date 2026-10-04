@@ -1,60 +1,55 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { ChevronDown } from "lucide-react";
+import { cn } from "cn";
 
-export type DocsGroup = {
+export type DocsNavGroup = {
   label: string;
-  items: { id: string; title: string }[];
+  items: { slug: string; title: string }[];
 };
 
+const hrefOf = (slug: string) => `/docs/${slug}`;
+
 /**
- * Indice laterale dei docs con scrollspy: evidenzia la sezione visibile.
- * Le sezioni sono <section id=…> nella pagina; qui solo ancore + observer.
+ * The docs sidebar. Every page is its own route, so the active entry is the
+ * pathname, not a scroll position. On a phone the same list folds into a
+ * "Contents" disclosure above the article.
  */
-export default function DocsNav({ groups }: { groups: DocsGroup[] }) {
-  const [active, setActive] = useState(groups[0]?.items[0]?.id ?? "");
+export default function DocsNav({ groups, variant = "sidebar" }: { groups: DocsNavGroup[]; variant?: "sidebar" | "mobile" }) {
+  const pathname = usePathname();
+  const current = groups.flatMap((g) => g.items).find((i) => pathname === hrefOf(i.slug));
 
-  useEffect(() => {
-    const ids = groups.flatMap((g) => g.items.map((i) => i.id));
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
-        if (visible[0]) setActive(visible[0].target.id);
-      },
-      // banda di attivazione: sotto la nav sticky, sopra il 65% del viewport
-      { rootMargin: "-80px 0px -65% 0px" }
-    );
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      if (el) observer.observe(el);
-    }
-    return () => observer.disconnect();
-  }, [groups]);
-
-  return (
-    <nav className="space-y-5">
+  const list = (
+    <nav className="space-y-6">
+      <Link
+        href="/docs"
+        className={cn(
+          "block text-sm font-medium transition-colors",
+          pathname === "/docs" ? "text-brand" : "text-ink-2 hover:text-ink"
+        )}
+      >
+        Overview
+      </Link>
       {groups.map((g) => (
         <div key={g.label}>
-          <div className="mb-2 text-xs font-semibold uppercase tracking-[0.06em] text-ink-3 first-letter:uppercase">
-            {g.label}
-          </div>
+          <div className="mb-2 text-xs font-semibold tracking-[0.06em] text-ink-3 uppercase">{g.label}</div>
           <ul className="space-y-0.5 border-l border-line">
             {g.items.map((item) => {
-              const isActive = item.id === active;
+              const active = pathname === hrefOf(item.slug);
               return (
-                <li key={item.id}>
-                  <a
-                    href={`#${item.id}`}
-                    className={`-ml-px block border-l py-1.5 pl-3 text-sm leading-snug transition-colors ${
-                      isActive
-                        ? "border-brand font-semibold text-brand"
-                        : "border-transparent text-ink-2 hover:border-line-2 hover:text-ink"
-                    }`}
+                <li key={item.slug}>
+                  <Link
+                    href={hrefOf(item.slug)}
+                    aria-current={active ? "page" : undefined}
+                    className={cn(
+                      "-ml-px block border-l py-1.5 pl-3 text-sm leading-snug transition-colors",
+                      active ? "border-brand font-semibold text-brand" : "border-transparent text-ink-2 hover:border-line-2 hover:text-ink"
+                    )}
                   >
                     {item.title}
-                  </a>
+                  </Link>
                 </li>
               );
             })}
@@ -62,5 +57,21 @@ export default function DocsNav({ groups }: { groups: DocsGroup[] }) {
         </div>
       ))}
     </nav>
+  );
+
+  if (variant === "sidebar") return list;
+
+  return (
+    // keyed on the page so it folds again after a navigation
+    <details key={pathname} className="group rounded-[14px] border border-border bg-card">
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm [&::-webkit-details-marker]:hidden">
+        <span className="min-w-0 truncate">
+          <span className="text-ink-3">Contents</span>
+          {current && <span className="font-medium text-ink"> · {current.title}</span>}
+        </span>
+        <ChevronDown size={16} aria-hidden className="shrink-0 text-ink-3 transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="border-t border-line px-4 py-4">{list}</div>
+    </details>
   );
 }

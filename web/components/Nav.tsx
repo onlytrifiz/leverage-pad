@@ -5,21 +5,21 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { cn } from "cn";
 import { motion } from "motion/react";
+import { BookOpen, ChartColumn, LayoutGrid, Sparkles, type LucideIcon } from "lucide-react";
 import { Container } from "@/components/ui/container";
 import { WalletButton } from "@/components/wallet";
 
-const LINKS = [
-  { href: "/market", label: "Market" },
-  { href: "/launch", label: "Launch" },
-  { href: "/stats", label: "Stats" },
-  { href: "/docs", label: "Docs" },
+const LINKS: { href: string; label: string; icon: LucideIcon }[] = [
+  { href: "/market", label: "Market", icon: LayoutGrid },
+  { href: "/launch", label: "Launch", icon: Sparkles },
+  { href: "/stats", label: "Stats", icon: ChartColumn },
+  { href: "/docs", label: "Docs", icon: BookOpen },
 ];
 
 /**
  * The header owns `--nav-h`: its height is a token, not a number retyped in the
- * ticker's `top-[64px]` and the rails' `top:118px`. Below `sm` the links wrap to
- * a second row, which is why the token changes at that breakpoint — the ticker
- * used to stick at the desktop height and sit on top of them.
+ * ticker's `top-[64px]` and the rails' `top:118px`. It is one row everywhere:
+ * below `sm` the links move to a bottom tab bar, where a thumb reaches them.
  */
 export default function Nav() {
   const pathname = usePathname();
@@ -70,17 +70,52 @@ export default function Nav() {
             <WalletButton />
           </div>
         </div>
-        {/*
-          Narrow screens: the links get their own row and scroll rather than
-          compress, so a fifth entry can never widen the document.
-        */}
-        <nav
-          aria-label="Main"
-          className="-mx-4 flex items-center gap-6 overflow-x-auto px-4 pb-3 sm:hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        >
-          {navLinks("mobile")}
-        </nav>
       </Container>
     </header>
+  );
+}
+
+/**
+ * The phone's navigation: four tabs fixed to the bottom edge, above the home
+ * indicator. The body reserves the same height (see the layout), so the footer
+ * and the last row of any page never sit under it. Overlays (the intro, sheets,
+ * the launch wash) stack above it.
+ */
+export function BottomBar() {
+  const pathname = usePathname();
+  return (
+    <nav
+      aria-label="Main"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-void/90 pb-[env(safe-area-inset-bottom)] backdrop-blur sm:hidden"
+    >
+      <ul className="grid h-16 grid-cols-4">
+        {LINKS.map(({ href, label, icon: Icon }) => {
+          const active = pathname.startsWith(href);
+          return (
+            <li key={href} className="min-w-0">
+              <Link
+                href={href}
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "relative flex h-full flex-col items-center justify-center gap-1 text-2xs font-medium transition-colors",
+                  active ? "text-brand" : "text-ink-3 active:text-ink"
+                )}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="bottom-bar-active"
+                    aria-hidden
+                    className="absolute inset-x-2.5 inset-y-1.5 rounded-xl bg-brand-soft"
+                    transition={{ type: "spring", stiffness: 420, damping: 34 }}
+                  />
+                )}
+                <Icon size={20} strokeWidth={active ? 2.25 : 1.75} aria-hidden className="relative" />
+                <span className="relative">{label}</span>
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }

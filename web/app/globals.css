@@ -134,19 +134,13 @@
   /*
    * Header height as one value instead of the magic numbers that used to be
    * spread across the ticker (top-[64px]), the rails (top:118px) and the home
-   * grid. The mobile header is taller because the nav links wrap to a second
-   * row — which is exactly why the ticker used to sit on top of them.
+   * grid. One row at every width: on a phone the links live in the bottom bar.
    */
-  --nav-h: 104px;
+  --nav-h: 64px;
   --tape-h: 37px;
   --header-h: calc(var(--nav-h) + var(--tape-h));
 }
 
-@media (min-width: 640px) {
-  :root {
-    --nav-h: 64px;
-  }
-}
 
 @theme inline {
   --font-heading: var(--font-display);
@@ -619,21 +613,14 @@ html.lenis body {
 }
 
 /*
- * The short side of the launch page: the whole palette turns from forest to
- * oxblood. Scoped with :has() on the launch form's root, so the server-rendered
+ * The short side of the launch page: the accents turn from forest to oxblood
+ * while the surfaces keep the long palette. Scoped with :has() on the launch form's root, so the server-rendered
  * attribute decides it before the first paint (a link that opens on short never
  * flashes green), and it ends the moment the form unmounts. Unlayered and more
  * specific than the theme's :root, so it wins over the Tailwind tokens.
  */
 html:has([data-side="short"]) {
-  --color-void: #f5f2f1;
-  --color-panel: #ffffff;
-  --color-panel-2: #f3ecea;
-  --color-line: #ebdfdd;
-  --color-line-2: #dcc3bf;
-  --color-ink: #3b0f0d;
-  --color-ink-2: #6e3c37;
-  --color-ink-3: #80544e;
+  /* only the accents turn red; surfaces, lines, text and the night band stay the long palette */
   --color-brand: #b3261e;
   --color-brand-strong: #8f1d17;
   --color-brand-soft: #f9e1de;
@@ -642,22 +629,6 @@ html:has([data-side="short"]) {
   --color-step-3: #c2412f;
   --color-step-4: #e0705e;
   --color-mint: #ff9d8a;
-  --color-night: #170807;
-  --color-night-2: #261210;
-  --color-night-line: #4e1b17;
-  --color-night-ink: #fcefed;
-  --color-night-ink-2: #dca9a2;
-}
-html:has([data-side="short"]) body {
-  transition: background-color 0.5s;
-}
-html:has([data-side="short"]) body::before {
-  background: radial-gradient(900px 460px at 88% -120px, rgba(255, 157, 138, 0.12), transparent 62%);
-}
-html:has([data-side="short"]) .intro-night {
-  background-image:
-    radial-gradient(1100px 620px at 78% 18%, rgba(255, 157, 138, 0.09), transparent 62%),
-    radial-gradient(800px 520px at 8% 100%, rgba(194, 65, 47, 0.12), transparent 60%);
 }
 html:has([data-side="short"]) .banknote {
   background-color: #f8eeec;

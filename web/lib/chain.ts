@@ -23,18 +23,39 @@ import { LEGACY_TP } from "./doppler";
 // Dentro il bundle di Next il trasporto HTTP interno di ethers v5 fallisce con
 // "missing response" (il suo getUrl non gira bene nel runtime server di Next).
 // Il fetch nativo di Node invece funziona: sovrascriviamo send() per usarlo.
+// A dropped connection, a timeout or a 429/5xx is retried with a short backoff: one transient
+// network error on a public RPC must not take a whole page down. An RPC-level error (a revert,
+// a bad range) is an answer, and is thrown straight away.
 let rpcId = 0;
+const RPC_ATTEMPTS = 3;
+const RPC_TIMEOUT_MS = 15_000;
 class FetchRpcProvider extends ethers.providers.StaticJsonRpcProvider {
   async send(method: string, params: unknown[]): Promise<unknown> {
     const body = JSON.stringify({ jsonrpc: "2.0", id: ++rpcId, method, params });
-    const res = await fetch(this.connection.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-    const json = await res.json();
-    if (json.error) throw new Error(`RPC ${method}: ${json.error.message}`);
-    return json.result;
+    let last: unknown;
+    for (let attempt = 0; attempt < RPC_ATTEMPTS; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 250 * 2 ** attempt));
+      let res: Response;
+      try {
+        res = await fetch(this.connection.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(RPC_TIMEOUT_MS),
+        });
+      } catch (e) {
+        last = e;
+        continue;
+      }
+      if (res.status === 429 || res.status >= 500) {
+        last = new Error(`RPC ${method}: HTTP ${res.status}`);
+        continue;
+      }
+      const json = await res.json();
+      if (json.error) throw new Error(`RPC ${method}: ${json.error.message}`);
+      return json.result;
+    }
+    throw last;
   }
 }
 
@@ -170,6 +191,19 @@ const COINS_TTL_MS = 10_000;
  */
 export async function loadRouterCoins(): Promise<Coin[]> {
   if (coinsCache && Date.now() - coinsCache.at < COINS_TTL_MS) return coinsCache.coins;
+  try {
+    return await scanRouterCoins();
+  } catch (e) {
+    // the RPC is down past its retries: the last good list beats an error page
+    if (coinsCache) {
+      console.error(`[loadRouterCoins] serving the last list: ${(e as Error).message?.slice(0, 120)}`);
+      return coinsCache.coins;
+    }
+    throw e;
+  }
+}
+
+async function scanRouterCoins(): Promise<Coin[]> {
   const latest = await provider.getBlockNumber();
   const launchTopic = ROUTER_IFACE.getEventTopic("MultiplyLaunch");
   const engineTopic = ROUTER_IFACE.getEventTopic("MultiplyEngine");
@@ -181,14 +215,18 @@ export async function loadRouterCoins(): Promise<Coin[]> {
   const STEP = 400_000;
   const windows: [number, number][] = [];
   for (let from = ROUTER_DEPLOY_BLOCK; from <= latest; from += STEP) windows.push([from, Math.min(latest, from + STEP - 1)]);
+  let missed = 0;
   const chunks = await Promise.all(
     windows.map(([from, to]) =>
       provider.getLogs({ address: LAUNCH_ROUTER, fromBlock: from, toBlock: to }).catch((e) => {
+        missed++;
         console.error(`[loadRouterCoins] getLogs ${from}-${to}: ${(e as Error).message?.slice(0, 120)}`);
         return [] as ethers.providers.Log[];
       })
     )
   );
+  // a window that failed would make coins vanish: keep the last full list rather than cache a short one
+  if (missed > 0 && coinsCache) return coinsCache.coins;
   const logs = chunks
     .flat()
     .filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic || l.topics[0] === legacyEngineTopic);

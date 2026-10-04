@@ -84,6 +84,8 @@ export const TP_PRESETS = [
 ] as const;
 /** a managed coin's change waits this long before it applies */
 export const MANAGED_DELAY_HOURS = 12;
+// The router supports managed coins; the launch form offers them once the creator tools ship.
+export const MANAGED_LIVE = false;
 /** the keeper's take-profit decay: from this day a deposit's target falls, reaching the floor at the end */
 export const TP_DECAY = { startDays: 7, endDays: 30, floorPct: 10 } as const;
 
