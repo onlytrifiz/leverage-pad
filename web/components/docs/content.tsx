@@ -1,7 +1,7 @@
 import { ArrowUpRight } from "lucide-react";
 import { OPEN_GATE_USD, TOPUP_STEP_USD, BUYBACK_FLOOR_USD, fmtThreshold } from "@/lib/config";
 import { DOPPLER, LAUNCH_ROUTER, V4_POOL_MANAGER, explorerAddr } from "@/lib/clientConfig";
-import { SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG, FEE_SPLIT_PCT } from "@/lib/doppler";
+import { SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, MAX_BUY_ORDERS, fmtSeconds } from "@/lib/doppler";
 
 /**
  * The docs, as data: every page's title, one-line lede and body, grouped the
@@ -53,8 +53,8 @@ function EngineBody() {
                              (market · direction · leverage · take-profit)
 
       realized profit → withdrawn on-chain
-        ├─ 75% buys the coin from the pool and burns it
-        └─ 25% protocol treasury (the only protocol revenue)`}</pre>
+        ├─ ${PROFIT_SPLIT_PCT.buyback}% buys the coin from the pool and burns it
+        └─ ${PROFIT_SPLIT_PCT.treasury}% protocol treasury`}</pre>
                   </div>
                   <p>
                     That circuit is the whole product. Fees are not income to be distributed.
@@ -100,7 +100,10 @@ function LaunchBody() {
         <K>The first buy.</K> Optionally, a first buy in USDG is bundled into the
         launch through Doppler&apos;s Bundler: it is the pool&apos;s first swap by
         construction, so nobody can trade before the creator. The trading fee is
-        waived on it except Doppler&apos;s slice.
+        waived on it except Doppler&apos;s slice. The creator can have part of it
+        delivered to up to <N>{MAX_BUY_ORDERS}</N> other wallets: the creator pays
+        for all of it, it is still one swap, and every wallet gets the same average
+        price. The wallets and their amounts are public in the launch transaction.
       </p>
     </>
   );
@@ -130,7 +133,9 @@ function FeesBody() {
         transaction for that coin alone. Its <N>flush()</N> is public and does one
         thing: <N>{FEE_SPLIT_PCT.treasury}%</N> of the trading fee to the protocol
         treasury, <N>{FEE_SPLIT_PCT.engine}%</N> to the coin&apos;s sub-wallet, and any
-        coins that ever reached it burned. Two mechanical details: USDG fees below{" "}
+        coins that ever reached it burned. The split is written into the sink at launch
+        and cannot change for that coin; coins launched before 25 November 2026 carry
+        80% engine, 15% protocol. Two mechanical details: USDG fees below{" "}
         <N>{HOOK_FLUSH_EPSILON_USDG} USDG</N> wait on the hook until the next swap
         pushes them over, so small sells arrive in batches; and because the coin-side
         fee is sold back into the pool, every buy carries a small sell of its own fee.
@@ -150,17 +155,20 @@ function ProtectionBody() {
   return (
     <>
       <p>
-        Off by default. When the creator turns it on, the fee itself opens high and
-        decays: <N>{SNIPE.startFee / 10_000}%</N> of the tokens bought at second
-        zero, falling linearly to the coin&apos;s fee by second{" "}
-        <N>{SNIPE.seconds}</N>, where it stays. A bot buying the launch block keeps
-        little; a person buying a minute later pays the normal fee. The protection
-        fee goes exactly where the normal fee goes.
+        The fee itself opens high and decays. The creator picks the opening rate, up
+        to <N>{SNIPE.maxFee / 10_000}%</N>, and how long it takes to fall in a
+        straight line to the coin&apos;s fee: <N>{fmtSeconds(SNIPE.defaultSeconds)}</N>{" "}
+        unless changed, <N>{fmtSeconds(SNIPE.maxSeconds)}</N> at most, or off. Both
+        are fixed at launch. A bot buying the launch block keeps little; a person
+        buying after the window pays the normal fee. The hook charges the rate on
+        what a swap receives; a swap asking for an exact number of tokens is charged
+        it on what it pays instead, which at {SNIPE.maxFee / 10_000}% makes those
+        tokens cost 1.8 times the price. Sells inside the window pay the
+        same rate as buys. The protection fee goes exactly where the normal fee goes.
       </p>
       <p>
         With protection on, the bundled first buy still pays Doppler&apos;s slice of
-        the opening rate: 5% of {SNIPE.startFee / 10_000}%, that is 4% of the tokens
-        it receives. With protection off that drops to 5% of the flat fee.
+        the opening rate: at {SNIPE.maxFee / 10_000}%, 4% of the tokens it receives. With protection off that drops to 5% of the flat fee.
       </p>
     </>
   );
@@ -190,7 +198,7 @@ function ContractsBody() {
       <p>
         <K>Launch router</K> (<A href={explorerAddr(LAUNCH_ROUTER)}>{short(LAUNCH_ROUTER)}</A>).
         Enforces the shape of every launch: supply, opening market cap, fee range,
-        protection schedule, fee destination, Doppler&apos;s 5%. It is upgradeable so
+        protection limits, fee destination, Doppler&apos;s 5%. It is upgradeable so
         its address can stay stable for indexers; an upgrade can only change{" "}
         <em>future</em> launches, because the router has no function that reaches a
         pool once it exists.
@@ -276,7 +284,7 @@ function KeeperBody() {
         {[
           <>credits any perp withdrawal that landed since the last tick, bridge
             settlements are recognized from the on-chain transfer itself and split
-            25% treasury / 75% buyback;</>,
+            {PROFIT_SPLIT_PCT.treasury}% treasury / {PROFIT_SPLIT_PCT.buyback}% buyback;</>,
           <>flushes the coin&apos;s fee sink when it holds enough to be worth the
             gas ({FEE_SPLIT_PCT.treasury}% to the treasury, {FEE_SPLIT_PCT.engine}% to
             the sub-wallet, coins burned) and moves what arrived into the perp
@@ -413,8 +421,8 @@ function ProfitsBody() {
       <p>
         <K>Coming home.</K> Once realized profit clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>, it&apos;s
         withdrawn from Lighter over the zk bridge (~15 minutes) back to the
-        coin&apos;s sub-wallet, where it splits <K>25% protocol treasury / 75%
-        buyback reserve</K>.
+        coin&apos;s sub-wallet, where it splits <K>{PROFIT_SPLIT_PCT.treasury}% protocol treasury /{" "}
+        {PROFIT_SPLIT_PCT.buyback}% buyback reserve</K>.
       </p>
       <p>
         <K>The buyback.</K> When a coin&apos;s buyback reserve crosses <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>,
@@ -441,9 +449,9 @@ function EconomicsBody() {
         perp treasury</K>, {FEE_SPLIT_PCT.treasury}% goes to the protocol and{" "}
         {FEE_SPLIT_PCT.doppler}% to Doppler for the market infrastructure. No creator
         cut. The split is enforced by the coin&apos;s fee sink, not by the keeper. On
-        the way back the protocol takes 25% of realized profits, with the other 75%
-        buying and burning supply: the larger part of what the protocol earns still
-        only arrives when the engine wins. No launch fee, beyond gas.
+        the way back the protocol takes {PROFIT_SPLIT_PCT.treasury}% of realized
+        profits, with the other {PROFIT_SPLIT_PCT.buyback}% buying and burning
+        supply. No launch fee, beyond gas.
       </p>
       <p>
         Worst case is bounded by design: isolated margin means a liquidation costs
@@ -535,7 +543,7 @@ const GROUPS: { label: string; pages: Omit<DocPage, "group" | "n">[] }[] = [
     pages: [
       { slug: "launch", title: "Launch", lede: "One transaction builds the token, the pool, the lock and the fee hook.", body: LaunchBody },
       { slug: "fees", title: "Fees, always in USDG", lede: "Chosen at launch, charged on every swap, delivered in USDG.", body: FeesBody },
-      { slug: "protection", title: "Launch protection", lede: "An opt-in fee that opens high and decays in seconds.", body: ProtectionBody },
+      { slug: "protection", title: "Launch protection", lede: "A fee that opens high and decays over a window the creator picks.", body: ProtectionBody },
       { slug: "contracts", title: "Contract guarantees", lede: "What each contract guarantees, and why the pool cannot be pulled.", body: ContractsBody },
       { slug: "fee-destinations", title: "Fee destinations", lede: "Every coin has a wallet of its own, and nobody can drain it.", body: FeeDestinationsBody },
     ],

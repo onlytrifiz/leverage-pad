@@ -52,13 +52,17 @@ contract MultiplyFeeSink is ReentrancyGuardTransient {
 
     address public asset;
     address public numeraire;
-    /// @notice Protocol share of the trading fee, in bps of the whole fee (1500 = 15%).
+    /// @notice Protocol share of the trading fee, in bps of the whole fee (2500 = 25%).
     uint16 public treasuryBps;
     /// @notice Share of the trading fee that actually reaches this sink (the hook keeps Doppler's
     /// slice before anything is sent), in bps of the whole fee (9500 = 95%).
     uint16 public receivedBps;
-    /// @notice The coin's sub-wallet: where the engine's share goes. Set once, never changed.
+    /// @notice The coin's sub-wallet: where the engine's share goes. Set by the keeper, movable
+    /// later by the router owner only.
     address public destination;
+    /// @notice Shares already split whose transfer failed: they wait here, outside the next split.
+    uint256 public owedToTreasury;
+    uint256 public owedToDestination;
 
     event Initialized(address indexed asset, address indexed numeraire, uint16 treasuryBps, uint16 receivedBps);
     event DestinationSet(address indexed destination, address indexed by);
@@ -125,13 +129,24 @@ contract MultiplyFeeSink is ReentrancyGuardTransient {
 
         uint256 held = IERC20(numeraire).balanceOf(address(this));
         if (held > 0) {
-            uint256 treasuryShare = held * treasuryBps / receivedBps;
-            uint256 destinationShare = held - treasuryShare;
+            // only what arrived since the last flush is split; a share that could not be sent
+            // keeps its owner, however many times anyone flushes
+            uint256 treasuryShare = owedToTreasury;
+            uint256 destinationShare = owedToDestination;
+            // the token's issuer took what was waiting here: those debts went with it
+            if (treasuryShare + destinationShare > held) (treasuryShare, destinationShare) = (0, 0);
+            uint256 fresh = held - treasuryShare - destinationShare;
+            uint256 freshTreasury = fresh * treasuryBps / receivedBps;
+            treasuryShare += freshTreasury;
+            destinationShare += fresh - freshTreasury;
+
             if (treasuryShare > 0) {
                 address treasury = ISinkRouter(ROUTER).treasury();
                 if (treasury != address(0) && _tryTransfer(numeraire, treasury, treasuryShare)) toTreasury = treasuryShare;
             }
-            if (_tryTransfer(numeraire, dst, destinationShare)) toDestination = destinationShare;
+            if (destinationShare > 0 && _tryTransfer(numeraire, dst, destinationShare)) toDestination = destinationShare;
+            owedToTreasury = treasuryShare - toTreasury;
+            owedToDestination = destinationShare - toDestination;
         }
 
         uint256 coinHeld = IERC20(asset).balanceOf(address(this));

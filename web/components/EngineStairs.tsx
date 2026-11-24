@@ -13,7 +13,7 @@ import { motion } from "motion/react";
 const STEPS = [
   { label: "Trading fees", sub: "1 to 5% per swap, in USDG" },
   { label: "Perp on Lighter", sub: "100% of fees" },
-  { label: "Profits return", sub: "75% buyback" },
+  { label: "Profits return", sub: "70% buyback" },
   { label: "Buyback & burn", sub: "Supply ↓" },
 ];
 

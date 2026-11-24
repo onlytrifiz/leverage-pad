@@ -5,8 +5,8 @@ libs = ["lib"]
 solc_version = "0.8.26"
 evm_version = "cancun"
 optimizer = true
-# 50, not 200: the router with stored engines is 24,689 bytes at 200 runs, over the 24,576 limit;
-# at 50 it is 24,063 (513 bytes of room). The cost is a little gas per call, paid by launchers.
+# 50 runs: size over gas. The router sits well under the 24,576 limit only because the Doppler
+# side of a launch lives in the DopplerLaunch library; keep room for the next change.
 optimizer_runs = 50
 via_ir = true
 

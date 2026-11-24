@@ -89,8 +89,8 @@ contract DeployRouter is Script {
             minFee: 10_000, // 1%, hook fee in numeraire
             maxFee: 50_000, // 5%
             tickSpacing: 200,
-            snipeStartFee: 800_000, // 80%, the Rehype cap
-            snipeSeconds: 10
+            snipeStartFee: 800_000, // 80%, the Rehype cap: the highest opening fee a launch may ask for
+            snipeSeconds: 600 // the longest window a launch may ask for
         });
     }
 }

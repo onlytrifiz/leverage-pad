@@ -8,15 +8,15 @@ import { gsap, useGSAP, EASE_OUT } from "@/lib/gsap";
 import { EngravedArt } from "@/components/brand/EngravedArt";
 import { Guilloche } from "@/components/brand/Guilloche";
 import AssetIcon from "@/components/AssetIcon";
-import { FEE_SPLIT_PCT } from "@/lib/doppler";
+import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
 
 /**
  * The six chapters of the intro.
  *
  * One worked example runs through all of them so the numbers add up from
  * chapter to chapter: $110,000 of volume at a 2% fee is $2,200 of fees, the
- * engine's 80% is $1,760 of collateral, at 50x that is an $88,000 position, a
- * 4% move is $3,520 of profit and 75% of it, $2,640, buys the coin back. The
+ * engine's 70% is $1,540 of collateral, at 50x that is a $77,000 position, a
+ * 4% move is $3,080 of profit and 70% of it, $2,156, buys the coin back. The
  * leverage is illustrative: the launch form caps each market at Lighter's own
  * limit.
  * Every plate that shows those figures says it is an example.
@@ -46,7 +46,7 @@ const EX = {
     return (this.notional * this.pump) / 100;
   },
   get buyback() {
-    return this.profit * 0.75;
+    return (this.profit * PROFIT_SPLIT_PCT.buyback) / 100;
   },
   dump: 12,
 };
@@ -367,7 +367,7 @@ function Pump(props: SlideProps) {
       scope={scope}
       title={`${EX.asset} rips.`}
       accent="The coin gets bought."
-      body="The position takes its profit and 75% of it buys the coin on its own pool, then burns it. The chart climbs even with no new buyers."
+      body={`The position takes its profit and ${PROFIT_SPLIT_PCT.buyback}% of it buys the coin on its own pool, then burns it. The chart climbs even with no new buyers.`}
     >
       {/* the bull charges in along with the move and stops on the plate's top edge */}
       <div className="relative w-full max-w-[560px] min-[360px]:mt-16 lg:mt-0">

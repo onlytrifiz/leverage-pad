@@ -45,7 +45,7 @@ const lighter = require('./lighter/client');
  *  - `venue: 'v4'` (coin lanciate dal MultiplyLaunchRouter su Doppler/Uniswap v4): la coin
  *    entra nel registry da sola dagli eventi del router; le fee arrivano in USDG sul suo
  *    MultiplyFeeSink (fissato al lancio, senza setter), che il keeper ADOTTA puntandolo al
- *    sub-wallet una volta sola e poi FLUSHA (15% treasury / 80% sub-wallet dentro il
+ *    sub-wallet una volta sola e poi FLUSHA (25% treasury / 70% sub-wallet, 15/80 per le coin fino al 2026-11-25, dentro il
  *    contratto, coin bruciati). Il buyback compra sul pool v4 via Universal Router + Permit2.
  *  - legacy V3 (le coin di test con LP nel locker): collect() e SwapRouter02, invariati.
  *
@@ -596,7 +596,7 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
         st.treasuryOwedRaw = BN(st.treasuryOwedRaw).add(toTreasury).toString();
         st.perpWithdrawPendingUsd = Math.max(0, Number(st.perpWithdrawPendingUsd) - usdOf(creditRaw, coin.pairDecimals, unitUsd));
         if (st.perpWithdrawPendingUsd < 0.01) { st.perpWithdrawPendingUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
-        console.log(`  [${coin.symbol}] profitto perp rientrato dal bridge: $${usdOf(creditRaw, coin.pairDecimals, unitUsd).toFixed(2)} → 75% buyback / 25% treasury`);
+        console.log(`  [${coin.symbol}] profitto perp rientrato dal bridge: $${usdOf(creditRaw, coin.pairDecimals, unitUsd).toFixed(2)} → ${(10000 - config.TP_MASTER_SHARE_BPS) / 100}% buyback / ${config.TP_MASTER_SHARE_BPS / 100}% treasury`);
       }
       checkpoint(); // persiste comunque lo scanBlock (mai ricontare gli stessi log)
     }

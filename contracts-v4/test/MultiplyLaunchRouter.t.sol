@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MultiplyLaunchRouter} from "../src/MultiplyLaunchRouter.sol";
+import {DopplerLaunch} from "../src/DopplerLaunch.sol";
 
 interface IPoolManagerView {
     function extsload(bytes32 slot) external view returns (bytes32);
@@ -159,7 +160,7 @@ contract MultiplyLaunchRouterFork is Test {
                     maxFee: 50_000,
                     tickSpacing: 200,
                     snipeStartFee: 800_000,
-                    snipeSeconds: 10
+                    snipeSeconds: 600
                 })
             )
         );
@@ -195,9 +196,11 @@ contract MultiplyLaunchRouterFork is Test {
             symbol: symbol,
             tokenURI: "ipfs://bafkreiazkosvsyrp24xbvqeoyihoxbidgbt24ih24ter26lj5mez36amw4",
             fee: fee,
-            antiSnipe: antiSnipe,
+            snipeStartFee: antiSnipe ? 800_000 : 0,
+            snipeSeconds: antiSnipe ? 10 : 0,
             mcap: mcap,
             firstBuy: firstBuy,
+            minOut: 0,
             salt: salt,
             market: "NVDA",
             side: 0,
@@ -205,6 +208,10 @@ contract MultiplyLaunchRouterFork is Test {
             takeProfitPct: 50,
             managed: false
         });
+    }
+
+    function _none() internal pure returns (MultiplyLaunchRouter.BuyOrder[] memory) {
+        return new MultiplyLaunchRouter.BuyOrder[](0);
     }
 
     /// The engine bounds the upgrade sets: leverage 2,3,5,10,20,25,50, take-profit +10..+500%, 12 h notice.
@@ -226,7 +233,7 @@ contract MultiplyLaunchRouterFork is Test {
 
     function test_launch_default_locked_zeroLpFee_flatHookFee() public {
         vm.prank(launcher);
-        (address asset, bytes32 poolId,) = router.launch(_input("Router Test", "RTEST", 30_000, false, 0, 0, keccak256("one")));
+        (address asset, bytes32 poolId,) = router.launch(_input("Router Test", "RTEST", 30_000, false, 0, 0, keccak256("one")), _none());
         assertGt(asset.code.length, 0, "token deployed");
         assertApproxEqAbs(IERC20(asset).balanceOf(POOL_MANAGER), 1e27, 1e12, "all supply in the pool");
         (int24 tick, uint24 lpFee) = _slot0(poolId);
@@ -252,7 +259,7 @@ contract MultiplyLaunchRouterFork is Test {
 
     function test_launch_antiSnipe_schedule() public {
         vm.prank(launcher);
-        (, bytes32 poolId,) = router.launch(_input("Protected", "PROT", 20_000, true, 0, 0, keccak256("two")));
+        (, bytes32 poolId,) = router.launch(_input("Protected", "PROT", 20_000, true, 0, 0, keccak256("two")), _none());
         (, uint24 startFee, uint24 endFee,, uint32 dur) = IRehypeView(REHYPE).getFeeSchedule(poolId);
         assertEq(startFee, 800_000, "80% at open");
         assertEq(endFee, 20_000, "decays to 2%");
@@ -263,7 +270,7 @@ contract MultiplyLaunchRouterFork is Test {
     /// same call, and the hub only ever sees USDG.
     function test_buy_feeArrivesInNumeraireOnly() public {
         vm.prank(launcher);
-        (address asset, bytes32 poolId,) = router.launch(_input("Quote Fee", "QFEE", 30_000, false, 0, 0, keccak256("three")));
+        (address asset, bytes32 poolId,) = router.launch(_input("Quote Fee", "QFEE", 30_000, false, 0, 0, keccak256("three")), _none());
         PoolKey memory key = _key(asset);
         bool usdgIs0 = USDG < asset;
 
@@ -290,7 +297,7 @@ contract MultiplyLaunchRouterFork is Test {
     /// Inside the protection window the fee is high and decays linearly; after it, the flat fee.
     function test_buy_duringProtection_thenAfter() public {
         vm.prank(launcher);
-        (address asset, bytes32 poolId,) = router.launch(_input("Protected", "PROT", 30_000, true, 0, 0, keccak256("nine")));
+        (address asset, bytes32 poolId,) = router.launch(_input("Protected", "PROT", 30_000, true, 0, 0, keccak256("nine")), _none());
         PoolKey memory key = _key(asset);
         bool usdgIs0 = USDG < asset;
         vm.warp(block.timestamp + 5); // halfway: 80% → 3% linear ⇒ ~41.5%
@@ -314,7 +321,7 @@ contract MultiplyLaunchRouterFork is Test {
         vm.startPrank(DEPLOYER);
         IERC20(USDG).approve(address(router), buy);
         (address asset, bytes32 poolId, uint128 out) =
-            router.launch(_input("Dev Prot", "DEVP", 30_000, true, 0, buy, keccak256("ten")));
+            router.launch(_input("Dev Prot", "DEVP", 30_000, true, 0, buy, keccak256("ten")), _none());
         vm.stopPrank();
         (uint128 f0, uint128 f1,,, uint128 a0, uint128 a1) = IRehypeView(REHYPE).getHookFees(poolId);
         assertEq(uint256(f0) + f1, 0, "non-protocol part waived");
@@ -327,14 +334,14 @@ contract MultiplyLaunchRouterFork is Test {
     function test_salt_isNamespacedPerLauncher() public {
         bytes32 salt = keccak256("shared");
         vm.prank(launcher);
-        (address a1,,) = router.launch(_input("A", "AAA", 10_000, false, 0, 0, salt));
+        (address a1,,) = router.launch(_input("A", "AAA", 10_000, false, 0, 0, salt), _none());
         address other = makeAddr("other");
         vm.prank(other);
-        (address a2,,) = router.launch(_input("B", "BBB", 10_000, false, 0, 0, salt));
+        (address a2,,) = router.launch(_input("B", "BBB", 10_000, false, 0, 0, salt), _none());
         assertTrue(a1 != a2, "same salt, two launchers, two tokens");
         vm.prank(launcher);
         vm.expectRevert();
-        router.launch(_input("A", "AAA", 10_000, false, 0, 0, salt)); // same launcher, same salt: clone exists
+        router.launch(_input("A", "AAA", 10_000, false, 0, 0, salt), _none()); // same launcher, same salt: clone exists
     }
 
     function test_admin_onlyOwner_and_validation() public {
@@ -382,7 +389,7 @@ contract MultiplyLaunchRouterFork is Test {
     /// sum of what the hub got and what is pending must equal the fee.
     function test_sell_feeArrivesInNumeraire() public {
         vm.prank(launcher);
-        (address asset, bytes32 poolId,) = router.launch(_input("Sell Fee", "SFEE", 30_000, false, 0, 0, keccak256("four")));
+        (address asset, bytes32 poolId,) = router.launch(_input("Sell Fee", "SFEE", 30_000, false, 0, 0, keccak256("four")), _none());
         PoolKey memory key = _key(asset);
         bool usdgIs0 = USDG < asset;
         vm.startPrank(trader);
@@ -409,7 +416,7 @@ contract MultiplyLaunchRouterFork is Test {
         vm.startPrank(DEPLOYER);
         IERC20(USDG).approve(address(router), buy);
         (address asset, bytes32 poolId, uint128 out) =
-            router.launch(_input("Dev Buy", "DEVB", 30_000, false, 0, buy, keccak256("five")));
+            router.launch(_input("Dev Buy", "DEVB", 30_000, false, 0, buy, keccak256("five")), _none());
         vm.stopPrank();
         assertGt(out, 0, "first buy filled");
         assertEq(IERC20(asset).balanceOf(DEPLOYER), out, "bought tokens to the launcher");
@@ -432,7 +439,7 @@ contract MultiplyLaunchRouterFork is Test {
         vm.expectEmit(false, true, false, true, address(router));
         emit MultiplyLaunchRouter.MultiplyEngine(address(0), "BTC", 1, 50, 300, true, launcher);
         vm.prank(launcher);
-        (address asset,,) = router.launch(i);
+        (address asset,,) = router.launch(i, _none());
 
         MultiplyLaunchRouter.Engine memory e = router.engineOf(asset);
         assertEq(e.market, "BTC");
@@ -462,11 +469,11 @@ contract MultiplyLaunchRouterFork is Test {
         i.salt = keccak256("eng2");
         i.leverage = 7;
         vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
-        router.launch(i);
+        router.launch(i, _none());
         i.leverage = 3;
         i.takeProfitPct = 1000;
         vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
-        router.launch(i);
+        router.launch(i, _none());
         vm.stopPrank();
     }
 
@@ -476,7 +483,7 @@ contract MultiplyLaunchRouterFork is Test {
         MultiplyLaunchRouter.LaunchInput memory i = _input("Managed", "MGD", 30_000, false, 0, 0, keccak256("mgd"));
         i.managed = true;
         vm.prank(launcher);
-        (address asset,,) = router.launch(i);
+        (address asset,,) = router.launch(i, _none());
 
         vm.prank(trader);
         vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NotCreator.selector, asset));
@@ -552,7 +559,7 @@ contract MultiplyLaunchRouterFork is Test {
     /// Without the flag the creator has no say; only the owner's override remains.
     function test_unmanaged_onlyOwnerOverrides() public {
         vm.prank(launcher);
-        (address asset,,) = router.launch(_input("Fixed", "FIX", 30_000, false, 0, 0, keccak256("fix")));
+        (address asset,,) = router.launch(_input("Fixed", "FIX", 30_000, false, 0, 0, keccak256("fix")), _none());
         vm.prank(launcher);
         vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NotManaged.selector, asset));
         router.proposeEngine(asset, 10, 100);
@@ -595,7 +602,7 @@ contract MultiplyLaunchRouterFork is Test {
         MultiplyLaunchRouter.LaunchInput memory i = _input("Paused", "PSD", 30_000, false, 0, 0, keccak256("psd"));
         i.managed = true;
         vm.prank(launcher);
-        (address asset,,) = router.launch(i);
+        (address asset,,) = router.launch(i, _none());
         vm.prank(owner);
         router.pause();
         vm.prank(launcher);
@@ -609,14 +616,246 @@ contract MultiplyLaunchRouterFork is Test {
     function test_feeBounds_and_pause() public {
         vm.startPrank(launcher);
         vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.FeeOutOfRange.selector, 60_000, 10_000, 50_000));
-        router.launch(_input("Bad", "BAD", 60_000, false, 0, 0, keccak256("six")));
+        router.launch(_input("Bad", "BAD", 60_000, false, 0, 0, keccak256("six")), _none());
         vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.McapOutOfRange.selector, 500e6, 1_000e6, 100_000e6));
-        router.launch(_input("Bad", "BAD", 10_000, false, 500e6, 0, keccak256("seven")));
+        router.launch(_input("Bad", "BAD", 10_000, false, 500e6, 0, keccak256("seven")), _none());
         vm.stopPrank();
         vm.prank(owner);
         router.pause();
         vm.prank(launcher);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        router.launch(_input("P", "P", 10_000, false, 0, 0, keccak256("eight")));
+        router.launch(_input("P", "P", 10_000, false, 0, 0, keccak256("eight")), _none());
+    }
+
+    // ───────────────────────────────────────────────── protection window ──
+
+    function _snipe(uint24 startFee, uint32 secs, bytes32 salt) internal pure returns (MultiplyLaunchRouter.LaunchInput memory i) {
+        i = _input("Snipe", "SNIPE", 30_000, false, 0, 0, salt);
+        i.snipeStartFee = startFee;
+        i.snipeSeconds = secs;
+    }
+
+    /// Every launch picks its own window; the Rehype stores and applies exactly that, up to 10 minutes.
+    function test_snipe_windowIsPerLaunch_upToTenMinutes() public {
+        uint32[4] memory secs = [uint32(1), 30, 300, 600];
+        uint24[4] memory fees = [uint24(800_000), 800_000, 400_000, 800_000];
+        for (uint256 k; k < 4; k++) {
+            vm.prank(launcher);
+            (, bytes32 poolId,) = router.launch(_snipe(fees[k], secs[k], keccak256(abi.encode("snipe", k))), _none());
+            (, uint24 startFee, uint24 endFee,, uint32 dur) = IRehypeView(REHYPE).getFeeSchedule(poolId);
+            assertEq(startFee, fees[k]);
+            assertEq(endFee, 30_000);
+            assertEq(dur, secs[k]);
+        }
+    }
+
+    /// The live hook really charges the long curve: halfway through 10 minutes the fee is 41.5%,
+    /// after it 3%, on buys and on sells.
+    function test_snipe_tenMinutes_chargedByTheLiveHook() public {
+        vm.prank(launcher);
+        (address asset, bytes32 poolId,) = router.launch(_snipe(800_000, 600, keccak256("ten-min")), _none());
+        bool usdgIs0 = USDG < asset;
+        vm.warp(block.timestamp + 300);
+        vm.startPrank(trader);
+        IERC20(USDG).transfer(address(swapper), 1e6);
+        uint256 half = swapper.swap(_key(asset), usdgIs0, 1e6);
+        (,,, uint24 lastFee,) = IRehypeView(REHYPE).getFeeSchedule(poolId);
+        assertEq(lastFee, 415_000, "41.5% halfway");
+        vm.warp(block.timestamp + 301);
+        IERC20(USDG).transfer(address(swapper), 1e6);
+        uint256 late = swapper.swap(_key(asset), usdgIs0, 1e6);
+        (,,, lastFee,) = IRehypeView(REHYPE).getFeeSchedule(poolId);
+        assertEq(lastFee, 30_000, "fully decayed");
+        assertApproxEqRel(half * 1e18 / late, uint256(0.585e18) * 1e18 / 0.97e18, 1e16, "58.5% vs 97% of the output");
+        IERC20(asset).transfer(address(swapper), half);
+        assertGt(swapper.swap(_key(asset), !usdgIs0, half), 0, "sells work");
+        vm.stopPrank();
+    }
+
+    function test_snipe_bounds() public {
+        uint24[5] memory fees = [uint24(800_000), 800_001, 30_000, 20_000, 800_000];
+        uint32[5] memory secs = [uint32(601), 30, 30, 30, 0];
+        // too long, above the cap, not above the trading fee, below it, a fee without a window
+        for (uint256 k; k < 5; k++) {
+            vm.prank(launcher);
+            vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.InvalidSnipe.selector, fees[k], secs[k]));
+            router.launch(_snipe(fees[k], secs[k], keccak256("bounds")), _none());
+        }
+    }
+
+    /// The owner moves the maxima for future launches, never beyond the hook's own cap.
+    function test_snipe_maximaAreOwnerPolicy() public {
+        MultiplyLaunchRouter.Policy memory p = router.policy();
+        p.snipeSeconds = 60;
+        p.snipeStartFee = 500_000;
+        vm.prank(owner);
+        router.setPolicy(p);
+        vm.prank(launcher);
+        vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.InvalidSnipe.selector, 500_000, 61));
+        router.launch(_snipe(500_000, 61, keccak256("max")), _none());
+        vm.prank(launcher);
+        router.launch(_snipe(500_000, 60, keccak256("max")), _none());
+        p.snipeStartFee = 800_001;
+        vm.prank(owner);
+        vm.expectRevert(MultiplyLaunchRouter.InvalidPolicy.selector);
+        router.setPolicy(p);
+    }
+
+    // ──────────────────────────────────────────────── multi-wallet buy ──
+
+    function _orders(uint256 n, uint128 amount) internal returns (MultiplyLaunchRouter.BuyOrder[] memory o) {
+        o = new MultiplyLaunchRouter.BuyOrder[](n);
+        for (uint256 k; k < n; k++) {
+            o[k] = MultiplyLaunchRouter.BuyOrder({wallet: makeAddr(vm.toString(k + 1000)), amount: amount});
+        }
+    }
+
+    /// 32 wallets plus the launcher inside a 10-minute window: one exempt swap, nobody pays the 80%.
+    function test_buys_32walletsAndLauncher_exemptFromOpeningFee() public {
+        MultiplyLaunchRouter.BuyOrder[] memory o = _orders(32, 1e6);
+        for (uint256 k; k < 32; k++) o[k].amount = uint128(0.1e6 + k * 0.05e6); // all different
+        uint256 total = 2e6;
+        for (uint256 k; k < 32; k++) total += o[k].amount;
+        MultiplyLaunchRouter.LaunchInput memory i = _snipe(800_000, 600, keccak256("buys"));
+        i.firstBuy = 2e6;
+
+        uint256 usdgBefore = IERC20(USDG).balanceOf(DEPLOYER);
+        assertGe(usdgBefore, total, "deployer funded on the fork");
+        vm.startPrank(DEPLOYER);
+        IERC20(USDG).approve(address(router), total);
+        uint256 g = gasleft();
+        (address asset, bytes32 poolId, uint128 out) = router.launch(i, o);
+        emit log_named_uint("gas, launch with 32 wallets", g - gasleft());
+        vm.stopPrank();
+
+        assertEq(usdgBefore - IERC20(USDG).balanceOf(DEPLOYER), total, "the launcher pays for everyone, exactly");
+        uint256 sum;
+        for (uint256 k; k < 32; k++) {
+            uint256 b = IERC20(asset).balanceOf(o[k].wallet);
+            assertEq(b, uint256(out) * o[k].amount / total, "pro rata");
+            sum += b;
+        }
+        uint256 own = IERC20(asset).balanceOf(DEPLOYER);
+        assertApproxEqAbs(own, uint256(out) * 2e6 / total, 32, "launcher's own part plus dust");
+        assertEq(sum + own, out, "every token handed out");
+        assertEq(IERC20(asset).balanceOf(address(router)), 0);
+        assertEq(IERC20(USDG).balanceOf(address(router)), 0);
+        assertEq(IERC20(USDG).allowance(address(router), BUNDLER), 0);
+
+        // only Doppler's 5% of the 80% opening fee = 4% of the gross output
+        (uint128 f0, uint128 f1,,, uint128 a0, uint128 a1) = IRehypeView(REHYPE).getHookFees(poolId);
+        assertEq(uint256(f0) + f1, 0, "non-protocol part waived");
+        assertApproxEqRel(uint256(a0) + a1, (uint256(out) + a0 + a1) * 4 / 100, 1e15, "4%");
+
+        // and the exemption is spent: the very next buyer pays the opening fee
+        vm.startPrank(trader);
+        IERC20(USDG).transfer(address(swapper), 1e6);
+        uint256 sniped = swapper.swap(_key(asset), USDG < asset, 1e6);
+        vm.stopPrank();
+        assertLt(sniped, uint256(out) * 1e6 / total / 4, "a sniper gets under a quarter for the same USDG");
+    }
+
+    function test_buys_withoutLauncherBuy_dustToLastWallet_events() public {
+        MultiplyLaunchRouter.BuyOrder[] memory o = _orders(3, 1e6);
+        uint256 coins = 0;
+        vm.startPrank(DEPLOYER);
+        IERC20(USDG).approve(address(router), 3e6);
+        vm.recordLogs();
+        (address asset,, uint128 out) = router.launch(_input("Three", "THREE", 30_000, false, 0, 0, keccak256("three-w")), o);
+        vm.stopPrank();
+        for (uint256 k; k < 3; k++) coins += IERC20(asset).balanceOf(o[k].wallet);
+        assertEq(coins, out);
+        assertEq(IERC20(asset).balanceOf(DEPLOYER), 0, "nothing to the launcher");
+        uint256 seen;
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 k; k < logs.length; k++) {
+            if (logs[k].topics[0] == DopplerLaunch.LaunchBuy.selector) {
+                assertEq(logs[k].emitter, address(router), "emitted by the router");
+                assertEq(address(uint160(uint256(logs[k].topics[1]))), asset);
+                seen++;
+            }
+        }
+        assertEq(seen, 3);
+    }
+
+    function test_buys_validation() public {
+        MultiplyLaunchRouter.LaunchInput memory i = _input("Bad", "BAD", 30_000, false, 0, 0, keccak256("bad-w"));
+        vm.startPrank(DEPLOYER);
+        IERC20(USDG).approve(address(router), 100e6);
+        MultiplyLaunchRouter.BuyOrder[] memory o = _orders(33, 0.1e6);
+        vm.expectRevert(abi.encodeWithSelector(DopplerLaunch.TooManyOrders.selector, 33));
+        router.launch(i, o);
+        o = _orders(2, 1e6);
+        o[1].amount = 0;
+        vm.expectRevert(abi.encodeWithSelector(DopplerLaunch.InvalidOrder.selector, 1));
+        router.launch(i, o);
+        o = _orders(2, 1e6);
+        o[0].wallet = address(0);
+        vm.expectRevert(abi.encodeWithSelector(DopplerLaunch.InvalidOrder.selector, 0));
+        router.launch(i, o);
+        o[0].wallet = address(router);
+        vm.expectRevert(abi.encodeWithSelector(DopplerLaunch.InvalidOrder.selector, 0));
+        router.launch(i, o);
+        o = _orders(2, type(uint128).max);
+        vm.expectRevert(); // overflow
+        router.launch(i, o);
+        IERC20(USDG).approve(address(router), 1e6); // less than the two orders
+        o = _orders(2, 1e6);
+        vm.expectRevert();
+        router.launch(i, o);
+        vm.stopPrank();
+    }
+
+    /// The floor covers the whole buy and an owner repricing between signing and execution.
+    function test_buys_minOut() public {
+        MultiplyLaunchRouter.LaunchInput memory i = _input("Floor", "FLR", 30_000, false, 0, 1e6, keccak256("floor"));
+        MultiplyLaunchRouter.BuyOrder[] memory o = _orders(1, 1e6);
+        vm.prank(DEPLOYER);
+        IERC20(USDG).approve(address(router), 2e6);
+        uint256 snap = vm.snapshotState();
+        vm.prank(DEPLOYER);
+        (,, uint128 out) = router.launch(i, o);
+        vm.revertToState(snap);
+
+        i.minOut = out + 1;
+        vm.prank(DEPLOYER);
+        vm.expectRevert(abi.encodeWithSelector(DopplerLaunch.TooFewTokens.selector, out, out + 1));
+        router.launch(i, o);
+
+        i.minOut = out * 99 / 100;
+        MultiplyLaunchRouter.Policy memory p = router.policy();
+        p.defaultMcap = 100_000e6;
+        vm.prank(owner);
+        router.setPolicy(p);
+        vm.prank(DEPLOYER);
+        vm.expectRevert();
+        router.launch(i, o);
+        p.defaultMcap = 4_000e6;
+        vm.prank(owner);
+        router.setPolicy(p);
+        i.minOut = out;
+        vm.prank(DEPLOYER);
+        (,, uint128 again) = router.launch(i, o);
+        assertEq(again, out);
+    }
+
+    function test_admin_bundlerMustBeTheHooksOwn_andWindowCeiling() public {
+        MultiplyLaunchRouter.Modules memory m = router.modules();
+        m.bundler = makeAddr("other bundler");
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.BundlerMismatch.selector, m.bundler));
+        router.setModules(m);
+        m.bundler = BUNDLER;
+        vm.prank(owner);
+        router.setModules(m);
+
+        MultiplyLaunchRouter.Policy memory p = router.policy();
+        p.snipeSeconds = 1 hours + 1;
+        vm.prank(owner);
+        vm.expectRevert(MultiplyLaunchRouter.InvalidPolicy.selector);
+        router.setPolicy(p);
+        p.snipeSeconds = 1 hours;
+        vm.prank(owner);
+        router.setPolicy(p);
     }
 }

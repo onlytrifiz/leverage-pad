@@ -32,7 +32,7 @@ export default function EngineFlow({ detail }: { detail: CoinDetail }) {
       icon: Hourglass,
       label: "Waiting to buy back",
       value: <AnimatedNumber value={stats.buybackReserveUsd} format="usd" countOnMount />,
-      note: "realized profit, 75% share",
+      note: "realized profit, 70% share",
     },
     {
       icon: Flame,

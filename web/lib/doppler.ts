@@ -17,11 +17,12 @@ import { PUBLIC_RPC, USDG, LAUNCH_FEE_HUB, DOPPLER, LAUNCH_ROUTER } from "./clie
  *     its fee in the coin and the hook swaps it into USDG inside the same call;
  *     a sell pays it in USDG already. Everything reaches the hub in USDG, minus
  *     Doppler's 5% slice of the fee;
- *   - launch protection is only the schedule of that fee: on, it opens at 80%
- *     and decays to the creator's fee over ten seconds; off, it is flat. Off by
- *     default;
+ *   - launch protection is only the schedule of that fee: on, it opens
+ *     high (80% at most) and decays to the creator's fee over a window the
+ *     creator picks, up to ten minutes; off, it is flat. On for 30 s by default;
  *   - the optional first buy goes through Doppler's Bundler, which creates the
- *     market and swaps in the same call frame: nobody can trade before it.
+ *     market and swaps in the same call frame: nobody can trade before it. The
+ *     launcher may have part of it delivered to other wallets.
  *
  * The token URI is pinned to IPFS first (`/api/metadata`): a JSON with the seal
  * as `image`, per Doppler's metadata standard, plus the engine parameters under
@@ -47,15 +48,38 @@ export const FEE_PRESETS = [
   { bps: 500, label: "5%" },
 ] as const;
 
-/** Rehype anti-snipe schedule: opening fee and decay length when protection is on. */
-export const SNIPE = { startFee: 800_000, seconds: 10 } as const;
+/**
+ * Launch protection, chosen per launch: opening fee (1e6-based) and the seconds it takes to decay
+ * to the coin's fee. The maxima are the router's policy; `seconds: 0` is no protection.
+ */
+export type Snipe = { startFee: number; seconds: number };
+export const SNIPE_OFF: Snipe = { startFee: 0, seconds: 0 };
+export const SNIPE = { maxFee: 800_000, defaultFee: 800_000, minFee: 100_000, maxSeconds: 600, defaultSeconds: 30 } as const;
+export const SNIPE_PRESETS = [
+  { seconds: 0, label: "Off" },
+  { seconds: 10, label: "10s" },
+  { seconds: 30, label: "30s" },
+  { seconds: 60, label: "1m" },
+  { seconds: 300, label: "5m" },
+  { seconds: 600, label: "10m" },
+] as const;
+export const fmtSeconds = (s: number) =>
+  s < 60 ? `${s}s` : s % 60 === 0 ? `${s / 60}m` : `${Math.floor(s / 60)}m ${s % 60}s`;
+
+/** Wallets a launch buy can be delivered to, besides the launcher (DopplerLaunch.MAX_ORDERS). */
+export const MAX_BUY_ORDERS = 32;
+/** The launch buy executes at the simulated price; this much below it and the launch reverts. */
+export const withLaunchSlippage = (out: ethers.BigNumber) => out.mul(99).div(100);
+/** One wallet's part of the launch buy: the launcher pays `amount` USDG raw, the wallet gets the tokens. */
+export type BuyOrder = { wallet: string; amount: ethers.BigNumber };
+
 /** The hook only flushes pending USDG fees to the hub once they exceed this (1e6 raw = 1 USDG). */
 export const HOOK_FLUSH_EPSILON_USDG = 1;
 /** Doppler's slice of every hook fee, also charged on the exempt first buy. */
 export const DOPPLER_HOOK_FEE_BPS = 500;
-/** What the bundled first buy pays to Doppler: 5% of the opening fee (80% with protection, the flat fee without). */
-export const firstBuyDopplerCostPct = (feeBps: number, antiSnipe: boolean) =>
-  ((antiSnipe ? SNIPE.startFee : feeBps * 100) / 1e6) * (DOPPLER_HOOK_FEE_BPS / 10_000) * 100;
+/** What the bundled launch buy pays to Doppler: 5% of the opening fee (the flat fee without protection). */
+export const firstBuyDopplerCostPct = (feeBps: number, snipe: Snipe) =>
+  ((snipe.seconds > 0 ? snipe.startFee : feeBps * 100) / 1e6) * (DOPPLER_HOOK_FEE_BPS / 10_000) * 100;
 
 export type EngineParams = {
   market: string;
@@ -123,7 +147,7 @@ export type LaunchConfig = {
   engine: EngineParams;
   creator: string;
   feeBps: number;
-  antiSnipe: boolean;
+  snipe: Snipe;
   salt: string;
 };
 
@@ -175,9 +199,9 @@ export function buildCreateParams(cfg: LaunchConfig): CreateParams {
     [{
       numeraire: USDG,
       buybackDst: LAUNCH_FEE_HUB,
-      startFee: cfg.antiSnipe ? SNIPE.startFee : feePips,
+      startFee: cfg.snipe.seconds > 0 ? cfg.snipe.startFee : feePips,
       endFee: feePips,
-      durationSeconds: cfg.antiSnipe ? SNIPE.seconds : 0,
+      durationSeconds: cfg.snipe.seconds,
       startingTime: 0,
       feeRoutingMode: 0,
       fdi: [0, WAD, 0, 0, 0, WAD, 0, 0], // asset fees → swapped to USDG; USDG fees → direct
@@ -338,7 +362,7 @@ export function metadataSignMessage(input: {
 
 // ── the launch router ──────────────────────────────────────────────────────
 // The router builds the CreateParams on-chain from these inputs (policy: mcap bounds, fee range,
-// protection schedule, hub, modules) and namespaces the salt per launcher. The encoders above are
+// protection maxima, hub, modules) and namespaces the salt per launcher. The encoders above are
 // kept in sync with it so the browser can predict the token address before signing.
 
 /** Name and ticker are free-form; only a length cap, for gas and layout. Mirrors lib/launchParams.js. */
@@ -353,9 +377,12 @@ export type RouterInput = {
   symbol: string;
   tokenURI: string;
   fee: number; // 1e6-based hook fee
-  antiSnipe: boolean;
+  snipeStartFee: number; // 1e6-based; 0 without a window
+  snipeSeconds: number; // 0 = flat fee from the first block
   mcap: ethers.BigNumberish; // 0 = policy default
-  firstBuy: ethers.BigNumberish; // USDG raw, 0 = none
+  firstBuy: ethers.BigNumberish; // the launcher's own buy, USDG raw, 0 = none
+  /** fewest tokens the whole launch buy may return: the opening price is the router's to set */
+  minOut: ethers.BigNumberish;
   salt: string;
   // the engine, on-chain: the router validates it and emits MultiplyEngine for the keeper
   market: string;
@@ -376,7 +403,7 @@ export function routerEngine(e: EngineParams): Pick<RouterInput, "market" | "sid
 }
 
 export const ROUTER_IFACE = new ethers.utils.Interface([
-  "function launch((string name,string symbol,string tokenURI,uint24 fee,bool antiSnipe,uint256 mcap,uint128 firstBuy,bytes32 salt,string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed) input) returns (address asset,bytes32 poolId,uint128 firstBuyOut)",
+  "function launch((string name,string symbol,string tokenURI,uint24 fee,uint24 snipeStartFee,uint32 snipeSeconds,uint256 mcap,uint128 firstBuy,uint128 minOut,bytes32 salt,string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed) input,(address wallet,uint128 amount)[] orders) returns (address asset,bytes32 poolId,uint128 totalOut)",
   "function validEngine(string market,uint8 side,uint8 leverage,uint16 takeProfitPct) view returns (bool)",
   "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint16 takeProfitPct, bool managed, address indexed creator)",
   // stored engines (router upgrade of 2026-10-05): the current values, and a managed coin's announced change
@@ -391,10 +418,12 @@ export const ROUTER_IFACE = new ethers.utils.Interface([
   "function predictSink(address launcher,bytes32 salt) view returns (address)",
   "function sinkOf(address asset) view returns (address)",
   "event FeeSink(address indexed asset, address indexed sink)",
+  // declared in DopplerLaunch, raised at the router
+  "event LaunchBuy(address indexed asset, address indexed wallet, uint256 amountIn, uint256 amountOut)",
 ]);
 
-export function encodeRouterLaunch(input: RouterInput): string {
-  return ROUTER_IFACE.encodeFunctionData("launch", [input]);
+export function encodeRouterLaunch(input: RouterInput, orders: BuyOrder[]): string {
+  return ROUTER_IFACE.encodeFunctionData("launch", [input, orders]);
 }
 
 /**
@@ -408,10 +437,13 @@ export function encodeRouterLaunch(input: RouterInput): string {
 export type FeeSplit = { sink: string; treasuryBps: number; treasury: string; engineBps: number };
 
 /**
- * The split as configured on the router at go-live, for copy that renders without a wallet
- * (docs). The router's `sinkConfig()` is the source of truth; `readFeeSplit` reads it live.
+ * The split new coins launch with, for copy that renders without a wallet (docs). The router's
+ * `sinkConfig()` is the source of truth; `readFeeSplit` reads it live. A coin's split is fixed at
+ * its launch: the ones launched before 2026-11-25 keep 80/15/5.
  */
-export const FEE_SPLIT_PCT = { doppler: 5, treasury: 15, engine: 80 } as const;
+export const FEE_SPLIT_PCT = { doppler: 5, treasury: 25, engine: 70 } as const;
+/** Realized perp profit, as the keeper splits it when it comes home (TP_MASTER_SHARE_BPS). Every coin. */
+export const PROFIT_SPLIT_PCT = { buyback: 70, treasury: 30 } as const;
 
 const DOPPLER_HOOK_BPS = DOPPLER_HOOK_FEE_BPS; // 500: Doppler's slice of every hook fee
 
@@ -434,14 +466,14 @@ export function routerSalt(launcher: string, salt: string): string {
 }
 
 /**
- * Dry-runs `router.launch` from the launcher. Exact for launches without a first buy; with a
- * first buy the router pulls USDG first, so before the approval this reverts on allowance and
+ * Dry-runs `router.launch` from the launcher. Exact for launches without a launch buy; with
+ * one the router pulls USDG first, so before the approval this reverts on allowance and
  * the caller should fall back to `simulateBundle` with the router-namespaced salt.
  */
-export async function simulateRouterLaunch(from: string, input: RouterInput) {
-  const ret = await readProvider.call({ from, to: LAUNCH_ROUTER, data: encodeRouterLaunch(input) });
-  const [asset, poolId, firstBuyOut] = ROUTER_IFACE.decodeFunctionResult("launch", ret);
-  return { asset: asset as string, poolId: poolId as string, firstBuyOut: firstBuyOut as ethers.BigNumber };
+export async function simulateRouterLaunch(from: string, input: RouterInput, orders: BuyOrder[]) {
+  const ret = await readProvider.call({ from, to: LAUNCH_ROUTER, data: encodeRouterLaunch(input, orders) });
+  const [asset, poolId, totalOut] = ROUTER_IFACE.decodeFunctionResult("launch", ret);
+  return { asset: asset as string, poolId: poolId as string, totalOut: totalOut as ethers.BigNumber };
 }
 
 /** v4 pool id of a launched coin: keccak of its PoolKey. */

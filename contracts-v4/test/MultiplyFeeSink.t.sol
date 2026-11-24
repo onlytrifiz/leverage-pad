@@ -6,6 +6,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MultiplyLaunchRouter} from "../src/MultiplyLaunchRouter.sol";
 import {MultiplyFeeSink} from "../src/MultiplyFeeSink.sol";
+import {UpgradeRouterLaunch} from "../script/UpgradeRouterLaunch.s.sol";
 import {Swapper, PoolKey, IInitializerView, IRehypeView, IUUPS} from "./MultiplyLaunchRouter.t.sol";
 
 interface IRehypePoolInfo {
@@ -31,7 +32,7 @@ contract MultiplyFeeSinkFork is Test {
     /// The router proxy live on Robinhood Chain (owner = DEPLOYER), for the upgrade test.
     address constant LIVE_ROUTER = 0xB9De90F875FFE04D57cC90EE030c0DfB84F25Acd;
     uint24 constant DYNAMIC = 0x800000;
-    uint16 constant TREASURY_BPS = 1500; // 15% of the trading fee to the protocol, 80% to the engine
+    uint16 constant TREASURY_BPS = 2500; // 25% of the trading fee to the protocol, 70% to the engine
 
     MultiplyLaunchRouter router;
     MultiplyFeeSink sinkImpl;
@@ -87,7 +88,7 @@ contract MultiplyFeeSinkFork is Test {
                     maxFee: 50_000,
                     tickSpacing: 200,
                     snipeStartFee: 800_000,
-                    snipeSeconds: 10
+                    snipeSeconds: 600
                 })
             )
         );
@@ -113,9 +114,11 @@ contract MultiplyFeeSinkFork is Test {
             symbol: symbol,
             tokenURI: "ipfs://bafkreiazkosvsyrp24xbvqeoyihoxbidgbt24ih24ter26lj5mez36amw4",
             fee: fee,
-            antiSnipe: false,
+            snipeStartFee: 0,
+            snipeSeconds: 0,
             mcap: 0,
             firstBuy: firstBuy,
+            minOut: 0,
             salt: salt,
             market: "NVDA",
             side: 0,
@@ -123,6 +126,10 @@ contract MultiplyFeeSinkFork is Test {
             takeProfitPct: 50,
             managed: false
         });
+    }
+
+    function _none() internal pure returns (MultiplyLaunchRouter.BuyOrder[] memory) {
+        return new MultiplyLaunchRouter.BuyOrder[](0);
     }
 
     /// The engine bounds the upgrade sets: leverage 2,3,5,10,20,25,50, take-profit +10..+500%, 12 h notice.
@@ -141,7 +148,7 @@ contract MultiplyFeeSinkFork is Test {
         returns (address asset, bytes32 poolId, MultiplyFeeSink sink)
     {
         vm.prank(launcher);
-        (asset, poolId,) = r.launch(_input(sym, sym, 30_000, 0, salt));
+        (asset, poolId,) = r.launch(_input(sym, sym, 30_000, 0, salt), _none());
         sink = MultiplyFeeSink(r.sinkOf(asset));
     }
 
@@ -191,8 +198,8 @@ contract MultiplyFeeSinkFork is Test {
         sinkImpl.initialize(asset, USDG, 1, 9500);
     }
 
-    /// The whole point: a buy's fee lands on the sink in USDG, and `flush` splits it 15/80 of the
-    /// trading fee (i.e. 15/95 of what the sink received) between treasury and sub-wallet.
+    /// The whole point: a buy's fee lands on the sink in USDG, and `flush` splits it 25/70 of the
+    /// trading fee (i.e. 25/95 of what the sink received) between treasury and sub-wallet.
     function test_buy_feeOnSink_flushSplitsTreasuryAndDestination() public {
         (address asset,, MultiplyFeeSink sink) = _launch(router, "SNK3", keccak256("sink-three"));
         uint256 hubBefore = IERC20(USDG).balanceOf(hub);
@@ -230,15 +237,15 @@ contract MultiplyFeeSinkFork is Test {
 
         vm.prank(trader); // anyone
         (uint256 toTreasury, uint256 toDestination, uint256 burned) = sink.flush();
-        assertEq(toTreasury, onSink * 1500 / 9500, "15/95 of receipts = 15% of the trading fee");
-        assertEq(toDestination, onSink - toTreasury, "the rest = 80% of the trading fee");
+        assertEq(toTreasury, onSink * 2500 / 9500, "25/95 of receipts = 25% of the trading fee");
+        assertEq(toDestination, onSink - toTreasury, "the rest = 70% of the trading fee");
         assertEq(burned, 0);
         assertEq(IERC20(USDG).balanceOf(treasury), toTreasury);
         assertEq(IERC20(USDG).balanceOf(subWallet), toDestination);
         assertEq(IERC20(USDG).balanceOf(address(sink)), 0, "sink emptied");
-        // sanity on the economics: treasury gets 15/80 of what the engine gets (the floor on the
-        // treasury side costs at most one raw unit, i.e. 80 in this product)
-        assertApproxEqAbs(toTreasury * 80, toDestination * 15, 80);
+        // sanity on the economics: treasury gets 25/70 of what the engine gets (the floor on the
+        // treasury side costs at most one raw unit, i.e. 95 in this product)
+        assertApproxEqAbs(toTreasury * 70, toDestination * 25, 95);
 
         // a second flush with nothing held is a no-op, not a revert
         (toTreasury, toDestination, burned) = sink.flush();
@@ -298,9 +305,21 @@ contract MultiplyFeeSinkFork is Test {
         assertEq(IERC20(USDG).balanceOf(treasury), treasuryShare);
         vm.clearMockedCalls();
 
-        // once it can receive again, the next flush moves the rest (nothing new for the treasury)
+        // flushing again and again must not hand the waiting share to the treasury
+        vm.mockCallRevert(USDG, abi.encodeCall(IERC20.transfer, (subWallet, destShare)), "frozen");
+        for (uint256 i; i < 10; i++) sink.flush();
+        assertEq(IERC20(USDG).balanceOf(treasury), treasuryShare, "the treasury never gets more than its share");
+        assertEq(sink.owedToDestination(), destShare);
+        vm.clearMockedCalls();
+
+        // new fees on top of a waiting share: only the new ones are split
+        _buy(asset, 1e6);
+        uint256 fresh = IERC20(USDG).balanceOf(address(sink)) - destShare;
         (toTreasury, toDestination,) = sink.flush();
-        assertEq(toDestination + toTreasury, destShare, "everything left goes out");
+        assertEq(toTreasury, fresh * TREASURY_BPS / 9500, "share of the new fees only");
+        assertEq(toDestination, destShare + fresh - toTreasury, "the waiting share plus the new one");
+        assertEq(sink.owedToDestination(), 0);
+        assertEq(sink.owedToTreasury(), 0);
         assertEq(IERC20(USDG).balanceOf(address(sink)), 0);
         // a treasury that cannot receive does not block the destination either
         _buy(asset, 1e6);
@@ -311,7 +330,35 @@ contract MultiplyFeeSinkFork is Test {
         assertEq(toTreasury, 0, "a `false` return counts as not paid");
         assertEq(toDestination, held2 - t2, "destination paid");
         assertEq(IERC20(USDG).balanceOf(address(sink)), t2, "treasury share kept for later");
+        assertEq(sink.owedToTreasury(), t2);
         vm.clearMockedCalls();
+        (toTreasury, toDestination,) = sink.flush();
+        assertEq(toTreasury, t2, "all of it, to its owner");
+        assertEq(toDestination, 0);
+    }
+
+    /// A balance wiped by the token's issuer while a share was waiting must not block the sink.
+    function test_flush_survivesAWipedBalance() public {
+        (address asset,, MultiplyFeeSink sink) = _launch(router, "SNK9", keccak256("sink-nine"));
+        _buy(asset, 2e6);
+        vm.prank(keeper);
+        sink.setDestination(subWallet);
+        uint256 held = IERC20(USDG).balanceOf(address(sink));
+        uint256 destShare = held - held * TREASURY_BPS / 9500;
+        vm.mockCallRevert(USDG, abi.encodeCall(IERC20.transfer, (subWallet, destShare)), "frozen");
+        sink.flush();
+        vm.clearMockedCalls();
+        assertEq(sink.owedToDestination(), destShare);
+        vm.prank(address(sink)); // the wipe
+        IERC20(USDG).transfer(address(0xdEaD), destShare);
+
+        _buy(asset, 1e6);
+        uint256 fresh = IERC20(USDG).balanceOf(address(sink));
+        assertLt(fresh, destShare, "less than the old debt");
+        (uint256 toTreasury, uint256 toDestination,) = sink.flush();
+        assertEq(toTreasury, fresh * TREASURY_BPS / 9500);
+        assertEq(toDestination, fresh - toTreasury);
+        assertEq(sink.owedToDestination(), 0);
     }
 
     /// Coins that reach the sink (the hook's fallback when its internal swap cannot run, or
@@ -379,7 +426,7 @@ contract MultiplyFeeSinkFork is Test {
         address predicted = router.predictSink(DEPLOYER, salt);
         vm.startPrank(DEPLOYER);
         IERC20(USDG).approve(address(router), buy);
-        (address asset, bytes32 poolId, uint128 out) = router.launch(_input("Dev Sink", "DSNK", 30_000, buy, salt));
+        (address asset, bytes32 poolId, uint128 out) = router.launch(_input("Dev Sink", "DSNK", 30_000, buy, salt), _none());
         vm.stopPrank();
         assertGt(out, 0);
         MultiplyFeeSink sink = MultiplyFeeSink(router.sinkOf(asset));
@@ -398,7 +445,7 @@ contract MultiplyFeeSinkFork is Test {
         bare.setEngineConfig(_engineConfig());
         assertEq(bare.predictSink(launcher, keccak256("x")), address(0));
         vm.prank(launcher);
-        (address asset, bytes32 poolId,) = bare.launch(_input("Hub Only", "HUBO", 30_000, 0, keccak256("hub-only")));
+        (address asset, bytes32 poolId,) = bare.launch(_input("Hub Only", "HUBO", 30_000, 0, keccak256("hub-only")), _none());
         assertEq(bare.sinkOf(asset), address(0), "no sink");
         (,, address dst) = IRehypePoolInfo(REHYPE).getPoolInfo(poolId);
         assertEq(dst, hub, "the policy hub, as before the upgrade");
@@ -497,7 +544,7 @@ contract MultiplyFeeSinkFork is Test {
         i.takeProfitPct = 300;
         i.managed = true;
         vm.prank(launcher);
-        (address asset, bytes32 poolId,) = live.launch(i);
+        (address asset, bytes32 poolId,) = live.launch(i, _none());
         address sink = live.sinkOf(asset);
         assertTrue(sink != address(0), "sink attached");
         (,, address dst) = IRehypePoolInfo(REHYPE).getPoolInfo(poolId);
@@ -509,5 +556,62 @@ contract MultiplyFeeSinkFork is Test {
         assertEq(e.creator, launcher);
         _buy(asset, 2e6);
         assertGt(IERC20(USDG).balanceOf(sink), 0.050e6, "fee on the sink");
+    }
+
+    /// The pending upgrade, exactly as its script sends it, on the proxy live on Robinhood Chain:
+    /// coins already launched keep everything; a new one gets 70/25/5, its own window and a
+    /// multi-wallet buy.
+    function test_liveProxy_launchUpgradeScript() public {
+        MultiplyLaunchRouter live = MultiplyLaunchRouter(LIVE_ROUTER);
+        address oldCoin = 0x7ca877C2761814EF51ea3B34B27eE9A3c6125D06; // TEST14
+        MultiplyFeeSink oldSink = MultiplyFeeSink(live.sinkOf(oldCoin));
+        bytes32 engineBefore = keccak256(abi.encode(live.engineOf(oldCoin)));
+        address dstBefore = oldSink.destination();
+        assertEq(oldSink.treasuryBps(), 1500, "launched at 15%");
+
+        UpgradeRouterLaunch script = new UpgradeRouterLaunch();
+        UpgradeRouterLaunch.Config memory c =
+            UpgradeRouterLaunch.Config({router: LIVE_ROUTER, treasuryBps: 2500, snipeMaxFee: 800_000, snipeMaxSeconds: 600});
+        address oldSinkImpl = live.sinkConfig().implementation;
+        // the script's calls come from the owner: hand it the proxy for the length of the test
+        vm.prank(live.owner());
+        live.transferOwnership(address(script));
+        vm.prank(address(script));
+        live.acceptOwnership();
+        script.upgrade(c);
+
+        assertEq(keccak256(abi.encode(live.engineOf(oldCoin))), engineBefore, "old engine intact");
+        assertEq(live.sinkOf(oldCoin), address(oldSink));
+        assertTrue(live.sinkConfig().implementation != oldSinkImpl, "new sink implementation");
+        assertEq(oldSink.treasuryBps(), 1500, "old split intact");
+        assertEq(oldSink.destination(), dstBefore);
+        _buy(oldCoin, 2e6); // still trades, fee still reaches its sink
+        assertGt(IERC20(USDG).balanceOf(address(oldSink)), 0.08e6);
+        oldSink.flush();
+
+        MultiplyLaunchRouter.LaunchInput memory i = _input("LIVE2", "LIVE2", 30_000, 1e6, keccak256("live-launch"));
+        i.snipeStartFee = 800_000;
+        i.snipeSeconds = 30;
+        MultiplyLaunchRouter.BuyOrder[] memory o = new MultiplyLaunchRouter.BuyOrder[](1);
+        o[0] = MultiplyLaunchRouter.BuyOrder({wallet: makeAddr("friend"), amount: 1e6});
+        vm.startPrank(DEPLOYER);
+        IERC20(USDG).approve(LIVE_ROUTER, 2e6);
+        (address asset, bytes32 poolId, uint128 out) = live.launch(i, o);
+        vm.stopPrank();
+        assertEq(IERC20(asset).balanceOf(makeAddr("friend")), out / 2, "half each");
+        (,,,, uint32 dur) = IRehypeView(REHYPE).getFeeSchedule(poolId);
+        assertEq(dur, 30);
+
+        // a sniper's fee inside the window: 25/95 of what reaches the sink to the treasury, 70/95 to the engine
+        MultiplyFeeSink sink = MultiplyFeeSink(live.sinkOf(asset));
+        assertEq(sink.treasuryBps(), 2500);
+        _buy(asset, 2e6);
+        uint256 onSink = IERC20(USDG).balanceOf(address(sink));
+        assertGt(onSink, 1.3e6, "80% of 2 USDG, less Doppler's 5% and the conversion's impact");
+        vm.prank(live.keeper());
+        sink.setDestination(subWallet);
+        (uint256 toTreasury, uint256 toEngine,) = sink.flush();
+        assertEq(toTreasury, onSink * 2500 / 9500);
+        assertEq(toEngine, onSink - toTreasury);
     }
 }

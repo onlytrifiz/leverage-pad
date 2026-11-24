@@ -2,7 +2,7 @@
 
 import { motion } from "motion/react";
 import { cn } from "cn";
-import { FEE_SPLIT_PCT } from "@/lib/doppler";
+import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
 
 /**
  * Where a $100 fee goes, side by side with where it usually goes.
@@ -23,7 +23,7 @@ const ROWS: { name: string; caption: string; segments: Segment[] }[] = [
   },
   {
     name: "multiply.cash",
-    caption: `$${FEE_SPLIT_PCT.engine} becomes a position the coin owns, in a wallet of its own. 75% of every win buys the coin back.`,
+    caption: `$${FEE_SPLIT_PCT.engine} becomes a position the coin owns, in a wallet of its own. ${PROFIT_SPLIT_PCT.buyback}% of every win buys the coin back.`,
     segments: [
       { label: "The coin's position", value: FEE_SPLIT_PCT.engine, className: "bg-brand", ink: "text-white" },
       { label: "Protocol", value: FEE_SPLIT_PCT.treasury, className: "bg-step-4/50", ink: "text-ink" },

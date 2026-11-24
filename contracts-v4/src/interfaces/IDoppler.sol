@@ -97,6 +97,11 @@ interface IDopplerHookInitializer {
     function isDopplerHookEnabled(address dopplerHook) external view returns (uint256);
 }
 
+interface IRehype {
+    /// the only address whose swap, in the create call frame, is exempt from the opening fee
+    function bundler() external view returns (address);
+}
+
 interface IBundler {
     struct VestingParams {
         bool permissionlessClaim;

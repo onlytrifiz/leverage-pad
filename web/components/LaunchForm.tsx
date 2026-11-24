@@ -21,6 +21,9 @@ import { sendGuardedTx, waitForReceipt, txErrorMessage } from "@/lib/tx";
 import {
   FEE_PRESETS,
   SNIPE,
+  fmtSeconds,
+  withLaunchSlippage,
+  type Snipe,
   firstBuyDopplerCostPct,
   ERC20_IFACE,
   buildCreateParams,
@@ -44,6 +47,7 @@ import {
   readProvider,
   dexscreenerPool,
   FEE_SPLIT_PCT,
+  PROFIT_SPLIT_PCT,
   ROUTER_LEVERAGES,
   TP_MIN_PCT,
   TP_PRESETS,
@@ -55,6 +59,8 @@ import {
 } from "@/lib/doppler";
 import { AnimatedNumber } from "@/components/motion";
 import AssetPicker from "@/components/launch/AssetPicker";
+import ProtectionPicker from "@/components/launch/ProtectionPicker";
+import BuyWallets, { toOrders, type BuyRow } from "@/components/launch/BuyWallets";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
 /**
@@ -174,10 +180,11 @@ export default function LaunchForm({
   const tp = Math.min(tpPick, tpMax);
   const [managed, setManaged] = useState(false);
   const [feeBps, setFeeBps] = useState<number>(200);
-  const [antiSnipe, setAntiSnipe] = useState(false);
+  const [snipe, setSnipe] = useState<Snipe>({ startFee: SNIPE.defaultFee, seconds: SNIPE.defaultSeconds });
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [firstBuy, setFirstBuy] = useState("");
+  const [buyRows, setBuyRows] = useState<BuyRow[]>([]);
   const [description, setDescription] = useState("");
   const [links, setLinks] = useState({ website: "", x: "", telegram: "" });
   const [logo, setLogo] = useState<Logo | null>(null);
@@ -185,7 +192,7 @@ export default function LaunchForm({
   const [advanced, setAdvanced] = useState(false);
   const [salt, setSalt] = useState<string>(() => randomSalt());
 
-  const [predicted, setPredicted] = useState<{ asset: string; gas: ethers.BigNumber | null; firstBuyOut: ethers.BigNumber | null } | null>(null);
+  const [quote, setPredicted] = useState<{ asset: string; gas: ethers.BigNumber | null; buyOut: ethers.BigNumber | null; buyIn: ethers.BigNumber } | null>(null);
   /** the coin's own fee sink and the split the router will lock in; null = fees go to the hub */
   const [feeSplit, setFeeSplit] = useState<FeeSplit | null>(null);
   const [protocolOwner, setProtocolOwner] = useState<string | undefined>(undefined);
@@ -222,7 +229,6 @@ export default function LaunchForm({
     }
   };
   const trigger = tp;
-  const feeLabel = FEE_PRESETS.find((f) => f.bps === feeBps)!.label;
   const { mcapUsd } = launchTicks();
 
   const engine: EngineParams = useMemo(
@@ -237,13 +243,19 @@ export default function LaunchForm({
       return ethers.constants.Zero;
     }
   }, [firstBuy]);
-  const withFirstBuy = !firstBuyIn.isZero();
+  /** null while a row of the wallet list still needs fixing */
+  const orders = useMemo(() => toOrders(buyRows, address), [buyRows, address]);
+  /** everything the launch spends: the launcher's own buy plus every other wallet's */
+  const buyIn = useMemo(() => (orders ?? []).reduce((t, o) => t.add(o.amount), firstBuyIn), [orders, firstBuyIn]);
+  const withBuy = !buyIn.isZero();
+  /** a quote made for another amount is not a quote: its floor would be wrong */
+  const predicted = quote && quote.buyIn.eq(buyIn) ? quote : null;
   const ready = name.trim().length > 0 && symbol.length > 0;
 
   const routerInput = useMemo<RouterInput | null>(() => {
     if (!address || !ready) return null;
-    return { name: name.trim(), symbol, tokenURI: "", fee: feeBps * 100, antiSnipe, mcap: 0, firstBuy: firstBuyIn, salt, ...routerEngine(engine) };
-  }, [address, ready, name, symbol, feeBps, antiSnipe, firstBuyIn, salt, engine]);
+    return { name: name.trim(), symbol, tokenURI: "", fee: feeBps * 100, snipeStartFee: snipe.startFee, snipeSeconds: snipe.seconds, mcap: 0, firstBuy: firstBuyIn, minOut: 0, salt, ...routerEngine(engine) };
+  }, [address, ready, name, symbol, feeBps, snipe, firstBuyIn, salt, engine]);
   /** mirror of what the router builds, for the bundle simulator before the USDG approval */
   const params = useMemo(() => {
     if (!address || !ready) return null;
@@ -254,10 +266,10 @@ export default function LaunchForm({
       creator: address,
       protocolOwner,
       feeBps,
-      antiSnipe,
+      snipe,
       salt: routerSalt(address, salt),
     });
-  }, [address, ready, name, symbol, engine, protocolOwner, feeBps, antiSnipe, salt]);
+  }, [address, ready, name, symbol, engine, protocolOwner, feeBps, snipe, salt]);
 
   useEffect(() => {
     let live = true;
@@ -326,7 +338,7 @@ export default function LaunchForm({
    * revert here is a revert the wallet would have shown after signing.
    */
   useEffect(() => {
-    if (!address || !params || !routerInput) {
+    if (!address || !params || !routerInput || !orders) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setPredicted(null);
       setSimError(null);
@@ -335,22 +347,22 @@ export default function LaunchForm({
     let live = true;
     const t = setTimeout(async () => {
       try {
-        const approved = !withFirstBuy || (acct?.allowance.gte(firstBuyIn) ?? false);
-        // the router dry-run is exact; before the USDG approval the first-buy path cannot pull
+        const approved = !withBuy || (acct?.allowance.gte(buyIn) ?? false);
+        // the router dry-run is exact; before the USDG approval the launch buy cannot pull
         // funds in eth_call, so the Bundler simulator (payer = 0) stands in with the same params
         const sim = approved
-          ? await simulateRouterLaunch(address, routerInput)
-          : { ...(await simulateBundle(address, params, firstBuyIn)), poolId: null };
+          ? await simulateRouterLaunch(address, routerInput, orders)
+          : { ...(await simulateBundle(address, params, buyIn)), poolId: null };
         let gas: ethers.BigNumber | null = null;
         if (approved) {
           try {
-            gas = await readProvider.estimateGas({ from: address, to: LAUNCH_ROUTER, data: encodeRouterLaunch(routerInput) });
+            gas = await readProvider.estimateGas({ from: address, to: LAUNCH_ROUTER, data: encodeRouterLaunch(routerInput, orders) });
           } catch {
             gas = null;
           }
         }
         if (live) {
-          setPredicted({ asset: sim.asset, gas, firstBuyOut: withFirstBuy ? ("amountOut" in sim ? sim.amountOut : sim.firstBuyOut) : null });
+          setPredicted({ asset: sim.asset, gas, buyOut: withBuy ? ("amountOut" in sim ? sim.amountOut : sim.totalOut) : null, buyIn });
           setSimError(null);
         }
       } catch (e) {
@@ -364,21 +376,21 @@ export default function LaunchForm({
       live = false;
       clearTimeout(t);
     };
-  }, [address, params, routerInput, withFirstBuy, firstBuyIn, acct]);
+  }, [address, params, routerInput, orders, withBuy, buyIn, acct]);
 
-  const insufficient = !!(withFirstBuy && acct && firstBuyIn.gt(acct.usdg));
-  const needsApproval = !!(withFirstBuy && acct && acct.allowance.lt(firstBuyIn));
+  const insufficient = !!(withBuy && acct && buyIn.gt(acct.usdg));
+  const needsApproval = !!(withBuy && acct && acct.allowance.lt(buyIn));
 
   async function launch() {
-    if (!routerInput || !address || !provider) return;
+    if (!routerInput || !address || !provider || !orders) return;
     setError(null);
     try {
-      if (withFirstBuy && needsApproval) {
+      if (withBuy && needsApproval) {
         setBusy("Approving USDG");
         const h = await sendGuardedTx(provider, {
           from: address,
           to: USDG,
-          data: ERC20_IFACE.encodeFunctionData("approve", [LAUNCH_ROUTER, firstBuyIn]),
+          data: ERC20_IFACE.encodeFunctionData("approve", [LAUNCH_ROUTER, buyIn]),
         });
         const rc = await waitForReceipt(h);
         if (rc.status !== "success") throw new Error("The approval reverted.");
@@ -397,11 +409,13 @@ export default function LaunchForm({
           logo,
         }
       );
-      const finalInput: RouterInput = { ...routerInput, tokenURI };
-      setBusy(withFirstBuy ? "Launching and buying" : "Launching");
+      // the floor comes from the quote on screen, so a price that moved since then fails the dry-run
+      const minOut = withBuy && predicted?.buyOut ? withLaunchSlippage(predicted.buyOut) : ethers.constants.Zero;
+      const finalInput: RouterInput = { ...routerInput, tokenURI, minOut };
+      setBusy(withBuy ? "Launching and buying" : "Launching");
       // final dry-run on the router with the pinned calldata: the exact call the wallet signs
-      const { asset, poolId } = await simulateRouterLaunch(address, finalInput);
-      const hash = await sendGuardedTx(provider, { from: address, to: LAUNCH_ROUTER, data: encodeRouterLaunch(finalInput) });
+      const { asset, poolId } = await simulateRouterLaunch(address, finalInput, orders);
+      const hash = await sendGuardedTx(provider, { from: address, to: LAUNCH_ROUTER, data: encodeRouterLaunch(finalInput, orders) });
       const rc = await waitForReceipt(hash, { timeoutMs: 180_000 });
       if (rc.status !== "success") throw new Error("The launch reverted. Nothing was deployed.");
       setLaunched({ asset, poolId, hash, symbol, tokenURI, metadataUrl });
@@ -422,19 +436,21 @@ export default function LaunchForm({
 
   const launchButton = (
     <ChainGate connectLabel="Connect wallet to launch">
-      <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !predicted || !!busy || insufficient || !levOk}>
+      <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !orders || !predicted || !!busy || insufficient || !levOk}>
         {busy && <Spinner data-icon="inline-start" />}
         {busy ??
           (!ready
             ? "Name the coin"
             : !levOk
               ? `${market} allows up to ${maxLev}x`
+              : !orders
+              ? "Fix the wallet list"
               : insufficient
-              ? "Not enough USDG for the first buy"
+              ? "Not enough USDG for the launch buy"
               : needsApproval
                 ? `Approve USDG and launch $${symbol}`
-                : withFirstBuy
-                  ? `Launch $${symbol} and buy ${fmtUsdg(firstBuyIn)} USDG`
+                : withBuy
+                  ? `Launch $${symbol} and buy ${fmtUsdg(buyIn)} USDG`
                   : `Launch $${symbol}`)}
       </Button>
     </ChainGate>
@@ -510,7 +526,7 @@ export default function LaunchForm({
             <span className="font-semibold text-ink">
               Every trade on ${symbol || "TICKER"} funds a {lev}x {side} on {market}.
             </span>{" "}
-            If {market} moves 10% {up ? "up" : "down"}, the position gains about {move10}%. Each deposit banks at +{trigger}%, then 75%
+            If {market} moves 10% {up ? "up" : "down"}, the position gains about {move10}%. Each deposit banks at +{trigger}%, then {PROFIT_SPLIT_PCT.buyback}%
             of the profit buys the coin back and burns it.
           </motion.p>
 
@@ -534,7 +550,7 @@ export default function LaunchForm({
           {/* launch: desktop keeps it under the note; a phone gets it after the steps */}
           <div className="mt-5 hidden lg:block">
             <LaunchPanel
-              {...{ predicted, simError, address, ready, mcapUsd, viaHub, enginePct, treasuryPct, feeSplit, withFirstBuy, symbol, launched, error }}
+              {...{ predicted, simError, address, ready, mcapUsd, viaHub, enginePct, treasuryPct, feeSplit, buyIn, walletCount: (orders?.length ?? 0) + (firstBuyIn.isZero() ? 0 : 1), symbol, launched, error }}
               button={launchButton}
             />
           </div>
@@ -769,18 +785,19 @@ export default function LaunchForm({
               </div>
               <p className="mt-3 text-xs leading-relaxed text-ink-3">
                 Bundled into the launch, so it is the pool&apos;s first swap: nobody trades before you. The fee is waived except
-                Doppler&apos;s slice, {firstBuyDopplerCostPct(feeBps, antiSnipe).toFixed(2)}% of the tokens.
-                {withFirstBuy && predicted?.firstBuyOut && (
+                Doppler&apos;s slice, {firstBuyDopplerCostPct(feeBps, snipe).toFixed(2)}% of the tokens.
+                {!firstBuyIn.isZero() && predicted?.buyOut && (
                   <>
                     {" "}
                     You get about{" "}
                     <span className="num font-semibold text-ink">
-                      {Number(ethers.utils.formatEther(predicted.firstBuyOut)).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      {Number(ethers.utils.formatEther(predicted.buyOut.mul(firstBuyIn).div(buyIn))).toLocaleString("en-US", { maximumFractionDigits: 0 })}
                     </span>{" "}
                     ${symbol || "TICKER"}.
                   </>
                 )}
               </p>
+              <BuyWallets rows={buyRows} onChange={setBuyRows} launcher={address} />
             </div>
           </Step>
 
@@ -799,7 +816,7 @@ export default function LaunchForm({
               className="flex min-h-8 w-full flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-left sm:min-h-10"
             >
               <span className="font-display text-xl font-semibold text-ink sm:text-2xl">Advanced</span>
-              <span className="text-sm text-ink-3">{advanced ? "Hide" : `${managed ? "Managed by you" : "Fixed forever"} · Protection ${antiSnipe ? "on" : "off"}`}</span>
+              <span className="text-sm text-ink-3">{advanced ? "Hide" : `${managed ? "Managed by you" : "Fixed forever"} · Protection ${snipe.seconds > 0 ? fmtSeconds(snipe.seconds) : "off"}`}</span>
             </button>
             <AnimatePresence initial={false}>
               {advanced && (
@@ -848,45 +865,9 @@ export default function LaunchForm({
                     <section>
                       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                         <h3 className="text-base font-semibold text-ink">Launch protection</h3>
-                        <span className="text-sm text-ink-3">Anti-snipe, off by default</span>
+                        <span className="text-sm text-ink-3">Anti-snipe</span>
                       </div>
-                      <OptionGroup label="Launch protection" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <OptionCard selected={!antiSnipe} onClick={() => setAntiSnipe(false)}>
-                          <span className="font-semibold text-ink">Off</span>
-                          <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                            Everyone pays the flat {feeLabel} from the first block. Your first buy pays only Doppler&apos;s slice,{" "}
-                            {firstBuyDopplerCostPct(feeBps, false).toFixed(2)}% of the tokens.
-                          </span>
-                        </OptionCard>
-                        <OptionCard selected={antiSnipe} onClick={() => setAntiSnipe(true)}>
-                          <span className="flex items-baseline justify-between gap-2">
-                            <span className="font-semibold text-brand">On</span>
-                            <span className="num text-xs text-ink-3">
-                              {SNIPE.startFee / 10_000}% → {feeLabel} in {SNIPE.seconds}s
-                            </span>
-                          </span>
-                          <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                            The fee opens high and falls to {feeLabel} in {SNIPE.seconds} seconds. Bots buying the launch block keep little.
-                          </span>
-                        </OptionCard>
-                      </OptionGroup>
-                      <AnimatePresence initial={false}>
-                        {antiSnipe && (
-                          <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: "auto" }}
-                            exit={{ opacity: 0, height: 0 }}
-                            className="overflow-hidden"
-                          >
-                            <ProtectionCurve endPct={feeBps / 100} />
-                            <p className="mt-2 text-xs leading-relaxed text-ink-3">
-                              The opening fee goes where the normal one goes: to the engine in USDG, minus Doppler&apos;s 5%. Your bundled
-                              first buy pays Doppler&apos;s slice of the opening rate,{" "}
-                              <span className="num">{firstBuyDopplerCostPct(feeBps, true).toFixed(0)}%</span> of its tokens.
-                            </p>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
+                      <ProtectionPicker value={snipe} onChange={setSnipe} feeBps={feeBps} />
                     </section>
                   </div>
                 </motion.div>
@@ -897,7 +878,7 @@ export default function LaunchForm({
           {/* a phone gets the launch panel at the end of the flow */}
           <li className="mt-8 list-none lg:hidden">
             <LaunchPanel
-              {...{ predicted, simError, address, ready, mcapUsd, viaHub, enginePct, treasuryPct, feeSplit, withFirstBuy, symbol, launched, error }}
+              {...{ predicted, simError, address, ready, mcapUsd, viaHub, enginePct, treasuryPct, feeSplit, buyIn, walletCount: (orders?.length ?? 0) + (firstBuyIn.isZero() ? 0 : 1), symbol, launched, error }}
               button={launchButton}
             />
           </li>
@@ -1037,41 +1018,6 @@ function LeverageDial({ value, onChange, max }: { value: number; onChange: (v: n
   );
 }
 
-/** the anti-snipe schedule, drawn: the fee falling from the opening rate to the coin's fee */
-function ProtectionCurve({ endPct }: { endPct: number }) {
-  const start = SNIPE.startFee / 10_000;
-  const W = 320;
-  const H = 110;
-  const y = (v: number) => 10 + (1 - v / start) * (H - 30);
-  const xEnd = W * 0.62;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="mt-4 h-auto w-full max-w-[420px]" aria-label={`Fee falls from ${start}% to ${endPct}% in ${SNIPE.seconds} seconds`}>
-      <line x1="0" y1={H - 20} x2={W} y2={H - 20} stroke="var(--color-line-2)" />
-      <motion.path
-        d={`M0,${y(start)} L${xEnd},${y(endPct)} L${W},${y(endPct)}`}
-        fill="none"
-        stroke="var(--color-brand)"
-        strokeWidth="2.5"
-        initial={{ pathLength: 0 }}
-        animate={{ pathLength: 1 }}
-        transition={{ duration: 1.1, ease: [0.16, 1, 0.3, 1] }}
-      />
-      <text x="4" y={y(start) - 2} className="fill-ink-2 text-[11px]">
-        {start}% at second 0
-      </text>
-      <text x={xEnd + 6} y={y(endPct) - 6} className="fill-ink-2 text-[11px]">
-        {endPct}% from second {SNIPE.seconds}
-      </text>
-      <text x="0" y={H - 4} className="fill-ink-3 text-[10px]">
-        launch
-      </text>
-      <text x={xEnd} y={H - 4} textAnchor="middle" className="fill-ink-3 text-[10px]">
-        {SNIPE.seconds}s
-      </text>
-    </svg>
-  );
-}
-
 function LaunchPanel({
   predicted,
   simError,
@@ -1082,13 +1028,14 @@ function LaunchPanel({
   enginePct,
   treasuryPct,
   feeSplit,
-  withFirstBuy,
+  buyIn,
+  walletCount,
   symbol,
   launched,
   error,
   button,
 }: {
-  predicted: { asset: string; gas: ethers.BigNumber | null; firstBuyOut: ethers.BigNumber | null } | null;
+  predicted: { asset: string; gas: ethers.BigNumber | null; buyOut: ethers.BigNumber | null } | null;
   simError: string | null;
   address: string | null | undefined;
   ready: boolean;
@@ -1097,7 +1044,9 @@ function LaunchPanel({
   enginePct: number;
   treasuryPct: number;
   feeSplit: FeeSplit | null;
-  withFirstBuy: boolean;
+  /** USDG the launch spends in total, and for how many wallets */
+  buyIn: ethers.BigNumber;
+  walletCount: number;
   symbol: string;
   launched: Launched | null;
   error: string | null;
@@ -1143,12 +1092,16 @@ function LaunchPanel({
             </>
           )}
         </dd>
-        {withFirstBuy && (
+        {!buyIn.isZero() && (
           <>
-            <dt className="text-ink-3">First buy gets</dt>
+            <dt className="text-ink-3">Launch buy</dt>
+            <dd className="num min-w-0 truncate text-right text-ink">
+              {fmtUsdg(buyIn)} USDG{walletCount > 1 && `, ${walletCount} wallets`}
+            </dd>
+            <dt className="text-ink-3">Buys</dt>
             <dd className="num text-right text-ink">
-              {predicted?.firstBuyOut
-                ? `≈ ${Number(ethers.utils.formatEther(predicted.firstBuyOut)).toLocaleString("en-US", { maximumFractionDigits: 0 })} $${symbol || "TICKER"}`
+              {predicted?.buyOut
+                ? `≈ ${Number(ethers.utils.formatEther(predicted.buyOut)).toLocaleString("en-US", { maximumFractionDigits: 0 })} $${symbol || "TICKER"}`
                 : "simulating…"}
             </dd>
           </>

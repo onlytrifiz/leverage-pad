@@ -4,7 +4,7 @@ import { useRef } from "react";
 import { ArrowLeftRight, CircleDollarSign, Flame, Target, TrendingUp } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { gsap, ScrollTrigger, useGSAP } from "@/lib/gsap";
-import { FEE_SPLIT_PCT } from "@/lib/doppler";
+import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
 
 /**
  * The loop, lit as you read it.
@@ -26,7 +26,7 @@ const STEPS = [
   },
   { icon: TrendingUp, title: "A leveraged perp", text: "Opened on Lighter at the asset, side and leverage set at launch." },
   { icon: Target, title: "Take profit", text: "Each deposit banks at the take-profit set at launch, up to +500% at high leverage." },
-  { icon: Flame, title: "Buyback & burn", text: "75% of the profit buys the coin and burns it." },
+  { icon: Flame, title: "Buyback & burn", text: `${PROFIT_SPLIT_PCT.buyback}% of the profit buys the coin and burns it.` },
 ];
 
 export default function EngineLoop() {

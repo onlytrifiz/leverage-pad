@@ -6,7 +6,7 @@ import { cn } from "cn";
 import { useMarkets } from "@/components/markets-provider";
 import AssetIcon from "@/components/AssetIcon";
 import { fmtChange, fmtMark, fmtSignedUsd, fmtUsd } from "@/lib/format";
-import { FEE_PRESETS, FEE_SPLIT_PCT } from "@/lib/doppler";
+import { FEE_PRESETS, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
 
 /**
  * The asymmetry, as an instrument you can push.
@@ -18,7 +18,7 @@ import { FEE_PRESETS, FEE_SPLIT_PCT } from "@/lib/doppler";
  *
  *   position P&L  = collateral × leverage × move, floored at −collateral
  *                   (isolated margin: a liquidation loses the posted fees, never more)
- *   buyback       = 75% of a positive P&L, zero otherwise
+ *   buyback       = PROFIT_SPLIT_PCT.buyback of a positive P&L, zero otherwise
  *
  * and a third fact that does not move at all: coins sold by the engine, 0.
  *
@@ -29,7 +29,7 @@ import { FEE_PRESETS, FEE_SPLIT_PCT } from "@/lib/doppler";
 
 const ASSETS = ["NVDA", "BTC", "ETH", "XAU", "SPY"];
 const LEVERAGES = [2, 3, 5, 10, 20, 25, 50];
-const BUYBACK_SHARE = 0.75;
+const BUYBACK_SHARE = PROFIT_SPLIT_PCT.buyback / 100;
 const MOVE_MAX = 30;
 /* volume slider: log scale from $10k to $2M */
 const VOL_MIN = Math.log10(10_000);
@@ -362,7 +362,7 @@ export default function PayoffSimulator() {
         <div className="mt-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 text-xs text-ink-3">
           <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span className="flex items-center gap-1.5">
-              <span className="h-[3px] w-4 rounded-full bg-brand" /> Buyback &amp; burn, 75% of profit
+              <span className="h-[3px] w-4 rounded-full bg-brand" /> Buyback &amp; burn, {PROFIT_SPLIT_PCT.buyback}% of profit
             </span>
             <span className="flex items-center gap-1.5">
               <span className="h-0 w-4 border-t-[1.5px] border-dashed border-ink-3" /> Position P&amp;L

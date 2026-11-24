@@ -55,8 +55,8 @@ module.exports = {
 
   // ── economia keeper ─────────────────────────────────────────────────────────
   // Split multiply.cash: 100% perp — full degen. TUTTE le fee (lato quote)
-  // diventano collaterale della posizione. Il protocollo guadagna SOLO dal 25%
-  // del profitto perp che rientra (TP_MASTER_SHARE_BPS); il restante 75% fa
+  // diventano collaterale della posizione. Dal profitto perp che rientra il
+  // protocollo prende il 30% (TP_MASTER_SHARE_BPS); il restante 70% fa
   // buyback&burn, piu' il burn del lato coin delle fee a ogni tick.
   // Ogni bucket resta override via env (bps, somma DEVE fare 10000).
   SPLIT_BPS: {
@@ -96,7 +96,7 @@ module.exports = {
   // i prelievi piccoli ("withdrawal amount is too small", misurato: $0.07 no) —
   // tenere il floor ben sopra quel minimo evita cicli di rifiuto inutili.
   PERP_WITHDRAW_FLOOR_USD: Number(process.env.PERPSPAD_PERP_WITHDRAW_FLOOR_USD || 25),
-  TP_MASTER_SHARE_BPS: Number(process.env.PERPSPAD_TP_MASTER_SHARE_BPS || 2500),       // del profitto rientrato: 25% treasury, 75% buyback (come perpspad)
+  TP_MASTER_SHARE_BPS: Number(process.env.PERPSPAD_TP_MASTER_SHARE_BPS || 3000),       // del profitto rientrato: 30% treasury, 70% buyback
   BUYBACK_FLOOR_USD: Number(process.env.PERPSPAD_BUYBACK_FLOOR_USD || 25),        // sotto questa soglia il buyback aspetta
   BUYBACK_MAX_PER_TICK_USD: Number(process.env.PERPSPAD_BUYBACK_MAX_USD || 25),   // un tick spende al massimo questo (niente ordini block-moving)
   BUYBACK_MAX_SLIPPAGE_BPS: Number(process.env.PERPSPAD_BUYBACK_SLIPPAGE_BPS || 300), // 3%: minOut dal prezzo spot
