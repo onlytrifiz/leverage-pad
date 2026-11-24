@@ -11,6 +11,7 @@ import { useMarkets } from "@/components/markets-provider";
 import { CoinSeal } from "@/components/brand/CoinSeal";
 import { Guilloche } from "@/components/brand/Guilloche";
 import AssetIcon from "@/components/AssetIcon";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import CoinCard from "./CoinCard";
 
 /**
@@ -42,6 +43,8 @@ const SORTS: { key: Sort; label: string }[] = [
   { key: "burned", label: "Most burned" },
   { key: "fees", label: "Most fees" },
 ];
+
+const SORT_ITEMS = SORTS.map((s) => ({ value: s.key, label: s.label }));
 
 const since = (i: CoinListItem) =>
   i.marketCapUsd != null && i.coin.openingMcapUsd > 0 ? (i.marketCapUsd / i.coin.openingMcapUsd - 1) * 100 : null;
@@ -102,8 +105,8 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
           ))}
         </div>
 
-        <div className="ml-auto flex w-full min-w-0 items-center gap-2 sm:w-auto">
-          <label className="relative min-w-0 flex-1 sm:w-[240px] sm:flex-none">
+        <div className="ml-auto flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
+          <label className="relative min-w-0 basis-full sm:w-[220px] sm:basis-auto">
             <span className="sr-only">Search coins</span>
             <Search size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-3" aria-hidden />
             <input
@@ -113,21 +116,20 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
               className="h-9 w-full rounded-lg border border-line bg-panel pr-3 pl-9 text-sm text-ink placeholder:text-ink-3 focus:border-brand"
             />
           </label>
-          <label className="shrink-0">
-            <span className="sr-only">Sort by</span>
-            <select
-              value={sort}
-              onChange={(e) => setSort(e.target.value as Sort)}
-              className="h-9 rounded-lg border border-line bg-panel px-2.5 text-sm text-ink focus:border-brand"
-            >
+          <Select items={SORT_ITEMS} value={sort} onValueChange={(v) => v && setSort(v as Sort)}>
+            {/* as wide as its longest label, so picking another one does not move the toolbar */}
+            <SelectTrigger aria-label="Sort by" className="w-[132px] shrink-0 max-sm:flex-1">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end" alignItemWithTrigger={false} sideOffset={6} className="min-w-[180px]">
               {SORTS.map((s) => (
-                <option key={s.key} value={s.key}>
+                <SelectItem key={s.key} value={s.key}>
                   {s.label}
-                </option>
+                </SelectItem>
               ))}
-            </select>
-          </label>
-          <div className="flex shrink-0 rounded-lg border border-line bg-panel p-0.5">
+            </SelectContent>
+          </Select>
+          <div className="flex h-9 shrink-0 items-center rounded-lg border border-line bg-panel p-0.5">
             {(["grid", "list"] as const).map((v) => (
               <button
                 key={v}

@@ -37,7 +37,7 @@ export default async function MarketPage() {
         <div aria-hidden className="pointer-events-none absolute top-[38%] right-[-10%] -z-10 text-mint/[0.12]">
           <Guilloche teeth={39} reach={0.85} rings={4} size={900} spin={150} className="w-[120vw] max-w-[900px]" />
         </div>
-        <div className="mx-auto w-full max-w-[1680px] px-4 pt-10 pb-10 sm:px-5 sm:pt-14 sm:pb-12">
+        <div className="mx-auto w-full max-w-[1320px] px-4 pt-10 pb-10 sm:px-5 sm:pt-14 sm:pb-12">
           <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-6">
             <div className="min-w-0">
               <h1 className="font-display text-[clamp(44px,6vw,84px)] leading-[0.95] font-bold tracking-[-0.04em] text-night-ink">
@@ -47,7 +47,7 @@ export default async function MarketPage() {
                 Every coin and the trade its fees are running. Sort by what you care about.
               </p>
             </div>
-            <dl className="grid grid-cols-2 gap-x-8 gap-y-4 sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-x-10 gap-y-4 sm:flex sm:flex-wrap">
               {stats.map((s) => (
                 <div key={s.k} className="min-w-0">
                   <dt className="text-xs text-night-ink-2">{s.k}</dt>
@@ -65,8 +65,8 @@ export default async function MarketPage() {
         <TickerTape />
       </div>
 
-      <Container width="wide">
-        <div className="mt-14 grid grid-cols-1 gap-8 xl:grid-cols-[minmax(0,1fr)_300px]">
+      <Container width="landing">
+        <div className="mt-14 grid grid-cols-1 gap-10 xl:grid-cols-[minmax(0,1fr)_260px]">
           <div className="min-w-0">
             <div className="mb-5 flex items-center justify-between">
               <h2 className="font-display text-2xl font-semibold">Coins</h2>

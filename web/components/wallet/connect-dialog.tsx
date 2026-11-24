@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Wallet, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,11 +40,12 @@ export function ConnectDialog({
    * The dialog re-renders when it opens, which is the moment that matters.
    */
   const connectors = availableConnectors();
+  const [picked, setPicked] = useState<ConnectorId | null>(null);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[400px]">
-        <DialogHeader>
+      <DialogContent className="gap-5 p-5 sm:max-w-[420px]">
+        <DialogHeader className="pr-8">
           <DialogTitle>Connect a wallet</DialogTitle>
           <DialogDescription>
             Trading happens on {"Robinhood Chain"}. Connecting only shares your address.
@@ -59,19 +61,22 @@ export function ConnectDialog({
                 type="button"
                 disabled={!!c.unavailable || status === "connecting"}
                 onClick={async () => {
+                  setPicked(c.id);
+                  // WalletConnect brings its own window: ours would sit on top of it and keep the focus
+                  if (c.id === "walletconnect") onOpenChange(false);
                   await connect(c.id);
                   onOpenChange(false);
                 }}
-                className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:border-line-2 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-55"
+                className="flex items-center gap-3.5 rounded-xl border border-border bg-card px-4 py-3.5 text-left transition-colors hover:border-line-2 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-55"
               >
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand">
                   <Icon className="size-4.5" />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block text-md font-semibold text-ink">{c.name}</span>
-                  <span className="block text-xs text-ink-3">{c.unavailable ?? HINT[c.id]}</span>
+                  <span className="mt-0.5 block text-xs text-ink-3">{c.unavailable ?? HINT[c.id]}</span>
                 </span>
-                {status === "connecting" && <Spinner className="text-ink-3" />}
+                {status === "connecting" && picked === c.id && <Spinner className="text-ink-3" />}
               </button>
             );
           })}

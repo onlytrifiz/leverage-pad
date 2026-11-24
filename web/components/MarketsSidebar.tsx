@@ -63,7 +63,7 @@ export default function MarketsSidebar() {
 
 export function RailHead({ title, meta }: { title: string; meta?: string }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border pb-2.5">
+    <div className="flex h-[38px] shrink-0 items-center justify-between gap-2 border-b border-border pb-2.5">
       <span className="text-sm font-semibold text-ink">{title}</span>
       {meta && (
         <span className="flex items-center gap-1.5 text-xs text-ink-3">

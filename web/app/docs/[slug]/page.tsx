@@ -44,7 +44,7 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
             className="w-[90vw] max-w-[620px]"
           />
         </div>
-        <div className="mx-auto w-full max-w-[1200px] px-4 pt-8 pb-10 sm:px-5 sm:pt-10 sm:pb-12">
+        <div className="mx-auto w-full max-w-[1320px] px-4 pt-8 pb-10 sm:px-5 sm:pt-10 sm:pb-12">
           <nav aria-label="Breadcrumb" className="flex items-center gap-2 text-sm text-night-ink-2">
             <Link href="/docs" className="transition-colors hover:text-night-ink">
               Docs
@@ -60,7 +60,7 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
         </div>
       </section>
 
-      <div className="mx-auto flex w-full max-w-[1200px] gap-12 px-4 pt-10 pb-16 sm:px-5 sm:pt-12">
+      <div className="mx-auto flex w-full max-w-[1320px] gap-12 px-4 pt-10 pb-16 sm:px-5 sm:pt-12">
         <aside className="sticky top-20 hidden h-fit w-[210px] shrink-0 self-start lg:block">
           <DocsNav groups={DOC_NAV} />
           <a

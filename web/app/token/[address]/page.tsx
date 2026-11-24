@@ -104,9 +104,6 @@ function TradeColumn({ detail }: { detail: NonNullable<Awaited<ReturnType<typeof
   const { coin } = detail;
   return (
     <>
-      <div className="flex items-center justify-end">
-        <AutoRefresh />
-      </div>
       <div id="trade" className="scroll-mt-[calc(var(--nav-h)+16px)]">
         <SwapPanel detail={detail} />
       </div>
@@ -125,6 +122,10 @@ function TradeColumn({ detail }: { detail: NonNullable<Awaited<ReturnType<typeof
           </p>
         </PanelBody>
       </Panel>
+      {/* last, so the trade panel starts level with the chart beside it */}
+      <div className="flex items-center justify-end">
+        <AutoRefresh />
+      </div>
     </>
   );
 }

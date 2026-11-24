@@ -20,7 +20,7 @@ export default function DocsIndex() {
         <div aria-hidden className="pointer-events-none absolute top-[30%] right-[-14%] -z-10 text-mint/[0.1]">
           <Guilloche teeth={27} reach={0.8} rings={4} size={900} spin={180} className="w-[120vw] max-w-[900px]" />
         </div>
-        <div className="mx-auto w-full max-w-[1200px] px-4 pt-10 pb-12 sm:px-5 sm:pt-14 sm:pb-16">
+        <div className="mx-auto w-full max-w-[1320px] px-4 pt-10 pb-12 sm:px-5 sm:pt-14 sm:pb-16">
           <div className="flex flex-wrap items-center justify-between gap-2 text-sm text-night-ink-2">
             <span>Protocol docs · v2</span>
             <a href="/whitepaper.pdf" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 transition-colors hover:text-night-ink">
@@ -44,7 +44,7 @@ export default function DocsIndex() {
         </div>
       </section>
 
-      <div className="mx-auto w-full max-w-[1200px] px-4 pt-14 pb-16 sm:px-5">
+      <div className="mx-auto w-full max-w-[1320px] px-4 pt-14 pb-16 sm:px-5">
         <div className="space-y-12">
           {DOC_GROUPS.map((g) => (
             <RevealBlock key={g.label}>

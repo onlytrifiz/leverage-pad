@@ -59,6 +59,14 @@ const walletconnect: Connector = {
       chains: [CHAIN.id],
       optionalChains: [CHAIN.id],
       showQrModal: true,
+      // its default z-index (1) opens it under the header; the rest is our green
+      qrModalOptions: {
+        themeMode: "light",
+        themeVariables: {
+          "--wcm-z-index": "100",
+          "--wcm-accent-color": "#0f6b3f",
+        },
+      },
       rpcMap: { [CHAIN.id]: CHAIN.rpc },
       metadata: {
         name: "multiply.cash",

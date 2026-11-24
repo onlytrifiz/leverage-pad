@@ -32,7 +32,7 @@ export default function MoversStrip({ tone = "paper" }: { tone?: "paper" | "nigh
         </span>
       </div>
       {/* scroll-padding matches the gutter: snapping otherwise parks the first card on the window's edge */}
-      <div className="-mx-4 mt-4 flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto px-4 pb-2 [scrollbar-width:none] sm:-mx-5 sm:scroll-px-5 sm:px-5 [&::-webkit-scrollbar]:hidden">
+      <div className="-mx-4 mt-4 flex snap-x snap-mandatory scroll-px-4 gap-3 overflow-x-auto px-4 pb-2 [mask-image:linear-gradient(to_right,#000_calc(100%-56px),transparent)] [scrollbar-width:none] sm:-mx-5 sm:scroll-px-5 sm:px-5 [&::-webkit-scrollbar]:hidden">
         {!loaded &&
           Array.from({ length: 6 }, (_, i) => (
             <div key={i} className={cn("h-[132px] w-[200px] shrink-0 animate-pulse rounded-[16px]", night ? "bg-night-2" : "bg-panel-2")} />
