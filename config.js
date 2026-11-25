@@ -107,6 +107,16 @@ module.exports = {
   CREATOR_MIN_PAYOUT_USD: 1,      // payout creator sotto $1 restano in accumulo
   CLAIM_MIN_USD: 0.5,             // non chiama collect() per briciole
 
+  // ── platform buyback & burn (lib/flywheel.js): off until the token is set ────
+  FLYWHEEL_TOKEN: /^0x[0-9a-fA-F]{40}$/.test(process.env.PERPSPAD_FLYWHEEL_TOKEN || '') ? process.env.PERPSPAD_FLYWHEEL_TOKEN : '',
+  FLYWHEEL_SHARE_BPS: Number(process.env.PERPSPAD_FLYWHEEL_SHARE_BPS ?? 7000), // of the protocol's earnings; the rest stays in the treasury
+  FLYWHEEL_INTERVAL_MS: Number(process.env.PERPSPAD_FLYWHEEL_INTERVAL_MS ?? 30 * 60 * 1000),
+  FLYWHEEL_MIN_USD: Number(process.env.PERPSPAD_FLYWHEEL_MIN_USD || 5),
+  FLYWHEEL_MAX_USD: Number(process.env.PERPSPAD_FLYWHEEL_MAX_USD || 500),      // one buy never spends more
+  FLYWHEEL_MAX_IMPACT_BPS: Number(process.env.PERPSPAD_FLYWHEEL_MAX_IMPACT_BPS ?? 100),
+  FLYWHEEL_MAX_FEE_PIPS: 60000,   // no buy while the pool's fee is above 6%: the launch protection
+  FLYWHEEL_FROM_BLOCK: Number(process.env.PERPSPAD_FLYWHEEL_FROM_BLOCK || 0),  // where the count starts (0 = when it is switched on)
+
   // tokens out of service: position closed, funds to the treasury, nothing opened again (retireTick)
   RETIRED: new Set((process.env.PERPSPAD_RETIRED || '').toLowerCase().split(/[\s,]+/).filter((a) => /^0x[0-9a-f]{40}$/.test(a))),
 

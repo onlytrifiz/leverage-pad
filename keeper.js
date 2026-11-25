@@ -9,6 +9,7 @@ const { encryptSecret, decryptSecret, isEncrypted } = require('./lib/secrets');
 const { buildSwapCalldata } = require('./lib/v3');
 const registry = require('./lib/registry');
 const publish = require('./lib/publish');
+const { flywheelTick } = require('./lib/flywheel');
 const routerCoins = require('./lib/routerCoins');
 const { legacyTakeProfitPct } = require('./lib/launchParams');
 const v4 = require('./lib/v4');
@@ -1617,6 +1618,17 @@ async function main() {
       if (!st) { console.log(`  [${coin.symbol}] stato mancante nel registry, salto`); continue; }
       try { await tickCoin(keeper, locker, coin, st, checkpoint); }
       catch (e) { console.log(`  [${coin.symbol}] ERRORE tick: ${e.message.slice(0, 140)}`); }
+      registry.save(reg);
+    }
+    if (!only && !lighter.simulate) {
+      try {
+        await flywheelTick({
+          reg, checkpoint, provider, wallet: keeper.address, isStuck,
+          send: (tx, label) => send(keeper, tx, label),
+          plan: (coin, raw) => buybackPlanV4(keeper, coin, erc20(coin.pair), raw),
+          quote: (coin, raw) => v4.quoteExactInV4(provider, { asset: coin.token, numeraire: coin.pair, tokenIn: coin.pair, amountIn: raw }),
+        });
+      } catch (e) { console.log(`  [flywheel] ${e.message.slice(0, 140)}`); }
       registry.save(reg);
     }
     // estratto pubblico per il sito (senza chiavi API ne' stato interno):
