@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ChevronDown, Search } from "lucide-react";
 import { cn } from "cn";
-import type { MarketRow } from "@/lib/lighter";
+import type { MarketKind, MarketRow } from "@/lib/lighter";
 import { fmtChange, fmtMark } from "@/lib/format";
 import AssetIcon from "@/components/AssetIcon";
 
@@ -14,29 +14,14 @@ import AssetIcon from "@/components/AssetIcon";
  * Fifty-odd markets used to sit in a 300px scroller: a list inside a list,
  * with the page and the box fighting over the wheel. Now they are sorted into
  * the families a person thinks in (stocks, crypto, commodities, pre-IPO), the
- * first twelve of a family are shown, and "Show all" opens
- * the rest in the page itself. The chosen market is always on screen.
- *
- * Families are a hand-kept list of Lighter's symbols; anything unknown, the
- * venue's new memecoins included, lands in crypto.
+ * first twelve of a family are shown, and "Show all" opens the rest in the page
+ * itself. The chosen market is always on screen. Families come with the market
+ * row, from the venue's own tags.
  */
 
-type Family = "all" | "stocks" | "crypto" | "commodities" | "preipo";
+type Family = "all" | MarketKind;
 
-const STOCKS = new Set([
-  "SPY", "QQQ", "AAPL", "NVDA", "GOOGL", "MSFT", "AMZN", "AMD", "META", "TSLA", "INTC", "SKHY", "MU", "CRCL",
-  "COIN", "SOXL", "PLTR", "TSM", "ORCL", "CRWV", "BABA", "BE", "IREN", "AMC", "SOFI", "SMCI", "USAR", "ASTS",
-  "SGOV", "QBTS", "LUNR", "CLSK", "RGTI", "WULF", "SNDK", "NFLX", "HOOD", "MSTR", "SHEIN", "SPCX",
-]);
-const COMMODITIES = new Set(["XAU", "XAG", "SLV", "USO"]);
-const PREIPO = new Set(["ANTHROPIC", "OPENAI"]);
-
-function familyOf(m: MarketRow): Exclude<Family, "all"> {
-  if (STOCKS.has(m.symbol)) return "stocks";
-  if (COMMODITIES.has(m.symbol)) return "commodities";
-  if (PREIPO.has(m.symbol)) return "preipo";
-  return "crypto";
-}
+const inFamily = (m: MarketRow, f: Family) => f === "all" || m.kind === f;
 
 const FAMILIES: { key: Family; label: string }[] = [
   { key: "all", label: "All" },
@@ -69,8 +54,8 @@ export default function AssetPicker({
   const [open, setOpen] = useState(false);
 
   const counts = useMemo(() => {
-    const c: Record<Family, number> = { all: markets.length, stocks: 0, crypto: 0, commodities: 0, preipo: 0 };
-    for (const m of markets) c[familyOf(m)]++;
+    const c: Record<Family, number> = { all: 0, stocks: 0, crypto: 0, commodities: 0, preipo: 0 };
+    for (const m of markets) for (const f of FAMILIES) if (inFamily(m, f.key)) c[f.key]++;
     return c;
   }, [markets]);
 
@@ -84,7 +69,7 @@ export default function AssetPicker({
 
   const { visible, hidden } = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    const list = markets.filter((m) => (needle ? m.symbol.toLowerCase().includes(needle) : family === "all" || familyOf(m) === family));
+    const list = markets.filter((m) => (needle ? `${m.symbol} ${m.name}`.toLowerCase().includes(needle) : inFamily(m, family)));
     if (needle || open || list.length <= FIRST) return { visible: list, hidden: 0 };
     const head = list.slice(0, FIRST);
     // the chosen market stays on screen even when it ranks below the fold

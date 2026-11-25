@@ -70,7 +70,7 @@ const walletconnect: Connector = {
       rpcMap: { [CHAIN.id]: CHAIN.rpc },
       metadata: {
         name: "multiply.cash",
-        description: "Coins whose trading fees run a leveraged perp.",
+        description: "Tokens fueled by perps.",
         url: typeof window !== "undefined" ? window.location.origin : "https://multiply.cash",
         icons: [
           (typeof window !== "undefined" ? window.location.origin : "https://multiply.cash") +

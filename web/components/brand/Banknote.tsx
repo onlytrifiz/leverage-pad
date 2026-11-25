@@ -151,7 +151,7 @@ export function Banknote({ symbol, name, market, side, leverage, serial, managed
             {market} {leverage}x {side}
           </div>
           <div className="note-microprint mt-[2.4cqw] overflow-hidden text-[0.85cqw] leading-none tracking-[0.12em] whitespace-nowrap text-ink-3 uppercase">
-            every trade funds a trade every trade funds a trade every trade funds a trade every trade funds a trade
+            tokens fueled by perps tokens fueled by perps tokens fueled by perps tokens fueled by perps
           </div>
         </div>
 

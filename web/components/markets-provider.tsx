@@ -12,7 +12,7 @@ import type { MarketRow } from "@/lib/lighter";
  * same screen. Now the data has one owner and the components just read it.
  *
  * This one polls, deliberately. Lighter streams the whole market table over
- * `market_stats/all`, and for a list of 57 rows that is the wrong trade: the
+ * `market_stats/all`, and for a list of 70 rows that is the wrong trade: the
  * channel was measured at 508KB per 20 seconds — 1.5MB a minute against the
  * ~25KB one REST response costs. Streaming wins when a page follows ONE market
  * (see `useMarketStat`, 0.3KB/s) or one account. A ticker is not that page.

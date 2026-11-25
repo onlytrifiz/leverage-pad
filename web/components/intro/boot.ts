@@ -4,7 +4,7 @@
  * "use client" file reaches a server component as a reference, not a string.
  */
 
-export const SEEN_KEY = "multiply.intro.v1";
+export const SEEN_KEY = "multiply.intro.v2";
 export const INTRO_EVENT = "multiply:intro";
 export const PENDING_CLASS = "intro-pending";
 

@@ -34,33 +34,33 @@ function EngineBody() {
   return (
     <>
                   <p>
-                    Every coin starts the same way: fixed 1B supply, no owner, all of it seeded
+                    Every token starts the same way: fixed 1B supply, no owner, all of it seeded
                     one-sided into a Uniswap v4 pool at ~$4k market cap, paired with USDG. The
                     pool is created and locked by Doppler&apos;s contracts in the same
                     transaction as the token. There is no bonding curve and no graduation: the
-                    pool seeded at launch is the coin&apos;s market for life.
+                    pool seeded at launch is the token&apos;s market for life.
                   </p>
                   <div className="overflow-x-auto rounded-[18px] bg-night p-5 sm:p-6">
                     <div className="mb-3 text-xs font-medium tracking-wide text-mint">The circuit</div>
                     <pre className="num text-xs leading-[1.75] text-night-ink-2">{`swap (fee ${FEE_RANGE}, taken by the pool's hook)
-        ├─ buys pay it in the coin  → swapped to USDG inside the same swap
+        ├─ buys pay it in the token  → swapped to USDG inside the same swap
         └─ sells pay it in USDG     → passed straight through
-              └─ ${FEE_SPLIT_PCT.doppler}% to Doppler · the rest to the coin's own fee sink, in USDG
+              └─ ${FEE_SPLIT_PCT.doppler}% to Doppler · the rest to the token's own fee sink, in USDG
                     ├─ ${FEE_SPLIT_PCT.treasury}% protocol treasury
-                    └─ ${FEE_SPLIT_PCT.engine}% the coin's sub-wallet
+                    └─ ${FEE_SPLIT_PCT.engine}% the token's sub-wallet
                           └─ deposits to Lighter at the ${fmtThreshold(OPEN_GATE_USD)} gate
                              opens/tops-up the position chosen at launch
                              (market · direction · leverage · take-profit)
 
       realized profit → withdrawn on-chain
-        ├─ ${PROFIT_SPLIT_PCT.buyback}% buys the coin from the pool and burns it
+        ├─ ${PROFIT_SPLIT_PCT.buyback}% buys the token from the pool and burns it
         └─ ${PROFIT_SPLIT_PCT.treasury}% protocol treasury`}</pre>
                   </div>
                   <p>
                     That circuit is the whole product. Fees are not income to be distributed.
                     They are working capital, and they arrive as working capital: always in
-                    USDG, never as coins to be sold later. Every swap on the coin makes its
-                    position bigger; every take-profit on the position makes the coin scarcer.
+                    USDG, never as tokens to be sold later. Every swap on the token makes its
+                    position bigger; every take-profit on the position makes the token scarcer.
                   </p>
     </>
   );
@@ -73,8 +73,8 @@ function LaunchBody() {
         <K>One transaction, from your wallet.</K> A launch is a call to the
         multiply router (<A href={explorerAddr(LAUNCH_ROUTER)}>{short(LAUNCH_ROUTER)}</A>),
         which builds the whole market on Doppler&apos;s Airlock: the token, the pool,
-        the lock and the fee hook, with the shape every multiply coin shares. The
-        router holds no funds and never touches a coin after its launch.
+        the lock and the fee hook, with the shape every multiply token shares. The
+        router holds no funds and never touches a token after its launch.
       </p>
       <p>
         <K>The token.</K> A Doppler ERC-20 with fixed <N>1,000,000,000</N> supply,
@@ -85,13 +85,13 @@ function LaunchBody() {
       <p>
         <K>The pool.</K> The entire supply goes into a Uniswap v4 pool against USDG
         as a single one-sided position: an ask ladder starting at roughly{" "}
-        <N>$4,000</N> market cap. Every coin opens at the same valuation, whatever
+        <N>$4,000</N> market cap. Every token opens at the same valuation, whatever
         market or leverage it picked. Buys and sells are ordinary v4 swaps,
         routable by anything that speaks Uniswap. multiply.cash never custodies
         user balances.
       </p>
       <p>
-        <K>The metadata.</K> Name, ticker, the coin&apos;s seal and the engine
+        <K>The metadata.</K> Name, ticker, the token&apos;s seal and the engine
         settings (market, direction, leverage, take-profit) are pinned to IPFS and
         written into the token, signed by the launching wallet. Terminals and
         explorers read the logo from there; the keeper reads the engine settings.
@@ -121,23 +121,23 @@ function FeesBody() {
       <p>
         <K>Where it is taken.</K> The pool&apos;s LP fee is zero. The fee is taken by
         Doppler&apos;s Rehype hook (<A href={explorerAddr(DOPPLER.rehype)}>{short(DOPPLER.rehype)}</A>)
-        on the output of each swap: a buy pays it in the coin, a sell pays it in
-        USDG. The hook then swaps the coin-side fee into USDG inside the same call,
+        on the output of each swap: a buy pays it in the token, a sell pays it in
+        USDG. The hook then swaps the token-side fee into USDG inside the same call,
         so what leaves the pool is USDG only. No keeper, no operator, no inventory
-        of coins waiting to be sold.
+        of tokens waiting to be sold.
       </p>
       <p>
         <K>Where it goes.</K> Doppler keeps <N>{FEE_SPLIT_PCT.doppler}%</N> of every fee, its
         protocol fee for the launch stack. The remaining <N>95%</N> is transferred in
-        USDG to the coin&apos;s fee sink, a small contract created in the launch
-        transaction for that coin alone. Its <N>flush()</N> is public and does one
+        USDG to the token&apos;s fee sink, a small contract created in the launch
+        transaction for that token alone. Its <N>flush()</N> is public and does one
         thing: <N>{FEE_SPLIT_PCT.treasury}%</N> of the trading fee to the protocol
-        treasury, <N>{FEE_SPLIT_PCT.engine}%</N> to the coin&apos;s sub-wallet, and any
-        coins that ever reached it burned. The split is written into the sink at launch
-        and cannot change for that coin; coins launched before 25 November 2026 carry
+        treasury, <N>{FEE_SPLIT_PCT.engine}%</N> to the token&apos;s sub-wallet, and any
+        tokens that ever reached it burned. The split is written into the sink at launch
+        and cannot change for that token; tokens launched before 25 November 2026 carry
         80% engine, 15% protocol. Two mechanical details: USDG fees below{" "}
         <N>{HOOK_FLUSH_EPSILON_USDG} USDG</N> wait on the hook until the next swap
-        pushes them over, so small sells arrive in batches; and because the coin-side
+        pushes them over, so small sells arrive in batches; and because the token-side
         fee is sold back into the pool, every buy carries a small sell of its own fee.
       </p>
       <p>
@@ -157,7 +157,7 @@ function ProtectionBody() {
       <p>
         The fee itself opens high and decays. The creator picks the opening rate, up
         to <N>{SNIPE.maxFee / 10_000}%</N>, and how long it takes to fall in a
-        straight line to the coin&apos;s fee: <N>{fmtSeconds(SNIPE.defaultSeconds)}</N>{" "}
+        straight line to the token&apos;s fee: <N>{fmtSeconds(SNIPE.defaultSeconds)}</N>{" "}
         unless changed, <N>{fmtSeconds(SNIPE.maxSeconds)}</N> at most, or off. Both
         are fixed at launch. A bot buying the launch block keeps little; a person
         buying after the window pays the normal fee. The hook charges the rate on
@@ -186,7 +186,7 @@ function ContractsBody() {
         The v4 hook of every pool, and the owner of its liquidity. A pool created
         with fee beneficiaries is <N>Locked</N>: no exit, no withdraw, no migration.
         The only functions that could alter a live pool are gated on the
-        token&apos;s governance timelock, and every multiply coin is launched with
+        token&apos;s governance timelock, and every multiply token is launched with
         the no-op governance, whose timelock is the burn address. Nobody can call
         them.
       </p>
@@ -217,32 +217,32 @@ function FeeDestinationsBody() {
   return (
     <>
       <p>
-        <K>One wallet per coin.</K> Each coin&apos;s fees end up in an address of
-        their own, the coin&apos;s sub-wallet, which is also the owner of the
-        coin&apos;s Lighter account. Funds for one coin can never touch another
-        coin&apos;s position, and every sub-wallet is public on the explorer.
+        <K>One wallet per token.</K> Each token&apos;s fees end up in an address of
+        their own, the token&apos;s sub-wallet, which is also the owner of the
+        token&apos;s Lighter account. Funds for one token can never touch another
+        token&apos;s position, and every sub-wallet is public on the explorer.
       </p>
       <p>
         <K>Adoption.</K> The hook fixes where a pool&apos;s fees go at initialization
-        and has no setter, so the launch gives it the coin&apos;s fee sink, cloned in
-        the same transaction. The keeper then points the sink at the coin&apos;s
+        and has no setter, so the launch gives it the token&apos;s fee sink, cloned in
+        the same transaction. The keeper then points the sink at the token&apos;s
         sub-wallet. After that first step the keeper key cannot move it: only the
         router&apos;s owner can, the recovery path for a sub-wallet that became
         unusable, and the sink exposes no way to touch the fee matrix the launch
-        set. Until it is pointed, fees simply accumulate in the sink. The coin&apos;s
+        set. Until it is pointed, fees simply accumulate in the sink. The token&apos;s
         page shows its sink and where its fees are going at any time.
       </p>
       <p>
         <K>Who holds the keys.</K> Sub-wallet keys are derived deterministically
         from a single master secret, an HMAC-SHA256 over the token&apos;s address,
         so they exist only inside the keeper process. Never stored in a database,
-        never handed to a browser, never shown to the person who launched the coin.
+        never handed to a browser, never shown to the person who launched the token.
       </p>
       <p>
-        <K>Why nobody can drain the position.</K> Each coin&apos;s Lighter account is
+        <K>Why nobody can drain the position.</K> Each token&apos;s Lighter account is
         opened under its own sub-wallet, and Lighter only accepts orders signed by
         the account&apos;s key. A creator cannot drain, close, or borrow against the
-        position backing their coin, and neither can the creator of any other coin.
+        position backing their token, and neither can the creator of any other token.
         The backing is operated by the keeper on a fixed policy, in public, or not at
         all.
       </p>
@@ -255,17 +255,17 @@ function MarketsBody() {
     <>
       <p>
         The menu is Lighter&apos;s, not ours: any perp listed on Lighter&apos;s
-        Robinhood deployment can back a coin: crypto majors, US stocks, pre-IPO
+        Robinhood deployment can back a token: crypto majors, US stocks, pre-IPO
         names. The catalog is re-synced from the venue as markets are listed,
-        more than <N>50 markets</N> today.
+        more than <N>70 markets</N> today.
       </p>
       <p>
         At launch the creator picks the market, the side (long or short) and the
         leverage: <N>2x, 3x, 5x, 10x, 20x, 25x or 50x</N>, never above what Lighter allows
         on that market (50x on BTC, ETH, SPY and QQQ, 3x on the newest memecoins). If the
-        venue later lowers a market&apos;s cap below a coin&apos;s leverage, the keeper stops
-        opening and says so on the coin&apos;s page until the leverage fits again. Positions run{" "}
-        <K>isolated margin</K>: a coin&apos;s position can only ever lose the
+        venue later lowers a market&apos;s cap below a token&apos;s leverage, the keeper stops
+        opening and says so on the token&apos;s page until the leverage fits again. Positions run{" "}
+        <K>isolated margin</K>: a token&apos;s position can only ever lose the
         collateral it has posted, never more. Higher leverage means faster burns on
         a good call, faster liquidation on a bad one.
       </p>
@@ -277,7 +277,7 @@ function KeeperBody() {
   return (
     <>
       <p>
-        A keeper bot ticks every <N>15 seconds</N>. For every coin, each tick, in
+        A keeper bot ticks every <N>15 seconds</N>. For every token, each tick, in
         order:
       </p>
       <ol className="space-y-3">
@@ -285,10 +285,10 @@ function KeeperBody() {
           <>credits any perp withdrawal that landed since the last tick, bridge
             settlements are recognized from the on-chain transfer itself and split
             {PROFIT_SPLIT_PCT.treasury}% treasury / {PROFIT_SPLIT_PCT.buyback}% buyback;</>,
-          <>flushes the coin&apos;s fee sink when it holds enough to be worth the
+          <>flushes the token&apos;s fee sink when it holds enough to be worth the
             gas ({FEE_SPLIT_PCT.treasury}% to the treasury, {FEE_SPLIT_PCT.engine}% to
-            the sub-wallet, coins burned) and moves what arrived into the perp
-            reserve; any coins that reach the sub-wallet (bought back, or sent by
+            the sub-wallet, tokens burned) and moves what arrived into the perp
+            reserve; any tokens that reach the sub-wallet (bought back, or sent by
             holders) are burned, entirely, every tick;</>,
           <>runs the buyback when the reserve clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>;</>,
           <>marks the perp to market and decides: deposit, top up, or take
@@ -318,9 +318,9 @@ function LifecycleBody() {
     <>
       <p>
         <K>Open at {fmtThreshold(OPEN_GATE_USD)}.</K> Once <N>{fmtThreshold(OPEN_GATE_USD)}</N> of fees have accrued, the keeper
-        deposits into the coin&apos;s Lighter account and opens the position at the
+        deposits into the token&apos;s Lighter account and opens the position at the
         chosen market, side and leverage. Deposits travel as plain USDG transfers to
-        a deterministic intent address; Lighter credits the coin&apos;s own account
+        a deterministic intent address; Lighter credits the token&apos;s own account
         across the bridge.
       </p>
       <p>
@@ -353,7 +353,7 @@ function TranchesBody() {
         when the underlying moves <N>trigger ÷ leverage</N> from <em>its</em> entry:
         which is exactly <N>+trigger</N> on that tranche&apos;s own collateral.
         New fees never dilute an old tranche&apos;s progress. The trigger is the
-        coin&apos;s take-profit, chosen at launch from <N>+10%</N> up to <N>20×</N> the leverage, so a
+        token&apos;s take-profit, chosen at launch from <N>+10%</N> up to <N>20×</N> the leverage, so a
         target never needs more than a <N>20%</N> move of the asset: <N>+40%</N> at 2x, <N>+200%</N> at
         10x, the <N>+500%</N> ceiling from 25x up.
         The usual picks:
@@ -373,8 +373,8 @@ function TranchesBody() {
         ))}
       </div>
       <p>
-        Concretely: a 5x coin at +20% banks each tranche on a 4% move of the
-        underlying; a 2x coin at its +40% ceiling needs 20%.
+        Concretely: a 5x token at +20% banks each tranche on a 4% move of the
+        underlying; a 2x token at its +40% ceiling needs 20%.
       </p>
       <p>
         <K>Targets that come down with time.</K> A target far away can leave a deposit in
@@ -385,12 +385,12 @@ function TranchesBody() {
         collateral.
       </p>
       <p>
-        <K>Managed coins (soon).</K> At launch the creator will choose whether the engine is fixed
-        forever or <K>managed</K>. A managed coin&apos;s creator can retune leverage and
+        <K>Managed tokens (soon).</K> At launch the creator will choose whether the engine is fixed
+        forever or <K>managed</K>. A managed token&apos;s creator can retune leverage and
         take-profit later: every change is announced on-chain by the router and takes
-        effect <N>12 hours</N> after, and the coin carries a Managed badge everywhere.
+        effect <N>12 hours</N> after, and the token carries a Managed badge everywhere.
         Market and side never change. Independently, the router&apos;s owner can override
-        any coin&apos;s leverage or take-profit immediately, the escape hatch for a venue
+        any token&apos;s leverage or take-profit immediately, the escape hatch for a venue
         that lowers a cap or delists a market; every override is a public event.
       </p>
       <p>
@@ -421,12 +421,12 @@ function ProfitsBody() {
       <p>
         <K>Coming home.</K> Once realized profit clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>, it&apos;s
         withdrawn from Lighter over the zk bridge (~15 minutes) back to the
-        coin&apos;s sub-wallet, where it splits <K>{PROFIT_SPLIT_PCT.treasury}% protocol treasury /{" "}
+        token&apos;s sub-wallet, where it splits <K>{PROFIT_SPLIT_PCT.treasury}% protocol treasury /{" "}
         {PROFIT_SPLIT_PCT.buyback}% buyback reserve</K>.
       </p>
       <p>
-        <K>The buyback.</K> When a coin&apos;s buyback reserve crosses <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>,
-        the keeper buys the coin on its own pool and burns what it bought with the
+        <K>The buyback.</K> When a token&apos;s buyback reserve crosses <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>,
+        the keeper buys the token on its own pool and burns what it bought with the
         token&apos;s <N>burn()</N>. A single tick spends at most <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>, with a
         minimum-out quoted from the live pool price minus 3%: a large reserve drains
         as a series of ordinary buys rather than one block-moving order.
@@ -445,10 +445,10 @@ function EconomicsBody() {
   return (
     <>
       <p>
-        Of every trading fee, in USDG: <K>{FEE_SPLIT_PCT.engine}% funds the coin&apos;s
+        Of every trading fee, in USDG: <K>{FEE_SPLIT_PCT.engine}% funds the token&apos;s
         perp treasury</K>, {FEE_SPLIT_PCT.treasury}% goes to the protocol and{" "}
         {FEE_SPLIT_PCT.doppler}% to Doppler for the market infrastructure. No creator
-        cut. The split is enforced by the coin&apos;s fee sink, not by the keeper. On
+        cut. The split is enforced by the token&apos;s fee sink, not by the keeper. On
         the way back the protocol takes {PROFIT_SPLIT_PCT.treasury}% of realized
         profits, with the other {PROFIT_SPLIT_PCT.buyback}% buying and burning
         supply. No launch fee, beyond gas.
@@ -459,7 +459,7 @@ function EconomicsBody() {
         re-accumulating from the next fee.
       </p>
       <p>
-        One honest caveat on exposure: the coin&apos;s spot price does not
+        One honest caveat on exposure: the token&apos;s spot price does not
         mechanically track its underlying. Exposure reaches holders as{" "}
         <K>realized flows</K>: take-profits that become buybacks and burns, not as
         a continuously repricing reserve. That looseness is what keeps a liquidation
@@ -474,7 +474,7 @@ function VerifyBody() {
     <>
       <p>
         Every launch, fee, burn, deposit and buyback is a confirmed transaction on
-        Robinhood Chain. Each coin&apos;s page links its addresses out to the
+        Robinhood Chain. Each token&apos;s page links its addresses out to the
         explorer: the token, the pool on the v4 PoolManager (<A href={explorerAddr(V4_POOL_MANAGER)}>{short(V4_POOL_MANAGER)}</A>),
         the hook that locks it, the fee hook, the fee destination, the router, the
         live Lighter account.
@@ -516,7 +516,7 @@ function RisksBody() {
         The keeper is a live dependency: if it stops, deposits, take-profits and
         buybacks pause; fees keep arriving in USDG at the fee destination, because
         the hook does that without us. The perp leg carries real market risk:
-        leverage cuts both ways, and a coin&apos;s treasury can be liquidated. The
+        leverage cuts both ways, and a token&apos;s treasury can be liquidated. The
         master secret that derives sub-wallets is held by the operator: it cannot
         rug the liquidity (the lock makes that impossible) but it does control the
         flow of collected fees. Doppler&apos;s contracts are audited but not by us;
@@ -525,7 +525,7 @@ function RisksBody() {
       </p>
       <p>
         Read the contracts, check the addresses, verify the burns. Then pick a
-        market, a side, a leverage, and a coin you actually believe in.
+        market, a side, a leverage, and a token you actually believe in.
       </p>
     </>
   );
@@ -539,20 +539,20 @@ const GROUPS: { label: string; pages: Omit<DocPage, "group" | "n">[] }[] = [
     ],
   },
   {
-    label: "The coin",
+    label: "The token",
     pages: [
       { slug: "launch", title: "Launch", lede: "One transaction builds the token, the pool, the lock and the fee hook.", body: LaunchBody },
       { slug: "fees", title: "Fees, always in USDG", lede: "Chosen at launch, charged on every swap, delivered in USDG.", body: FeesBody },
       { slug: "protection", title: "Launch protection", lede: "A fee that opens high and decays over a window the creator picks.", body: ProtectionBody },
       { slug: "contracts", title: "Contract guarantees", lede: "What each contract guarantees, and why the pool cannot be pulled.", body: ContractsBody },
-      { slug: "fee-destinations", title: "Fee destinations", lede: "Every coin has a wallet of its own, and nobody can drain it.", body: FeeDestinationsBody },
+      { slug: "fee-destinations", title: "Fee destinations", lede: "Every token has a wallet of its own, and nobody can drain it.", body: FeeDestinationsBody },
     ],
   },
   {
     label: "The perp engine",
     pages: [
       { slug: "markets", title: "Market universe", lede: "Any perp Lighter lists, long or short, up to the market's cap.", body: MarketsBody },
-      { slug: "keeper", title: "The keeper loop", lede: "Every 15 seconds, the same four steps for every coin.", body: KeeperBody },
+      { slug: "keeper", title: "The keeper loop", lede: "Every 15 seconds, the same four steps for every token.", body: KeeperBody },
       { slug: "lifecycle", title: "Position lifecycle", lede: "From the first deposit to a liquidation, and what each one touches.", body: LifecycleBody },
       { slug: "tranches", title: "Tranches & take-profit", lede: "Every deposit runs toward a target of its own.", body: TranchesBody },
       { slug: "profits", title: "Profits, buybacks, burns", lede: "How a take-profit becomes a buyback and a burn.", body: ProfitsBody },

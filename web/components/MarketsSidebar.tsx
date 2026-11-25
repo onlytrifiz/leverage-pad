@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Reveal, RevealItem, LivePulse } from "@/components/motion";
-import { Sparkles } from "@/components/animate-ui/icons/sparkles";
+import { LaunchIcon } from "@/components/brand/LaunchIcon";
 import { fmtMark, fmtChange } from "@/lib/format";
 import AssetIcon from "./AssetIcon";
 import { useMarkets } from "./markets-provider";
@@ -54,8 +54,8 @@ export default function MarketsSidebar() {
         nativeButton={false}
         render={<Link href="/launch" />}
       >
-        <Sparkles aria-hidden size={15} animateOnHover />
-        Launch a coin
+        <LaunchIcon />
+        Launch a token
       </Button>
     </div>
   );

@@ -36,14 +36,18 @@ const plexMono = IBM_Plex_Mono({
 // intro pad themselves with env(safe-area-inset-*), which is zero without it
 export const viewport: Viewport = { viewportFit: "cover" };
 
+// icons and share images are files next to this one (favicon, icon, apple-icon, opengraph-image)
+
 export const metadata: Metadata = {
+  // share images need absolute URLs; www is the host the bare domain redirects to
+  metadataBase: new URL("https://www.multiply.cash"),
   title: {
-    default: "multiply.cash: coins backed by Lighter perps",
+    default: "multiply.cash: tokens fueled by perps",
     template: "%s · multiply.cash",
   },
   description:
-    "Coins with liquidity locked forever on Robinhood Chain. Trading fees fund a leveraged perp on Lighter; profits buy back and burn.",
-  icons: { icon: "/logo-transparent.png" },
+    "Every token runs a leveraged perp on the asset its creator picks. When it wins, it buys the token back and burns it.",
+  twitter: { card: "summary_large_image" },
 };
 
 export default function RootLayout({

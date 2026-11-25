@@ -8,12 +8,15 @@ import { cn } from "cn";
  * mask is what lets one bull print in forest ink on the mint paper and in mint
  * on the night of the intro, with no second asset and no filter tricks.
  *
- * Source: two Nano Banana Pro engravings, converted with sharp (trim, invert,
+ * Source: Nano Banana Pro engravings, converted with sharp (trim, invert,
  * levels into the alpha channel). The aspect ratios below are those files'.
  */
 const ART = {
   bull: { src: "/art/bull.webp", ratio: 1328 / 1177 },
   bear: { src: "/art/bear.webp", ratio: 1600 / 891 },
+  engine: { src: "/art/engine.webp", ratio: 1200 / 1267 },
+  storm: { src: "/art/storm.webp", ratio: 2000 / 669 },
+  fuel: { src: "/art/fuel.webp", ratio: 1400 / 796 },
 } as const;
 
 export type ArtName = keyof typeof ART;

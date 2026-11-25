@@ -25,7 +25,7 @@ export default async function MarketPage() {
   const pnl = Object.fromEntries(positions.map((p) => [p.token.toLowerCase(), p.pnlUsd]));
 
   const stats = [
-    { k: "Coins", v: <AnimatedNumber value={coins.length} format="plain" countOnMount /> },
+    { k: "Tokens", v: <AnimatedNumber value={coins.length} format="plain" countOnMount /> },
     { k: "Engines live", v: <AnimatedNumber value={liveEngines} format="plain" countOnMount /> },
     { k: "Fees put to work", v: <AnimatedNumber value={totalFees} format="usd" countOnMount /> },
     { k: "Tokens burned", v: <AnimatedNumber value={totalBurned} format="int" countOnMount /> },
@@ -44,7 +44,7 @@ export default async function MarketPage() {
                 The <span className="type-engraved [--ink-c:var(--color-mint)]">market</span>
               </h1>
               <p className="mt-3 max-w-[48ch] text-lg text-night-ink-2">
-                Every coin and the trade its fees are running. Sort by what you care about.
+                Every token and the trade its fees are running. Sort by what you care about.
               </p>
             </div>
             <dl className="grid grid-cols-2 gap-x-10 gap-y-4 sm:flex sm:flex-wrap">
@@ -69,7 +69,7 @@ export default async function MarketPage() {
         <div className="mt-14 grid grid-cols-1 gap-10 xl:grid-cols-[minmax(0,1fr)_260px]">
           <div className="min-w-0">
             <div className="mb-5 flex items-center justify-between">
-              <h2 className="font-display text-2xl font-semibold">Coins</h2>
+              <h2 className="font-display text-2xl font-semibold">Tokens</h2>
               <AutoRefresh everyMs={30_000} />
             </div>
             <CoinsBoard items={coins} pnl={pnl} />

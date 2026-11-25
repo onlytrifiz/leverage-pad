@@ -122,7 +122,7 @@ export default async function DocPage({ params }: { params: Promise<{ slug: stri
                 <span className="flex items-center justify-end gap-1.5 text-xs text-brand group-hover:text-white/80">
                   Ready <ArrowRight size={13} aria-hidden />
                 </span>
-                <span className="mt-1 block truncate font-medium text-brand group-hover:text-white">Launch a coin</span>
+                <span className="mt-1 block truncate font-medium text-brand group-hover:text-white">Launch a token</span>
               </Link>
             )}
           </nav>

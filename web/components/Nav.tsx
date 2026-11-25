@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { cn } from "cn";
 import { motion } from "motion/react";
 import { BookOpenText, ChartBar, RocketLaunch, Storefront, type Icon } from "@phosphor-icons/react";
+import { LaunchIcon } from "@/components/brand/LaunchIcon";
+import { LogoMark } from "@/components/brand/LogoMark";
+import { Button } from "@/components/ui/button";
 import { WalletButton } from "@/components/wallet";
 
 const LINKS: { href: string; label: string; icon: Icon }[] = [
@@ -20,7 +22,7 @@ const LINKS: { href: string; label: string; icon: Icon }[] = [
  *
  * The wrapper is in the flow and transparent, so the pill floats over the page with a margin
  * around it; its height (margins included) is the `--nav-h` token the sticky pieces below read.
- * On a phone the links leave for the bottom bar and the pill keeps the logo and the wallet.
+ * On a phone the links and Launch leave for the bottom bar and the pill keeps the logo and the wallet.
  */
 export default function Nav() {
   const pathname = usePathname();
@@ -30,14 +32,14 @@ export default function Nav() {
     <header className="pointer-events-none sticky top-0 z-30 px-3 pt-3 pb-2 sm:px-5">
       <div className="pointer-events-auto mx-auto flex h-14 w-full max-w-[1320px] min-w-0 items-center gap-6 rounded-2xl border border-border bg-card/92 pr-2 pl-4 shadow-[0_10px_32px_-16px_rgba(12,52,32,0.35)] backdrop-blur-xl">
         <Link href="/" className="flex shrink-0 items-center gap-2">
-          <Image src="/logo-transparent.png" alt="" width={26} height={26} priority />
+          <LogoMark />
           <span className="font-display text-lg font-bold tracking-tight text-ink">
             multiply<span className="text-brand">.cash</span>
           </span>
         </Link>
 
         <nav aria-label="Main" className="hidden min-w-0 items-center gap-1 sm:flex">
-          {LINKS.map((l) => {
+          {LINKS.filter((l) => l.href !== "/launch").map((l) => {
             const active = isActive(l.href);
             return (
               <Link
@@ -63,7 +65,18 @@ export default function Nav() {
           })}
         </nav>
 
-        <div className="ml-auto flex shrink-0 items-center gap-3">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {/* an action, not a place: it sits with the wallet. On a phone the bottom bar has it */}
+          <Button
+            size="lg"
+            variant="outline"
+            className="hidden border-brand/30 text-brand hover:bg-brand-soft hover:text-brand sm:inline-flex"
+            nativeButton={false}
+            render={<Link href="/launch" aria-current={isActive("/launch") ? "page" : undefined} />}
+          >
+            <LaunchIcon />
+            Launch
+          </Button>
           <WalletButton />
         </div>
       </div>

@@ -82,7 +82,7 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
   }, [items, filter, sort, q, mountedAt]);
 
   return (
-    <section aria-label="Coins">
+    <section aria-label="Tokens">
       {/* toolbar */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex max-w-full min-w-0 gap-1 overflow-x-auto rounded-xl bg-panel-2 p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -107,7 +107,7 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
 
         <div className="ml-auto flex w-full min-w-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
           <label className="relative min-w-0 basis-full sm:w-[220px] sm:basis-auto">
-            <span className="sr-only">Search coins</span>
+            <span className="sr-only">Search tokens</span>
             <Search size={15} className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-3" aria-hidden />
             <input
               value={q}
@@ -170,7 +170,7 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
         </motion.div>
       ) : (
         <div className="mt-6 overflow-hidden rounded-[18px] border border-line bg-panel">
-          {rows.length === 0 && <p className="p-6 text-sm text-ink-3">No coin matches. Try another filter.</p>}
+          {rows.length === 0 && <p className="p-6 text-sm text-ink-3">No token matches. Try another filter.</p>}
           {rows.map((item, i) => {
             const s = since(item);
             const p = pnl[item.coin.token.toLowerCase()] ?? null;
@@ -211,7 +211,7 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
       )}
 
       {view === "grid" && rows.length === 0 && (
-        <p className="mt-4 text-sm text-ink-3">No coin matches. Try another filter, or launch the first one.</p>
+        <p className="mt-4 text-sm text-ink-3">No token matches. Try another filter, or launch the first one.</p>
       )}
     </section>
   );
@@ -221,7 +221,7 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
 function OpenSlot() {
   const { markets } = useMarkets();
   const top = [...markets]
-    .filter((m) => m.change24h != null)
+    .filter((m) => m.launchable && m.change24h != null)
     .sort((a, b) => Math.abs(b.change24h!) - Math.abs(a.change24h!))[0];
   const side = (top?.change24h ?? 0) >= 0 ? "long" : "short";
   const href = top ? `/launch?market=${encodeURIComponent(top.symbol)}&side=${side}` : "/launch";
@@ -238,7 +238,7 @@ function OpenSlot() {
         <Plus size={20} aria-hidden />
       </span>
       <div className="relative">
-        <div className="font-display text-2xl font-bold tracking-[-0.02em] text-ink">Your coin here</div>
+        <div className="font-display text-2xl font-bold tracking-[-0.02em] text-ink">Your token here</div>
         {top ? (
           <p className="mt-1.5 text-sm text-ink-2">
             <span className="inline-flex items-center gap-1 align-middle">

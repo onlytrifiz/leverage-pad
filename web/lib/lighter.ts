@@ -51,8 +51,34 @@ export async function allTokenLogos(): Promise<Record<string, TokenLogo>> {
   return out;
 }
 
+export type MarketKind = "stocks" | "crypto" | "commodities" | "preipo";
+
+/**
+ * The venue keeps the PRE_IPO tag on a name after it has listed. Anthropic has
+ * traded on Nasdaq as ANT since 2026-11-19, so both its markets are stocks.
+ */
+const LISTED = new Set(["ANT", "ANTHROPIC"]);
+/**
+ * Still trading, so tokens already on it keep working, but replaced by a market
+ * on the listed share: a new launch is sent to ANT.
+ */
+const REPLACED = new Set(["ANTHROPIC"]);
+
+/** the family a market is shown under, from the venue's own tags */
+function kindOf(symbol: string, assetType: string, categories: string[]): MarketKind {
+  if (assetType !== "RWA") return "crypto";
+  if (categories.includes("COMMODITIES")) return "commodities";
+  if (categories.includes("PRE_IPO") && !LISTED.has(symbol)) return "preipo";
+  return "stocks";
+}
+
 export type MarketRow = {
   symbol: string;
+  /** the venue's display name: "Uber Technologies, Inc." */
+  name: string;
+  kind: MarketKind;
+  /** a new token can be pointed at it */
+  launchable: boolean;
   marketId: number;
   mark: number | null;
   change24h: number | null; // percento
@@ -70,22 +96,38 @@ export type MarketRow = {
 
 /** tutti i mercati PERP di Lighter con mark, variazione e volume 24h */
 export async function allMarkets(): Promise<MarketRow[]> {
-  const j = await lighterGet(`/api/v1/orderBookDetails`);
+  const [j, list] = await Promise.all([
+    lighterGet(`/api/v1/orderBookDetails`),
+    lighterGet(`/api/v1/tokenlist`, 3600),
+  ]);
   if (!j || !Array.isArray(j.order_book_details)) return [];
+  const tags = new Map(
+    ((list?.tokens as Record<string, unknown>[] | undefined) ?? [])
+      .filter((t) => t.market === "PERPS")
+      .map((t) => [String(t.symbol), t])
+  );
+  // No market_id cut: ids below 255 and from 4095 up are both perps, and the type says which.
   const rows = (j.order_book_details as Record<string, unknown>[])
-    .filter((o) => o.market_type === "perp" && Number(o.market_id) < 2048)
-    .map((o) => ({
-      symbol: String(o.symbol),
-      marketId: Number(o.market_id),
-      mark: o.mark_price != null ? Number(o.mark_price) : null,
-      change24h: o.daily_price_change != null ? Number(o.daily_price_change) : null,
-      volume24h: o.daily_quote_token_volume != null ? Number(o.daily_quote_token_volume) : null,
-      status: String(o.status ?? ""),
-      maxLeverage:
-        Number(o.min_initial_margin_fraction) > 0
-          ? Math.floor(10_000 / Number(o.min_initial_margin_fraction) + 1e-9)
-          : null,
-    }));
+    .filter((o) => o.market_type === "perp" && o.status === "active")
+    .map((o) => {
+      const symbol = String(o.symbol);
+      const tag = tags.get(symbol);
+      return {
+        symbol,
+        name: String(tag?.name ?? symbol),
+        kind: kindOf(symbol, String(tag?.asset_type ?? "CRYPTO"), (tag?.categories as string[] | undefined) ?? []),
+        launchable: !REPLACED.has(symbol),
+        marketId: Number(o.market_id),
+        mark: o.mark_price != null ? Number(o.mark_price) : null,
+        change24h: o.daily_price_change != null ? Number(o.daily_price_change) : null,
+        volume24h: o.daily_quote_token_volume != null ? Number(o.daily_quote_token_volume) : null,
+        status: String(o.status ?? ""),
+        maxLeverage:
+          Number(o.min_initial_margin_fraction) > 0
+            ? Math.floor(10_000 / Number(o.min_initial_margin_fraction) + 1e-9)
+            : null,
+      };
+    });
   return rows.sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0));
 }
 

@@ -174,7 +174,7 @@ export async function POST(req: Request) {
       symbol,
       description:
         description ||
-        `${name} ($${symbol}): a coin whose trading fees run a ${leverage}x ${side} on ${market}. Launched on multiply.cash.`,
+        `${name} ($${symbol}): a token whose trading fees run a ${leverage}x ${side} on ${market}. Launched on multiply.cash.`,
       image: imageUri,
       x: socials.x,
       telegram: socials.telegram,

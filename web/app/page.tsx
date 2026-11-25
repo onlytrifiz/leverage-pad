@@ -7,6 +7,8 @@ import TickerTape from "@/components/TickerTape";
 import HeroStage from "@/components/home/HeroStage";
 import { RevealBlock } from "@/components/motion";
 import SmoothScroll from "@/components/home/SmoothScroll";
+import ThreeWays from "@/components/home/ThreeWays";
+import { EngravedArt } from "@/components/brand/EngravedArt";
 import PayoffSimulator from "@/components/home/PayoffSimulator";
 import FeeDestination from "@/components/home/FeeDestination";
 import EngineLoop from "@/components/home/EngineLoop";
@@ -27,7 +29,7 @@ function pickFeatured(coins: CoinListItem[]): CoinListItem | null {
  * The home page reads in two halves.
  *
  * The top half explains the product to someone who has never seen it: the
- * claim, an instrument to push, where a fee goes, and the loop. Then a preview
+ * claim, what sets it apart, an instrument to push, the loop and its fuel. Then a preview
  * of the live coins; the full board is its own page, /market.
  */
 export default async function Home() {
@@ -51,8 +53,21 @@ export default async function Home() {
           <TickerTape />
         </div>
 
-        {/* the asymmetry, as an instrument */}
+        {/* a memecoin, a perp, and both in one token */}
         <Container width="landing" className="pt-20 sm:pt-28">
+          <RevealBlock className="max-w-[640px]">
+            <h2 className="text-4xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-5xl">The best half of each.</h2>
+            <p className="mt-4 max-w-[52ch] text-lg leading-relaxed text-ink-2">
+              Tokens need volume to run, and markets move without them. A token here has a market inside.
+            </p>
+          </RevealBlock>
+          <div className="mt-10 md:mt-4">
+            <ThreeWays />
+          </div>
+        </Container>
+
+        {/* the asymmetry, as an instrument */}
+        <Container width="landing" className="pt-24 sm:pt-32">
           <RevealBlock className="max-w-[640px]">
             <h2 className="text-4xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-5xl">
               Upside from the market. <span className="text-brand">Downside capped at the fees.</span>
@@ -67,23 +82,6 @@ export default async function Home() {
           </RevealBlock>
         </Container>
 
-        {/* where a fee goes */}
-        <Container width="landing" className="pt-24 sm:pt-32">
-          <div className="grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] lg:gap-20">
-            <RevealBlock className="min-w-0">
-              <h2 className="text-4xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-5xl">
-                Where a $100 fee goes.
-              </h2>
-              <p className="mt-4 max-w-[40ch] text-lg leading-relaxed text-ink-2">
-                Most launchpads keep the fee. Here, most of it becomes working capital for the coin that paid it.
-              </p>
-            </RevealBlock>
-            <div className="min-w-0 lg:pt-3">
-              <FeeDestination />
-            </div>
-          </div>
-        </Container>
-
         {/* the loop */}
         <Container width="landing" className="pt-24 sm:pt-32">
           <RevealBlock className="max-w-[640px]">
@@ -93,6 +91,24 @@ export default async function Home() {
           </RevealBlock>
           <div className="mt-12">
             <EngineLoop />
+          </div>
+        </Container>
+
+        {/* what loads the position */}
+        <Container width="landing" className="pt-24 sm:pt-32">
+          <div className="grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] lg:items-center lg:gap-20">
+            <RevealBlock className="min-w-0">
+              <h2 className="text-4xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-5xl">
+                What fuels the perp.
+              </h2>
+              <p className="mt-4 max-w-[40ch] text-lg leading-relaxed text-ink-2">
+                Trading loads it, the market fires it. Most of every fee goes into the position, in USDG.
+              </p>
+              <EngravedArt name="fuel" className="mt-8 max-w-[420px] text-ink/85" style={{ maskImage: "linear-gradient(to right, black 82%, transparent), url(/art/fuel.webp)", WebkitMaskImage: "linear-gradient(to right, black 82%, transparent), url(/art/fuel.webp)", maskSize: "100% 100%, contain", WebkitMaskSize: "100% 100%, contain", maskComposite: "intersect", WebkitMaskComposite: "source-in" }} />
+            </RevealBlock>
+            <div className="min-w-0 lg:pt-3">
+              <FeeDestination />
+            </div>
           </div>
         </Container>
 

@@ -115,8 +115,8 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
               {fmtUsd(reserve)} of {fmtThreshold(OPEN_GATE_USD)} collected.
             </p>
             <p className="mt-2 max-w-[52ch] text-base leading-relaxed text-ink-2">
-              The position opens on Lighter as soon as the coin&apos;s fees reach the gate: {coin.market}, {coin.side},{" "}
-              {coin.leverage}x. Every trade on the coin brings it closer.
+              The position opens on Lighter as soon as the token&apos;s fees reach the gate: {coin.market}, {coin.side},{" "}
+              {coin.leverage}x. Every trade on the token brings it closer.
             </p>
           </div>
         </div>

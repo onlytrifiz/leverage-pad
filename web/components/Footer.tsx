@@ -1,5 +1,5 @@
 import Link from "next/link";
-import Image from "next/image";
+import { LogoMark } from "@/components/brand/LogoMark";
 import { CHAIN, explorerAddr } from "@/lib/clientConfig";
 import { IntroLink } from "@/components/intro/IntroButton";
 import { Reveal, RevealItem } from "@/components/motion";
@@ -14,7 +14,7 @@ const COLUMNS: { heading: string; links: { label: string; href: string; external
     heading: "Product",
     links: [
       { label: "Market", href: "/market" },
-      { label: "Launch a coin", href: "/launch" },
+      { label: "Launch a token", href: "/launch" },
       { label: "Stats", href: "/stats" },
     ],
   },
@@ -36,13 +36,13 @@ export default function Footer({ router }: { router?: string }) {
         <Reveal className="grid grid-cols-2 gap-x-8 gap-y-10 text-sm md:grid-cols-[minmax(0,1.6fr)_repeat(3,minmax(0,1fr))]">
           <RevealItem className="col-span-2 md:col-span-1">
             <Link href="/" className="inline-flex items-center gap-2">
-              <Image src="/logo-transparent.png" alt="" width={24} height={24} />
+              <LogoMark />
               <span className="font-display text-lg font-bold tracking-tight text-ink">
                 multiply<span className="text-brand">.cash</span>
               </span>
             </Link>
             <p className="mt-3 max-w-[34ch] leading-relaxed text-ink-3">
-              Coins whose trading fees run a leveraged trade. Profits buy the coin back and burn it.
+              Tokens fueled by perps. When the position wins, it buys the token back and burns it.
             </p>
             <IntroLink className="mt-4 text-sm font-medium text-brand underline-offset-4 hover:underline" />
           </RevealItem>

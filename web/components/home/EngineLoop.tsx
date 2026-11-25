@@ -18,15 +18,15 @@ import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
  */
 
 const STEPS = [
-  { icon: ArrowLeftRight, title: "A swap", text: "Anyone buys or sells the coin on its pool." },
+  { icon: ArrowLeftRight, title: "A swap", text: "Anyone buys or sells the token on its pool." },
   {
     icon: CircleDollarSign,
     title: "The fee, in USDG",
-    text: `1 to 5%, converted inside the same swap. ${FEE_SPLIT_PCT.engine}% lands in the coin's wallet.`,
+    text: `1 to 5%, converted inside the same swap. ${FEE_SPLIT_PCT.engine}% lands in the token's wallet.`,
   },
   { icon: TrendingUp, title: "A leveraged perp", text: "Opened on Lighter at the asset, side and leverage set at launch." },
   { icon: Target, title: "Take profit", text: "Each deposit banks at the take-profit set at launch, up to +500% at high leverage." },
-  { icon: Flame, title: "Buyback & burn", text: `${PROFIT_SPLIT_PCT.buyback}% of the profit buys the coin and burns it.` },
+  { icon: Flame, title: "Buyback & burn", text: `${PROFIT_SPLIT_PCT.buyback}% of the profit buys the token and burns it.` },
 ];
 
 export default function EngineLoop() {
@@ -89,7 +89,7 @@ export default function EngineLoop() {
       </ol>
       <p className="js-return mt-8 flex items-center gap-3 text-base text-ink-2 md:mt-12">
         <span aria-hidden className="h-px w-10 bg-brand" />
-        A scarcer coin draws more trading: more fees, a bigger position, and round again.
+        More trading means more fees and a bigger position. No trading, and the position already open keeps working.
       </p>
     </div>
   );

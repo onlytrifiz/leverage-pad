@@ -39,7 +39,7 @@ export default async function StatsPage() {
   const maxBurned = Math.max(1, ...coins.map((c) => c.burnedTokens));
 
   const totals = [
-    { k: "Coins", v: <AnimatedNumber value={coins.length} format="plain" countOnMount /> },
+    { k: "Tokens", v: <AnimatedNumber value={coins.length} format="plain" countOnMount /> },
     { k: "Engines live", v: <AnimatedNumber value={liveEngines} format="plain" countOnMount /> },
     { k: "Fees put to work", v: <AnimatedNumber value={totalFees} format="usd" countOnMount /> },
     { k: "Combined market cap", v: <AnimatedNumber value={totalMcap} format="usd" countOnMount /> },
@@ -67,12 +67,12 @@ export default async function StatsPage() {
             )}
           </div>
           <p className="mt-3 max-w-[50ch] text-lg text-night-ink-2">
-            Every coin launched, what its engine is holding, and what it has burned so far.
+            Every token launched, what its engine is holding, and what it has burned so far.
           </p>
 
           <div className="mt-10 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-end">
             <div className="min-w-0">
-              <div className="text-xs tracking-wide text-night-ink-2">Tokens burned, all coins</div>
+              <div className="text-xs tracking-wide text-night-ink-2">Supply burned, all tokens</div>
               <div className="num mt-2 truncate text-[clamp(52px,9vw,112px)] leading-none font-semibold tracking-[-0.03em] text-mint">
                 <AnimatedNumber value={totalBurned} format="int" countOnMount />
               </div>
@@ -97,12 +97,12 @@ export default async function StatsPage() {
 
         <section className="mt-16">
           <div className="mb-5 flex flex-wrap items-baseline justify-between gap-3">
-            <h2 className="font-display text-2xl font-semibold">Every coin</h2>
+            <h2 className="font-display text-2xl font-semibold">Every token</h2>
             <AutoRefresh everyMs={30_000} />
           </div>
 
           <div className={cn("hidden gap-4 border-b border-line px-5 pb-3 md:grid", LEDGER_COLS)}>
-            {["#", "Coin", "Engine", "Market cap", "Fees", "Burned", "Status"].map((h) => (
+            {["#", "Token", "Engine", "Market cap", "Fees", "Burned", "Status"].map((h) => (
               <span key={h} className="text-xs font-medium text-ink-3">
                 {h}
               </span>
@@ -111,7 +111,7 @@ export default async function StatsPage() {
 
           {ledger.length === 0 ? (
             <p className="rounded-[18px] border border-dashed border-line-2 px-6 py-10 text-center text-ink-3">
-              No coins yet.{" "}
+              No tokens yet.{" "}
               <Link href="/launch" className="font-medium text-brand underline underline-offset-2">
                 Launch the first one
               </Link>
@@ -229,7 +229,7 @@ function Exposure({ positions }: { positions: OpenPosition[] }) {
 
       {rows.length === 0 ? (
         <p className="mt-6 text-sm text-ink-3">
-          No position is open right now. Each engine opens once its coin has collected enough fees.
+          No position is open right now. Each engine opens once its token has collected enough fees.
         </p>
       ) : (
         <>

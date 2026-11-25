@@ -2,7 +2,7 @@ import Link from "next/link";
 import NotFoundMark from "@/components/NotFoundMark";
 import { Container } from "@/components/ui/container";
 import { Button } from "@/components/ui/button";
-import { Sparkles } from "@/components/animate-ui/icons/sparkles";
+import { LaunchIcon } from "@/components/brand/LaunchIcon";
 
 export const metadata = { title: "Page not found" };
 
@@ -19,7 +19,7 @@ export default function NotFound() {
       <NotFoundMark />
       <h1 className="mt-6 text-4xl font-bold">Nothing at this address</h1>
       <p className="mt-3 max-w-[440px] text-base leading-relaxed text-ink-2">
-        A coin page needs the full contract address, and a token that has not been launched
+        A token page needs the full contract address, and a token that has not been launched
         here will not have one. If you pasted an address, check it did not lose a character
         on the way.
       </p>
@@ -28,8 +28,8 @@ export default function NotFound() {
           Back to the market
         </Button>
         <Button size="xl" variant="outline" nativeButton={false} render={<Link href="/launch" />}>
-          <Sparkles aria-hidden size={15} animateOnHover />
-          Launch a coin
+          <LaunchIcon />
+          Launch a token
         </Button>
       </div>
     </Container>

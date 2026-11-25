@@ -19,7 +19,7 @@ export default function MoversStrip({ tone = "paper" }: { tone?: "paper" | "nigh
   const night = tone === "night";
   const { markets, loaded } = useMarkets();
   const movers = [...markets]
-    .filter((m) => m.change24h != null && m.mark != null)
+    .filter((m) => m.launchable && m.change24h != null && m.mark != null)
     .sort((a, b) => Math.abs(b.change24h!) - Math.abs(a.change24h!))
     .slice(0, 10);
 
@@ -28,7 +28,7 @@ export default function MoversStrip({ tone = "paper" }: { tone?: "paper" | "nigh
       <div className="flex items-end justify-between gap-4">
         <h2 className={cn("font-display text-2xl font-semibold", night && "text-night-ink")}>Moving today</h2>
         <span className={cn("hidden text-xs sm:block", night ? "text-night-ink-2" : "text-ink-3")}>
-          Launch a coin on the move, one tap
+          Launch a token on the move, one tap
         </span>
       </div>
       {/* scroll-padding matches the gutter: snapping otherwise parks the first card on the window's edge */}

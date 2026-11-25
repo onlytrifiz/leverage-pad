@@ -55,7 +55,7 @@ export default function ManageEngine({ coin }: { coin: Coin }) {
     <section className="rounded-[18px] border border-brand/40 bg-panel p-5 sm:p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="font-display text-xl font-semibold">Manage the engine</h2>
-        <span className="text-xs text-ink-3">Only you see this: you launched the coin as managed</span>
+        <span className="text-xs text-ink-3">Only you see this: you launched the token as managed</span>
       </div>
       <p className="mt-2 max-w-[60ch] text-sm leading-relaxed text-ink-2">
         A change is announced on-chain and takes effect {MANAGED_DELAY_HOURS} hours later, so holders see it coming. Market and

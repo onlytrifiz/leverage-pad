@@ -31,7 +31,7 @@ export default function DocsIndex() {
             How the <span className="type-engraved [--ink-c:var(--color-mint)]">engine</span> works.
           </h1>
           <p className="mt-5 max-w-[62ch] text-lg leading-[1.65] text-night-ink-2">
-            multiply.cash launches coins whose trading fees fund a leveraged perpetual position on Lighter: BTC,
+            multiply.cash launches tokens fueled by perps: their trading fees fund a leveraged position on Lighter, on BTC,
             stocks, even pre-IPO markets. Profits flow back on-chain and burn supply. The market is a Uniswap v4 pool
             built by Doppler, locked from the first block, with no owner and no admin key.
           </p>

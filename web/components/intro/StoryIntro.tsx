@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import Image from "next/image";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { Pause, Play, X } from "lucide-react";
 import { cn } from "cn";
+import { LogoMark } from "@/components/brand/LogoMark";
 import { gsap } from "@/lib/gsap";
 import { SLIDES } from "./slides";
 
@@ -144,7 +144,7 @@ export default function StoryIntro({ onClose }: { onClose: () => void }) {
       {/* top bar */}
       <div className="relative z-10 order-1 mx-auto flex w-full max-w-[1400px] items-center justify-between gap-4 px-4 pt-[max(16px,env(safe-area-inset-top))] sm:px-8 sm:pt-6">
         <span className="flex items-center gap-2">
-          <Image src="/logo-transparent.png" alt="" width={26} height={26} priority />
+          <LogoMark tone="night" />
           <span className="font-display text-lg font-bold tracking-tight">
             multiply<span className="text-mint">.cash</span>
           </span>
@@ -165,7 +165,7 @@ export default function StoryIntro({ onClose }: { onClose: () => void }) {
             onClick={onClose}
             className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-night-line px-3 text-sm font-medium text-night-ink transition-colors hover:border-night-ink-2"
           >
-            Skip intro
+            Skip<span className="-ml-0.5 max-[359px]:hidden">intro</span>
             <X size={14} aria-hidden />
           </button>
         </div>

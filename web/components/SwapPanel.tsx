@@ -303,7 +303,7 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
 
         {tradingOff ? (
           <Button size="xl" className="w-full" disabled>
-            {demo ? "Demo coin, trading off" : "Pool unreachable"}
+            {demo ? "Demo token, trading off" : "Pool unreachable"}
           </Button>
         ) : (
           <ChainGate connectLabel="Connect wallet to trade">

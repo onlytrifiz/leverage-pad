@@ -101,11 +101,11 @@ export default function HeroStage({
             transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
             className="font-display text-[clamp(52px,8.4vw,116px)] leading-[0.92] font-bold tracking-[-0.045em] text-night-ink"
           >
-            Every trade
+            Tokens
             <br />
-            funds
+            fueled by
             <br />
-            <span className="type-engraved whitespace-nowrap pr-[0.04em] [--ink-c:var(--color-mint)]">a trade.</span>
+            <span className="type-engraved whitespace-nowrap pr-[0.04em] [--ink-c:var(--color-mint)]">perps.</span>
           </motion.h1>
           <motion.p
             initial={{ opacity: 0, y: 14 }}
@@ -113,7 +113,7 @@ export default function HeroStage({
             transition={{ duration: 0.7, delay: 0.15, ease: [0.16, 1, 0.3, 1] }}
             className="mt-7 max-w-[40ch] text-lg leading-relaxed text-night-ink-2 sm:text-xl sm:leading-relaxed"
           >
-            Swap fees open a leveraged perp on the asset you pick. Wins buy the coin back and burn it.
+            Every token runs a leveraged perp on the asset you pick. When it wins, it buys the token back and burns it.
           </motion.p>
           <motion.div
             initial={{ opacity: 0, y: 14 }}
@@ -125,7 +125,7 @@ export default function HeroStage({
               href="/launch"
               className="inline-flex h-12 items-center gap-2 rounded-xl bg-mint px-6 text-md font-semibold text-night shadow-[0_10px_30px_-10px_rgba(140,232,176,0.6)] transition-transform hover:-translate-y-0.5 active:translate-y-0"
             >
-              Launch a coin
+              Launch a token
               <ArrowUpRight size={16} aria-hidden />
             </Link>
             <button
@@ -148,8 +148,8 @@ export default function HeroStage({
         >
           <motion.div style={reduced ? undefined : { y: noteY, rotate: noteRotate }}>
             <Banknote
-              symbol={coin?.symbol ?? "YOURCOIN"}
-              name={coin?.name ?? "Your coin, backed by the asset you pick"}
+              symbol={coin?.symbol ?? "TICKER"}
+              name={coin?.name ?? "Your token, backed by the asset you pick"}
               market={coin?.market ?? "NVDA"}
               side={coin?.side ?? "long"}
               leverage={coin?.leverage ?? 10}
@@ -178,7 +178,7 @@ export default function HeroStage({
                 href={`/token/${coin.token}`}
                 className="ml-auto inline-flex items-center gap-1 font-semibold text-mint hover:underline"
               >
-                {featured?.demo ? "Demo coin" : `Open $${coin.symbol}`}
+                {featured?.demo ? "Demo token" : `Open $${coin.symbol}`}
                 <ArrowUpRight size={14} aria-hidden />
               </Link>
             ) : null}
@@ -190,10 +190,10 @@ export default function HeroStage({
       <div className="mx-auto w-full max-w-[1320px] px-4 pb-10 sm:px-5 sm:pb-14">
         <dl className="grid grid-cols-2 gap-y-6 border-t border-night-line pt-7 md:grid-cols-4">
           {[
-            { k: "Coins launched", v: <AnimatedNumber value={coins} format="plain" countOnMount /> },
+            { k: "Tokens launched", v: <AnimatedNumber value={coins} format="plain" countOnMount /> },
             { k: "Engines live", v: <AnimatedNumber value={liveEngines} format="plain" countOnMount /> },
             { k: "Fees put to work", v: <AnimatedNumber value={totalFees} format="usd" countOnMount /> },
-            { k: "Tokens burned", v: <AnimatedNumber value={totalBurned} format="int" countOnMount /> },
+            { k: "Supply burned", v: <AnimatedNumber value={totalBurned} format="int" countOnMount /> },
           ].map((s, i) => (
             <div key={s.k} className={cn("min-w-0 pr-4", i % 2 === 1 && "md:border-l md:border-night-line md:pl-6", i >= 2 && "md:border-l md:border-night-line md:pl-6")}>
               <dt className="text-xs tracking-wide text-night-ink-2">{s.k}</dt>

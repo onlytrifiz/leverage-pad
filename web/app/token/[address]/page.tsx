@@ -26,7 +26,7 @@ export async function generateMetadata({
 }) {
   const { address } = await params;
   const detail = await coinDetail(address);
-  if (!detail) return { title: "Coin not found" };
+  if (!detail) return { title: "Token not found" };
   return {
     title: `$${detail.coin.symbol} · ${detail.coin.leverage}× ${detail.coin.side} ${detail.coin.market}`,
     description: `${detail.coin.name}: trading fees fund a ${detail.coin.leverage}× ${detail.coin.side} perp on ${detail.coin.market}, profits buy back and burn.`,
@@ -118,7 +118,7 @@ function TradeColumn({ detail }: { detail: NonNullable<Awaited<ReturnType<typeof
         <PanelBody className="pt-3.5">
           <p className="text-xs leading-relaxed text-ink-3">
             Every fee lands here in USDG, converted by the pool&apos;s hook in the same swap. From here it funds the
-            position; coins that arrive are burned.
+            position; tokens that arrive are burned.
           </p>
         </PanelBody>
       </Panel>

@@ -2,6 +2,7 @@
 
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
+import { OPEN_GATE_LABEL } from "@/lib/thresholds";
 
 /**
  * The questions people actually ask before buying a coin like this, answered
@@ -9,6 +10,16 @@ import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
  * where the long version lives.
  */
 const QA: { q: string; a: React.ReactNode }[] = [
+  {
+    q: "Does it work with no volume?",
+    a: (
+      <p>
+        Once it is loaded, yes. Trading fees fund the position, so a token needs some volume first; the position
+        opens when {OPEN_GATE_LABEL} of fees have reached it. From there it follows the asset, and takes its profit
+        and buys back, whether or not anyone is trading the token.
+      </p>
+    ),
+  },
   {
     q: "What happens if the position gets liquidated?",
     a: (
@@ -20,11 +31,11 @@ const QA: { q: string; a: React.ReactNode }[] = [
     ),
   },
   {
-    q: "Does a falling asset push the coin down?",
+    q: "Does a falling asset push the token down?",
     a: (
       <p>
-        Not mechanically. The engine never sells the coin: its only trade on the pool is the buyback. The
-        coin&apos;s price is set by the people trading it, and the asset&apos;s trend only ever reaches it as buys.
+        Not mechanically. The engine never sells the token: its only trade on the pool is the buyback. The
+        token&apos;s price is set by the people trading it, and the asset&apos;s trend only ever reaches it as buys.
       </p>
     ),
   },
@@ -33,7 +44,7 @@ const QA: { q: string; a: React.ReactNode }[] = [
     a: (
       <p>
         No. Liquidity is locked by Doppler&apos;s contracts from the first block, with no LP token to withdraw.
-        The creator gets no share of the fees and holds no key to the coin&apos;s wallet or its Lighter account.
+        The creator gets no share of the fees and holds no key to the token&apos;s wallet or its Lighter account.
       </p>
     ),
   },
@@ -41,9 +52,9 @@ const QA: { q: string; a: React.ReactNode }[] = [
     q: "Where exactly do the trading fees go?",
     a: (
       <p>
-        {FEE_SPLIT_PCT.engine}% to the coin&apos;s own wallet, which funds its position. {FEE_SPLIT_PCT.treasury}% to
+        {FEE_SPLIT_PCT.engine}% to the token&apos;s own wallet, which funds its position. {FEE_SPLIT_PCT.treasury}% to
         the protocol and {FEE_SPLIT_PCT.doppler}% to Doppler for the market infrastructure. All of it settles in
-        USDG, never in coins waiting to be sold.
+        USDG, never in tokens waiting to be sold.
       </p>
     ),
   },
@@ -53,13 +64,13 @@ const QA: { q: string; a: React.ReactNode }[] = [
       <p>
         Every deposit is a tranche with its own target: the take-profit set at launch, from +10% up to 20 times the leverage (+500% at most) on
         its collateral. A deposit that has not banked after a week starts lowering its target, so profit never waits
-        forever. When one matures it closes, and {PROFIT_SPLIT_PCT.buyback}% of the profit buys the coin on its pool
+        forever. When one matures it closes, and {PROFIT_SPLIT_PCT.buyback}% of the profit buys the token on its pool
         and burns it. The other {PROFIT_SPLIT_PCT.treasury}% goes to the protocol.
       </p>
     ),
   },
   {
-    q: "Which assets can back a coin?",
+    q: "Which assets can back a token?",
     a: (
       <p>
         Any perp listed on Lighter&apos;s Robinhood deployment: crypto majors, US stocks and indices, gold and

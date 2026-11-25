@@ -1,0 +1,1 @@
+multiply.cash: tokens fueled by perps

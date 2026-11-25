@@ -201,7 +201,7 @@ export default function PayoffSimulator() {
         </Field>
         <div>
           <label htmlFor={volId} className="mb-2 flex items-baseline justify-between text-xs font-medium text-ink-3">
-            <span>Volume traded on the coin</span>
+            <span>Volume traded on the token</span>
             <span className="num text-sm font-semibold text-ink">{fmtUsd(volume)}</span>
           </label>
           <input
@@ -244,7 +244,7 @@ export default function PayoffSimulator() {
             </div>
             <div className="mt-1 font-display text-4xl leading-none font-bold tracking-[-0.03em] text-ink sm:text-5xl">
               {buyback > 0 ? fmtUsd(buyback) : "$0"}
-              <span className="ml-2 align-middle text-base font-semibold tracking-normal text-ink-3">buys the coin back</span>
+              <span className="ml-2 align-middle text-base font-semibold tracking-normal text-ink-3">buys the token back</span>
             </div>
           </div>
           <dl className="flex gap-6 text-right">
@@ -255,7 +255,7 @@ export default function PayoffSimulator() {
               </dd>
             </div>
             <div>
-              <dt className="text-2xs text-ink-3">Coins sold by the engine</dt>
+              <dt className="text-2xs text-ink-3">Tokens sold by the engine</dt>
               <dd className="num text-lg font-semibold text-ink">0</dd>
             </div>
           </dl>
@@ -289,10 +289,10 @@ export default function PayoffSimulator() {
             worst case: the fees, {fmtUsd(collateral)}
           </text>
 
-          {/* zero: where a typical launchpad's holders sit in every scenario */}
+          {/* zero: where a plain memecoin's holders sit in every scenario */}
           <line x1={PAD_L} x2={W - PAD_R} y1={y(0)} y2={y(0)} stroke="var(--color-line-2)" />
           <text x={PAD_L} y={y(0) - 6} className="fill-ink-3 text-[11px]">
-            typical launchpad: nothing comes back
+            a plain memecoin: nothing
           </text>
 
           <path d={buybackArea} fill="url(#sim-hatch)" />
@@ -376,7 +376,7 @@ export default function PayoffSimulator() {
         </div>
         <p className="mt-3 text-xs leading-relaxed text-ink-3">
           {liquidated
-            ? "At this move the position is liquidated: the fees it held are gone, the coin and its pool are not touched. The next fees open a fresh position."
+            ? "At this move the position is liquidated: the fees it held are gone, the token and its pool are not touched. The next fees open a fresh position."
             : "Illustration of one take-profit at the chosen move. Funding, trading costs and the take-profit schedule are left out."}
         </p>
       </div>

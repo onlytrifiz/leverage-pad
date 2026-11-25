@@ -169,9 +169,13 @@ export default function LaunchForm({
   initialSide?: "long" | "short";
 }) {
   const { address, provider } = useWallet();
-  const { markets, loaded } = useMarkets();
+  const { markets: listed, loaded } = useMarkets();
+  const markets = useMemo(() => listed.filter((m) => m.launchable), [listed]);
   const [side, setSide] = useState<"long" | "short">(initialSide);
-  const [market, setMarket] = useState(initialMarket);
+  const [marketPick, setMarket] = useState(initialMarket);
+  // a link can name a market the venue does not list (or no longer takes launches on): the
+  // token would never open a position, so the form falls back to the most traded one
+  const market = markets.length === 0 || markets.some((m) => m.symbol === marketPick) ? marketPick : markets[0].symbol;
   const [lev, setLev] = useState(3);
   // the pick is kept as chosen; what applies is capped by the leverage, so lowering the
   // leverage pulls the target in and raising it again gives the pick back
@@ -440,7 +444,7 @@ export default function LaunchForm({
         {busy && <Spinner data-icon="inline-start" />}
         {busy ??
           (!ready
-            ? "Name the coin"
+            ? "Name the token"
             : !levOk
               ? `${market} allows up to ${maxLev}x`
               : !orders
@@ -466,7 +470,7 @@ export default function LaunchForm({
         </div>
         <div className="mx-auto w-full max-w-[1320px] px-4 pt-10 pb-10 sm:px-5 sm:pt-14 sm:pb-12">
           <h1 className="font-display text-[clamp(44px,7vw,92px)] leading-[0.95] font-bold tracking-[-0.04em] text-night-ink">
-            Print your <span className="type-engraved [--ink-c:var(--color-mint)]">coin.</span>
+            Print your <span className="type-engraved [--ink-c:var(--color-mint)]">token.</span>
           </h1>
           <p className="mt-4 max-w-[52ch] text-lg leading-relaxed text-night-ink-2">
             Pick what its fees trade, name it, sign once. The pool locks forever at launch and the engine runs itself.
@@ -492,7 +496,7 @@ export default function LaunchForm({
           <div className="relative">
             <Banknote
               symbol={symbol || "TICKER"}
-              name={name.trim() || "Your coin"}
+              name={name.trim() || "Your token"}
               market={market}
               side={side}
               leverage={lev}
@@ -524,10 +528,10 @@ export default function LaunchForm({
             className="mt-5 text-md leading-relaxed text-ink-2"
           >
             <span className="font-semibold text-ink">
-              Every trade on ${symbol || "TICKER"} funds a {lev}x {side} on {market}.
+              ${symbol || "TICKER"} runs on a {lev}x {side} on {market}.
             </span>{" "}
             If {market} moves 10% {up ? "up" : "down"}, the position gains about {move10}%. Each deposit banks at +{trigger}%, then {PROFIT_SPLIT_PCT.buyback}%
-            of the profit buys the coin back and burns it.
+            of the profit buys the token back and burns it.
           </motion.p>
 
           {/* live mark of the chosen asset */}
@@ -702,7 +706,7 @@ export default function LaunchForm({
                   value={description}
                   onChange={(e) => setDescription(e.target.value.slice(0, DESCRIPTION_MAX))}
                   rows={4}
-                  placeholder={`What this coin is about. Left empty, it says what its fees trade.`}
+                  placeholder={`What this token is about. Left empty, it says what its fees trade.`}
                   className="block w-full resize-none rounded-[10px] border border-input bg-card px-3 py-2.5 text-sm text-ink outline-none placeholder:text-ink-3 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
                 />
               </label>
@@ -857,7 +861,7 @@ export default function LaunchForm({
                           </span>
                           <span className="mt-1 block text-xs leading-relaxed text-ink-3">
                             You can retune leverage and take-profit later. Every change is announced on-chain and lands{" "}
-                            {MANAGED_DELAY_HOURS} hours after, and the coin carries a Managed badge everywhere.
+                            {MANAGED_DELAY_HOURS} hours after, and the token carries a Managed badge everywhere.
                           </span>
                         </OptionCard>
                       </OptionGroup>
@@ -1334,7 +1338,7 @@ function LogoPicker({
               <X size={11} aria-hidden /> Use the seal
             </button>
           ) : (
-            <span className="sm:hidden">Square, under 1 MB. Without one, the coin uses its seal.</span>
+            <span className="sm:hidden">Square, under 1 MB. Without one, the token uses its seal.</span>
           )}
           {error && (
             <span className="mt-1 block text-down" role="alert">

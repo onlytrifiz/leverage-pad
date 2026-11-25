@@ -21,7 +21,7 @@ export default function EngineStairs() {
   return (
     <motion.div
       className="stair mt-2"
-      aria-label="Fee engine: trading fees fund a perp on Lighter, profits buy back and burn the coin"
+      aria-label="Fee engine: trading fees fund a perp on Lighter, profits buy back and burn the token"
       initial="hidden"
       animate="shown"
       variants={{ shown: { transition: { staggerChildren: 0.09, delayChildren: 0.15 } } }}

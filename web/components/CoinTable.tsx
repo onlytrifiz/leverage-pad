@@ -19,7 +19,7 @@ import AssetIcon from "./AssetIcon";
 
 /**
  * The coin list. "Stock-backed" means a non-crypto underlying — the angle that
- * only exists on Robinhood Chain: NVDA, TSLA, ANTHROPIC.
+ * only exists on Robinhood Chain: NVDA, TSLA, OPENAI.
  *
  * Two renderings of one dataset: a row grid from `md` up, stacked cards below
  * it. The single grid used to sit in a 620px scroller, so on a phone the most
@@ -32,7 +32,7 @@ const CRYPTO_MARKETS = new Set([
 
 type Tab = "all" | "stock" | "crypto" | "shorts" | "new";
 const TABS: { key: Tab; label: string }[] = [
-  { key: "all", label: "All coins" },
+  { key: "all", label: "All tokens" },
   { key: "stock", label: "Stock-backed" },
   { key: "crypto", label: "Crypto-backed" },
   { key: "shorts", label: "Shorts" },
@@ -81,7 +81,7 @@ export default function CoinTable({ items }: { items: CoinListItem[] }) {
   }, [items, tab, q, mountedAt]);
 
   return (
-    <section aria-label="Launched coins">
+    <section aria-label="Launched tokens">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/*
           `min-w-0` is the whole fix: as a flex item the tab strip defaults to
@@ -117,7 +117,7 @@ export default function CoinTable({ items }: { items: CoinListItem[] }) {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search ticker, name or market"
-            aria-label="Search coins"
+            aria-label="Search tokens"
             className="w-full pl-9"
           />
         </div>
@@ -127,7 +127,7 @@ export default function CoinTable({ items }: { items: CoinListItem[] }) {
         <Panel className="mt-4">
           <Empty>
             <EmptyHeader>
-              <EmptyTitle>No coins here yet</EmptyTitle>
+              <EmptyTitle>No tokens here yet</EmptyTitle>
               <EmptyDescription>Clear the search or switch tab.</EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -136,7 +136,7 @@ export default function CoinTable({ items }: { items: CoinListItem[] }) {
         <>
           {/* header row: from md up, where the grid exists */}
           <div className={`mt-4 hidden gap-3 px-5 pb-2 md:grid ${COLUMNS}`}>
-            {["Coin", "Underlying", "Engine", "Burned", "Market cap"].map((h) => (
+            {["Token", "Underlying", "Engine", "Burned", "Market cap"].map((h) => (
               <span
                 key={h}
                 className={`text-xs font-medium text-ink-3 ${

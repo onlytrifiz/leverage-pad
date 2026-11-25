@@ -39,7 +39,7 @@ export default function VerifySection({ coin }: { coin: Coin }) {
     },
     {
       label: "Fee destination",
-      desc: "Where the USDG lands: the engine hub until the keeper adopts the coin, then the coin's own sub-wallet.",
+      desc: "Where the USDG lands: the engine hub until the keeper adopts the token, then the token's own sub-wallet.",
       addr: coin.subWallet,
       href: explorerAddr(coin.subWallet),
     },
@@ -57,7 +57,7 @@ export default function VerifySection({ coin }: { coin: Coin }) {
     },
     {
       label: "Creator",
-      desc: "Wallet that launched the coin, recorded in the metadata it signed.",
+      desc: "Wallet that launched the token, recorded in the metadata it signed.",
       addr: coin.creator,
       href: explorerAddr(coin.creator),
     },
