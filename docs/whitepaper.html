@@ -74,15 +74,15 @@
   <p>The system described here is a token launchpad on Robinhood Chain in which every launched
   token permanently locks the entirety of its liquidity and streams its trading fees into a live
   leveraged perpetual position on Lighter, an onchain order-book exchange. The token itself is
-  deliberately inert: fixed supply, no administrative authority, no transfer tax. The engine sits
-  outside it. The pool&rsquo;s 1% swap fee is collected by an ownerless locker contract that burns the
-  token side of every claim and forwards the quote side to a per-token treasury, which posts it as
+  deliberately inert: fixed supply, no reachable administrative authority, no transfer tax. The engine sits
+  outside it. The pool&rsquo;s swap fee, 1% to 5% as set at launch, is converted to USDG inside each swap and
+  delivered to a per-token contract that forwards 70% of it to a per-token treasury, which posts it as
   collateral on a perpetual market chosen at launch &mdash; any Lighter market, long or short, at 2&times; to
-  20&times; leverage. Profit is realized tranche by tranche under a fixed take-profit policy; 75% of
-  realized profit buys back and burns the token, and the remaining 25% accrues to the operator as
-  the protocol&rsquo;s only revenue. This paper specifies the launch mechanics, the fee circuit, the
-  tranche accounting, and the trust model, and states the properties and risks that follow from
-  the design.</p>
+  50&times; leverage. Profit is realized tranche by tranche under a fixed take-profit policy; the capital of a
+  realized tranche and 70% of its gain buy back and burn the token, and the remaining 30% of the gain accrues to
+  the operator, together with 25% of trading fees, as the protocol&rsquo;s only revenue. This paper specifies the
+  launch mechanics, the fee circuit, the tranche accounting, and the trust model, and states the properties and
+  risks that follow from the design.</p>
 </div>
 
 <div class="cols">
@@ -93,14 +93,14 @@
 a curve or seeded into a pool, liquidity is locked, and the trading fees the token generates are
 treated as income: split among the creator, the protocol, and sometimes the pool itself. The fee
 stream is distributed, not deployed.</p>
-<p>This paper specifies a launchpad in which the fee stream is working capital. Each token
-launches with its full supply seeded one-sided into a Uniswap v3 pool quoted in USDG, and the
-liquidity position is permanently locked in a contract with no owner and no withdrawal path. The
-locker burns the token side of every fee claim and forwards the quote side to a treasury that
-exists for that token alone. The treasury posts those fees as collateral on a leveraged
-perpetual &mdash; market, direction, and leverage chosen by the creator at launch &mdash; executed on
-Lighter&rsquo;s Robinhood deployment [1]. Realized profit returns onchain, where 75% of it buys the
-token back on its own pool and burns it.</p>
+<p>It is also all there is. A token that nobody trades earns nothing, and nothing happens to it; the
+markets around it keep moving all the same. This paper specifies a launchpad in which the fee stream is working
+capital, and so keeps working when trading stops. Each token launches with its full supply seeded one-sided into a
+Uniswap v4 pool quoted in USDG [3], built and permanently locked by the Doppler contracts [4]. The pool&rsquo;s fee
+leaves every swap as USDG, and most of it reaches a treasury that exists for that token alone. The treasury posts it
+as collateral on a leveraged perpetual &mdash; market, direction, and leverage chosen by the creator at launch &mdash;
+executed on Lighter&rsquo;s Robinhood deployment [1]. When a tranche of that position reaches its target it leaves the
+engine whole, and what it brings back buys the token on its own pool and burns it.</p>
 <p>The design differs from reserve-coupled systems, in which a tokenized leveraged position is
 the reserve asset of the curve and the token&rsquo;s price mechanically tracks the underlying. Here the
 coupling is deliberately loose. The token trades on an ordinary spot pool; the perpetual affects
@@ -115,208 +115,190 @@ including an explicit trust model. Section 7 states the risks.</p>
 
 <section>
 <h2>2.&ensp;Launch Mechanics</h2>
+<p>A launch is one transaction to a router, which assembles the market on Doppler&rsquo;s Airlock [4] with the shape
+every token shares and records the token&rsquo;s engine. The router holds no funds, and has no function that reaches a
+token or its pool afterwards.</p>
 <p><b class="run">Token.</b> A standard ERC-20 with fixed supply <i>S</i> = 10<sup>9</sup> units,
-minted once in the constructor. The contract has no owner, no administrative functions, no
-transfer tax, no pause, and no subsequent minting: there is nothing to renounce, because
-authority over the token never exists. A transfer to the conventional dead address is routed to a
-true burn &mdash; total supply decreases, and no phantom balance accumulates &mdash; while a transfer to the
-zero address reverts, so burns are always explicit. The quantity reported as burned is the
-identity <i>B</i>(<i>t</i>) = <i>S</i> &minus; supply(<i>t</i>), recomputable by anyone from the
-chain.</p>
-<p><b class="run">One-sided seeding.</b> At launch the entire supply is placed as a single
-one-sided concentrated-liquidity position on a canonical Uniswap v3 pool [3] against USDG [4],
-at fee tier <i>&phi;</i> = 1%. The opening price <i>p</i><sub>0</sub> is set from a target
-valuation <i>V</i><sub>0</sub> (currently $4,000):</p>
+minted once. There is no minting after launch, no transfer tax, no pause, and no blacklist. The owner is the Airlock
+contract, whose paths to the owner&rsquo;s functions are closed for a locked pool; no person holds that authority. Any
+holder may burn its own balance, and a burn reduces total supply. The quantity reported as burned is the identity
+<i>B</i>(<i>t</i>) = <i>S</i> &minus; supply(<i>t</i>), recomputable by anyone from the chain.</p>
+<p><b class="run">One-sided seeding.</b> At launch the entire supply is placed as one-sided liquidity in a Uniswap v4
+pool against USDG [5]. The opening price <i>p</i><sub>0</sub> is set from a target valuation <i>V</i><sub>0</sub>
+(currently about $4,000):</p>
 <div class="eq"><i>p</i><sub>0</sub> = <i>V</i><sub>0</sub> / <i>S</i>,&emsp;<span class="rm">so</span>&emsp;MC<sub>0</sub> = <i>p</i><sub>0</sub> &middot; <i>S</i> = <i>V</i><sub>0</sub></div>
 <p>Every token opens at the same dollar valuation regardless of market or leverage choice. There
 is no graduation event: the pool seeded at launch is the token&rsquo;s market for life. Purchases walk
 up the ask ladder of the locked position; there is no migration, no LP token, and no moment at
 which liquidity changes hands.</p>
-<p><b class="run">The locker.</b> In the launch transaction the LP NFT is transferred into the
-locker through the ERC-721 receive hook, which atomically registers an immutable pair: the fee
-recipient (the token&rsquo;s treasury) and the burn side (the token itself). Only the position manager
-can invoke the hook, and a position can never be re-registered. The locker&rsquo;s single operational
-function, <i>collect</i>, is permissionless: anyone may call it for any position, and its only
-reachable outcome is that the token side of accrued fees is sent to the dead address and the
-quote side to the registered treasury. The contract has no owner, no withdraw, no transfer-out,
-no liquidity removal, and no upgrade path. If one side of the pair is ever frozen, a rescue
-variant collects the other side alone, to the same fixed destinations.</p>
+<p><b class="run">The lock.</b> The liquidity belongs to Doppler&rsquo;s initializer, the hook of the pool. A pool
+created with fee beneficiaries is <i>locked</i>: it has no exit, no withdrawal, and no migration. The functions that
+could alter a live pool are gated on the token&rsquo;s governance timelock, and every token is launched with the no-op
+governance, whose timelock is the burn address.</p>
+<p><b class="run">The fee.</b> The pool&rsquo;s LP fee is zero. A second hook takes the trading fee <i>&phi;</i>, between 1% and 5%,
+chosen at launch and immutable, on the output of each swap. A fee taken in the token is swapped into
+USDG inside the same call, so what leaves the pool is USDG only and no inventory of tokens waits to be sold.</p>
+<p><b class="run">Launch protection.</b> The fee may open at <i>&phi;</i><sub>0</sub> &le; 80% and fall in a straight
+line to <i>&phi;</i> over a window <i>w</i> &le; 600 s:</p>
+<div class="eq"><i>&phi;</i>(<i>t</i>) = <i>&phi;</i><sub>0</sub> &minus; (<i>&phi;</i><sub>0</sub> &minus; <i>&phi;</i>) <span class="rm">min</span>(1, <i>t</i> / <i>w</i>)</div>
+<p>A purchase in the launch block keeps little of what it buys, and the difference loads the engine. An optional first
+buy by the launcher is bundled into the launch: it is the pool&rsquo;s first swap by construction.</p>
+<p><b class="run">The sink.</b> Each launch creates a contract for that token alone, the fixed destination of its fees.
+Its operational function, <i>flush</i>, is permissionless, and its only reachable outcome is to send the
+operator&rsquo;s share and the engine&rsquo;s share to their recipients and to burn any of the token it holds. The shares
+are written at creation and have no setter.</p>
 <p><b class="run">Per-token treasuries.</b> Each token&rsquo;s treasury address is derived
 deterministically from an operator master secret <i>k</i> as HMAC-SHA256(<i>k</i>,
-addr<sub>token</sub>) [5]. The private key exists only inside the keeper process; only the
-address is ever persisted. The treasury is simultaneously the locker&rsquo;s registered fee recipient
-and the owner of the token&rsquo;s account on Lighter, and the venue accepts orders for an account
-only from its owner&rsquo;s key. Tokens are therefore pairwise isolated &mdash; one token&rsquo;s funds can never
-touch another token&rsquo;s position &mdash; and the creator, who never holds any of these keys, cannot
-drain, close, or borrow against the position backing their own token.</p>
+addr<sub>token</sub>) [6]. The private key exists only inside the keeper process; only the
+address is ever persisted. The treasury receives the engine&rsquo;s share from the sink and owns the token&rsquo;s account
+on Lighter, and the venue accepts orders for an account only from its owner&rsquo;s key. Tokens are therefore pairwise
+isolated &mdash; one token&rsquo;s funds can never touch another token&rsquo;s position &mdash; and the creator, who never
+holds any of these keys, cannot drain or borrow against the position backing their own token.</p>
+<p><b class="run">The engine.</b> Market, side <i>&sigma;</i> (+1 long, &minus;1 short), leverage <i>&lambda;</i> and
+take-profit <i>r</i> are stored on the router. A <i>fixed</i> token keeps its market and side for life. A
+<i>managed</i> token&rsquo;s creator may change all four, each change announced onchain and effective only after a notice
+common to every token (currently one hour). The router&rsquo;s owner may override leverage and take-profit of any token,
+for a venue that lowers a limit, and never its market or side.</p>
 </section>
 
 <section>
 <h2>3.&ensp;The Fee Circuit</h2>
-<p>An off-chain keeper ticks every 15 seconds. Each tick, per token, it claims accrued fees from
-the locker when they exceed a $0.50 dust floor, burns any token balance held by the treasury,
-routes the quote side, runs the buyback of Section 5, and marks the perpetual to market to decide
-among deposit, top-up, and take-profit.</p>
-<p>The quote side of every claim is allocated by a split vector <i>&beta;</i> over (perp,
-creator, protocol, buyback). The system ships with</p>
-<div class="eq"><i>&beta;</i> = (1, 0, 0, 0)</div>
-<p>that is: 100% of collected fees become perpetual collateral. The protocol takes no share of
-fee flow at all; its only revenue is the profit share of Section 5. The creator&rsquo;s share is
-likewise zero by default &mdash; the creator&rsquo;s return is the token itself.</p>
-<p><b class="run">Deposits.</b> The perpetual opens once the fee reserve reaches a gate
-<i>G</i> = $20, and every further $20 of fees is deposited as a top-up. A deposit is a plain
-USDG transfer to a deterministic intent address, which credits the token&rsquo;s own Lighter account
-across the bridge. Positions run isolated margin. A deposit of collateral <i>c</i> at leverage
-<i>&lambda;</i> &isin; {2, 3, 5, 10, 20} extends the position by notional</p>
+<p>Every trading fee, in USDG, is divided by a vector <i>&beta;</i> over (engine, operator, Doppler):</p>
+<div class="eq"><i>&beta;</i> = (0.70, 0.25, 0.05)</div>
+<p>Doppler&rsquo;s share is the protocol fee of the launch contracts. The division between engine and operator is
+enforced by the sink, not by the keeper. The creator&rsquo;s share is zero &mdash; the creator&rsquo;s return is the token
+itself.</p>
+<p>An off-chain keeper passes over every token continuously, pausing 15 seconds between passes. For each token it
+credits what has come home from the venue, flushes the sink when it holds more than a dust floor, runs the buyback of
+Section 5, and operates the position: deposit, withdrawal, take-profit, opening.</p>
+<p><b class="run">Deposits.</b> The perpetual opens once the fees waiting reach a gate <i>G</i> = $25. The first
+position waits ten minutes from the launch, so that the fees of the opening enter together; while a position is open,
+the fees accrued since the last tranche, again at least <i>G</i>, enter as one tranche an hour at most; after a
+take-profit has emptied the position the next opens as soon as the gate is met. A deposit is a plain USDG transfer to a
+deterministic intent address, which credits the token&rsquo;s own Lighter account across the bridge. Positions run
+isolated margin. Collateral <i>c</i> at leverage <i>&lambda;</i> &isin; {2, 3, 5, 10, 20, 25, 50}, never above the
+market&rsquo;s own limit, extends the position by notional</p>
 <div class="eq"><i>N</i> = <i>&lambda;</i> &middot; <i>c</i></div>
-<p>executed as a market order with a 2% slippage cap.</p>
-<p><b class="run">Crash safety.</b> The keeper&rsquo;s internal buckets are checkpointed with
-write-ahead intent records, and every spend is decremented before the transaction is sent: a
-crash at any point under-pays a bucket for one tick rather than paying it twice. An ambiguous
-outcome &mdash; sent but unconfirmed &mdash; is promoted to a pending record and reconciled against onchain
-evidence; it is never blindly re-sent.</p>
+<p>executed as an immediate-or-cancel order within 2% of the mark. Only cash is deployed: profit not yet realized,
+which the venue counts as available, buys nothing.</p>
+<p><b class="run">Crash safety.</b> Every payment, order, and withdrawal is recorded on disk before it is sent. After a
+crash or a timeout an order is settled on the trades it actually made, found by its own identifier, and a withdrawal on
+whether its cash has left the account; until the outcome is known nothing else moves for that token. An onchain spend
+is decremented before it is sent, so that a crash under-pays a bucket for one pass rather than paying it twice.</p>
 </section>
 
 <section>
 <h2>4.&ensp;Tranche Accounting</h2>
 <p>The venue nets all of a token&rsquo;s deposits into a single position. The keeper, however, keeps
-its own decomposition: every deposit creates a <i>tranche</i> (<i>c<sub>i</sub></i>,
-<i>m<sub>i</sub></i>, <i>q<sub>i</sub></i>) recording its collateral, its entry mark, and its
+its own decomposition: every opening creates a <i>tranche</i> (<i>c<sub>i</sub></i>,
+<i>m<sub>i</sub></i>, <i>q<sub>i</sub></i>) recording its collateral, the price it filled at, and its
 size <i>q<sub>i</sub></i> = <i>&lambda;c<sub>i</sub></i> / <i>m<sub>i</sub></i>.</p>
-<p><b class="run">Take-profit rule.</b> A token&rsquo;s risk profile, fixed at launch, is a trigger
-<i>r</i> &isin; {0.20, 0.50, 1.00} (<i>safe</i>, <i>balanced</i>, <i>degen</i>). Tranche
-<i>i</i> banks when the mark reaches</p>
+<p><b class="run">Take-profit rule.</b> A token&rsquo;s take-profit <i>r</i> is chosen at launch between 0.10 and
+0.20&nbsp;<i>&lambda;</i>, and never above 5. Tranche <i>i</i> closes when the mark reaches</p>
 <div class="eq"><i>m<sub>i</sub></i><sup>*</sup> = <i>m<sub>i</sub></i> (1 + <i>&sigma;</i> <span class="frac"><span class="top"><i>r</i></span><span class="bot"><i>&lambda;</i></span></span>)</div>
-<p>where <i>&sigma;</i> = +1 for a long and &minus;1 for a short. Since the tranche&rsquo;s profit at
-mark <i>m</i> is <i>q<sub>i</sub>&sigma;</i>(<i>m</i> &minus; <i>m<sub>i</sub></i>) =
+<p>Since the tranche&rsquo;s profit at mark <i>m</i> is <i>q<sub>i</sub>&sigma;</i>(<i>m</i> &minus; <i>m<sub>i</sub></i>) =
 <i>&lambda;c<sub>i</sub>&sigma;</i>(<i>m</i> &minus; <i>m<sub>i</sub></i>) / <i>m<sub>i</sub></i>,
-reaching <i>m<sub>i</sub></i><sup>*</sup> realizes exactly <i>r</i> &middot; <i>c<sub>i</sub></i>:
+reaching <i>m<sub>i</sub></i><sup>*</sup> is worth exactly <i>r</i> &middot; <i>c<sub>i</sub></i>:
 a move of <i>r</i>/<i>&lambda;</i> in the underlying is a return of +<i>r</i> on that tranche&rsquo;s
-own collateral.</p>
-<p><b class="run">No dilution from top-ups.</b> Under averaged-entry accounting, a later deposit
+own collateral. The upper bound on <i>r</i> keeps that move within 20%, so that a target can be reached.</p>
+<p><b class="run">No dilution from later deposits.</b> Under averaged-entry targets, a later deposit
 at a worse price shifts the aggregate break-even and postpones profit-taking on capital that was
 already in profit. Per-tranche targets are invariant to later deposits: every dollar of fees runs
 toward its own target from the price at which it entered. Figure&nbsp;1 shows the required
-underlying move <i>r</i>/<i>&lambda;</i> across the leverage range for the three risk
-profiles.</p>
+underlying move <i>r</i>/<i>&lambda;</i> across the leverage range.</p>
 
 <figure>
 <svg viewBox="0 0 460 292" xmlns="http://www.w3.org/2000/svg" font-family="STIX Two Text, Times New Roman, serif">
-  <!-- axes -->
   <line x1="58" y1="252" x2="436" y2="252" stroke="#000" stroke-width="0.8"/>
   <line x1="58" y1="252" x2="58" y2="12" stroke="#000" stroke-width="0.8"/>
-  <!-- y gridlines + labels -->
-  <g stroke="#bbb" stroke-width="0.4">
-    <line x1="58" y1="205.2" x2="436" y2="205.2"/>
-    <line x1="58" y1="158.4" x2="436" y2="158.4"/>
-    <line x1="58" y1="111.6" x2="436" y2="111.6"/>
-    <line x1="58" y1="64.8" x2="436" y2="64.8"/>
-    <line x1="58" y1="18" x2="436" y2="18"/>
-  </g>
-  <g font-size="9" text-anchor="end" fill="#000">
-    <text x="53" y="255">0%</text>
-    <text x="53" y="208.2">10%</text>
-    <text x="53" y="161.4">20%</text>
-    <text x="53" y="114.6">30%</text>
-    <text x="53" y="67.8">40%</text>
-    <text x="53" y="21">50%</text>
-  </g>
-  <!-- x ticks + labels -->
-  <g stroke="#000" stroke-width="0.8">
-    <line x1="58" y1="252" x2="58" y2="255"/>
-    <line x1="78.7" y1="252" x2="78.7" y2="255"/>
-    <line x1="120" y1="252" x2="120" y2="255"/>
-    <line x1="223.3" y1="252" x2="223.3" y2="255"/>
-    <line x1="430" y1="252" x2="430" y2="255"/>
-  </g>
-  <g font-size="9" text-anchor="middle" fill="#000">
-    <text x="58" y="265">2&#215;</text>
-    <text x="78.7" y="265">3&#215;</text>
-    <text x="120" y="265">5&#215;</text>
-    <text x="223.3" y="265">10&#215;</text>
-    <text x="430" y="265">20&#215;</text>
-    <text x="247" y="281" font-size="9.5" font-style="italic">leverage &#955;</text>
-  </g>
+  <g stroke="#bbb" stroke-width="0.4"><line x1="58" y1="205.2" x2="436" y2="205.2"/><line x1="58" y1="158.4" x2="436" y2="158.4"/><line x1="58" y1="111.6" x2="436" y2="111.6"/><line x1="58" y1="18.0" x2="436" y2="18.0"/></g>
+  <line x1="58" y1="64.8" x2="436" y2="64.8" stroke="#000" stroke-width="0.7" stroke-dasharray="2 3"/>
+  <g font-size="9" text-anchor="end"><text x="53" y="255.0">0%</text><text x="53" y="208.2">5%</text><text x="53" y="161.4">10%</text><text x="53" y="114.6">15%</text><text x="53" y="67.8">20%</text><text x="53" y="21.0">25%</text></g>
+  <g stroke="#000" stroke-width="0.8"><line x1="58.0" y1="252" x2="58.0" y2="255"/><line x1="104.9" y1="252" x2="104.9" y2="255"/><line x1="163.9" y1="252" x2="163.9" y2="255"/><line x1="244.0" y1="252" x2="244.0" y2="255"/><line x1="324.1" y1="252" x2="324.1" y2="255"/><line x1="349.9" y1="252" x2="349.9" y2="255"/><line x1="430.0" y1="252" x2="430.0" y2="255"/></g>
+  <g font-size="9" text-anchor="middle"><text x="58.0" y="265">2&#215;</text><text x="104.9" y="265">3&#215;</text><text x="163.9" y="265">5&#215;</text><text x="244.0" y="265">10&#215;</text><text x="324.1" y="265">20&#215;</text><text x="349.9" y="265">25&#215;</text><text x="430.0" y="265">50&#215;</text><text x="247" y="281" font-size="9.5" font-style="italic">leverage &#955;</text></g>
   <text x="14" y="140" font-size="9.5" font-style="italic" text-anchor="middle" transform="rotate(-90 14 140)">required move r/&#955;</text>
-  <!-- curves -->
-  <polyline fill="none" stroke="#000" stroke-width="1.1"
-    points="58,18 63.2,44 68.3,64.8 73.5,81.8 78.7,96 83.8,108 89,118.3 94.2,127.2 99.3,135 104.5,141.9 109.7,148 114.8,153.5 120,158.4 125.2,162.9 130.3,166.9 135.5,170.6 140.7,174 145.8,177.1 151,180 156.2,182.7 161.3,185.1 166.5,187.4 171.7,189.6 176.8,191.6 182,193.5 187.2,195.3 192.3,196.9 197.5,198.5 202.7,200 207.8,201.4 213,202.7 218.2,204 223.3,205.2 228.5,206.3 233.7,207.4 238.8,208.5 244,209.5 249.2,210.4 254.3,211.3 259.5,212.2 264.7,213 269.8,213.8 275,214.6 280.2,215.3 285.3,216 290.5,216.7 295.7,217.3 300.8,218 306,218.6 311.2,219.2 316.3,219.7 321.5,220.3 326.7,220.8 331.8,221.3 337,221.8 342.2,222.3 347.3,222.8 352.5,223.2 357.7,223.6 362.8,224.1 368,224.5 373.2,224.9 378.3,225.3 383.5,225.6 388.7,226 393.8,226.4 399,226.7 404.2,227 409.3,227.4 414.5,227.7 419.7,228 424.8,228.3 430,228.6"/>
-  <polyline fill="none" stroke="#000" stroke-width="1.1" stroke-dasharray="5 2.5"
-    points="58,135 63.2,148 68.3,158.4 73.5,166.9 78.7,174 83.8,180 89,185.1 94.2,189.6 99.3,193.5 104.5,196.9 109.7,200 114.8,202.7 120,205.2 125.2,207.4 130.3,209.5 135.5,211.3 140.7,213 145.8,214.6 151,216 156.2,217.3 161.3,218.6 166.5,219.7 171.7,220.8 176.8,221.8 182,222.8 187.2,223.6 192.3,224.5 197.5,225.3 202.7,226 207.8,226.7 213,227.4 218.2,228 223.3,228.6 228.5,229.2 233.7,229.7 238.8,230.2 244,230.7 249.2,231.2 254.3,231.7 259.5,232.1 264.7,232.5 269.8,232.9 275,233.3 280.2,233.6 285.3,234 290.5,234.3 295.7,234.7 300.8,235 306,235.3 311.2,235.6 316.3,235.9 321.5,236.1 326.7,236.4 331.8,236.7 337,236.9 342.2,237.1 347.3,237.4 352.5,237.6 357.7,237.8 362.8,238 368,238.2 373.2,238.4 378.3,238.6 383.5,238.8 388.7,239 393.8,239.2 399,239.4 404.2,239.5 409.3,239.7 414.5,239.8 419.7,240 424.8,240.2 430,240.3"/>
-  <polyline fill="none" stroke="#000" stroke-width="1.1" stroke-dasharray="1.2 2.2"
-    points="58,205.2 63.2,210.4 68.3,214.6 73.5,218 78.7,220.8 83.8,223.2 89,225.3 94.2,227 99.3,228.6 104.5,230 109.7,231.2 114.8,232.3 120,233.3 125.2,234.2 130.3,235 135.5,235.7 140.7,236.4 145.8,237 151,237.6 156.2,238.1 161.3,238.6 166.5,239.1 171.7,239.5 176.8,239.9 182,240.3 187.2,240.7 192.3,241 197.5,241.3 202.7,241.6 207.8,241.9 213,242.1 218.2,242.4 223.3,242.6 228.5,242.9 233.7,243.1 238.8,243.3 244,243.5 249.2,243.7 254.3,243.9 259.5,244 264.7,244.2 269.8,244.4 275,244.5 280.2,244.7 285.3,244.8 290.5,244.9 295.7,245.1 300.8,245.2 306,245.3 311.2,245.4 316.3,245.5 321.5,245.7 326.7,245.8 331.8,245.9 337,246 342.2,246.1 347.3,246.2 352.5,246.2 357.7,246.3 362.8,246.4 368,246.5 373.2,246.6 378.3,246.7 383.5,246.7 388.7,246.8 393.8,246.9 399,246.9 404.2,247 409.3,247.1 414.5,247.1 419.7,247.2 424.8,247.3 430,247.3"/>
-  <!-- marks at offered leverages -->
-  <g fill="#000">
-    <circle cx="58" cy="18" r="2"/><circle cx="78.7" cy="96" r="2"/><circle cx="120" cy="158.4" r="2"/><circle cx="223.3" cy="205.2" r="2"/><circle cx="430" cy="228.6" r="2"/>
-    <circle cx="58" cy="135" r="2"/><circle cx="78.7" cy="174" r="2"/><circle cx="120" cy="205.2" r="2"/><circle cx="223.3" cy="228.6" r="2"/><circle cx="430" cy="240.3" r="2"/>
-    <circle cx="58" cy="205.2" r="2"/><circle cx="78.7" cy="220.8" r="2"/><circle cx="120" cy="233.3" r="2"/><circle cx="223.3" cy="242.6" r="2"/><circle cx="430" cy="247.3" r="2"/>
-  </g>
-  <!-- legend -->
-  <g font-size="9">
-    <line x1="330" y1="30" x2="352" y2="30" stroke="#000" stroke-width="1.1"/>
-    <text x="357" y="33">degen, r = 1.00</text>
-    <line x1="330" y1="44" x2="352" y2="44" stroke="#000" stroke-width="1.1" stroke-dasharray="5 2.5"/>
-    <text x="357" y="47">balanced, r = 0.50</text>
-    <line x1="330" y1="58" x2="352" y2="58" stroke="#000" stroke-width="1.1" stroke-dasharray="1.2 2.2"/>
-    <text x="357" y="61">safe, r = 0.20</text>
-  </g>
+  <polyline fill="none" stroke="#000" stroke-width="1.1" points="349.9,64.8 350.9,66.4 351.9,68.0 352.9,69.6 353.9,71.2 354.9,72.7 355.9,74.3 356.9,75.8 357.9,77.3 358.9,78.8 359.9,80.3 360.9,81.8 361.9,83.3 362.9,84.7 363.9,86.2 364.9,87.6 365.9,89.0 366.9,90.4 367.9,91.8 368.9,93.2 369.9,94.6 370.9,95.9 371.9,97.3 372.9,98.6 373.9,99.9 374.9,101.3 375.9,102.6 376.9,103.8 377.9,105.1 378.9,106.4 379.9,107.6 380.9,108.9 381.9,110.1 382.9,111.4 383.9,112.6 384.9,113.8 385.9,115.0 386.9,116.1 387.9,117.3 388.9,118.5 389.9,119.6 390.9,120.8 391.9,121.9 393.0,123.0 394.0,124.1 395.0,125.2 396.0,126.3 397.0,127.4 398.0,128.5 399.0,129.6 400.0,130.6 401.0,131.7 402.0,132.7 403.0,133.7 404.0,134.8 405.0,135.8 406.0,136.8 407.0,137.8 408.0,138.7 409.0,139.7 410.0,140.7 411.0,141.7 412.0,142.6 413.0,143.5 414.0,144.5 415.0,145.4 416.0,146.3 417.0,147.2 418.0,148.1 419.0,149.0 420.0,149.9 421.0,150.8 422.0,151.7 423.0,152.5 424.0,153.4 425.0,154.3 426.0,155.1 427.0,155.9 428.0,156.8 429.0,157.6 430.0,158.4"/><polyline fill="none" stroke="#000" stroke-width="1.1" stroke-dasharray="7 2 1.5 2" points="290.9,64.8 292.6,67.6 294.3,70.4 296.1,73.1 297.8,75.7 299.6,78.4 301.3,81.0 303.0,83.5 304.8,86.0 306.5,88.5 308.3,91.0 310.0,93.4 311.7,95.7 313.5,98.1 315.2,100.4 316.9,102.6 318.7,104.9 320.4,107.1 322.2,109.2 323.9,111.4 325.6,113.5 327.4,115.5 329.1,117.6 330.9,119.6 332.6,121.6 334.3,123.5 336.1,125.4 337.8,127.3 339.6,129.2 341.3,131.0 343.0,132.8 344.8,134.6 346.5,136.3 348.3,138.1 350.0,139.8 351.7,141.5 353.5,143.1 355.2,144.7 357.0,146.3 358.7,147.9 360.4,149.5 362.2,151.0 363.9,152.5 365.6,154.0 367.4,155.5 369.1,156.9 370.9,158.3 372.6,159.7 374.3,161.1 376.1,162.5 377.8,163.8 379.6,165.1 381.3,166.4 383.0,167.7 384.8,168.9 386.5,170.2 388.3,171.4 390.0,172.6 391.7,173.8 393.5,175.0 395.2,176.1 397.0,177.3 398.7,178.4 400.4,179.5 402.2,180.5 403.9,181.6 405.7,182.7 407.4,183.7 409.1,184.7 410.9,185.7 412.6,186.7 414.3,187.7 416.1,188.7 417.8,189.6 419.6,190.5 421.3,191.5 423.0,192.4 424.8,193.2 426.5,194.1 428.3,195.0 430.0,195.8"/><polyline fill="none" stroke="#000" stroke-width="1.1" stroke-dasharray="5 2.5" points="163.9,64.8 167.2,70.1 170.5,75.3 173.9,80.3 177.2,85.2 180.5,89.9 183.9,94.5 187.2,99.0 190.5,103.3 193.8,107.5 197.2,111.6 200.5,115.6 203.8,119.5 207.1,123.2 210.5,126.9 213.8,130.4 217.1,133.9 220.4,137.2 223.8,140.5 227.1,143.7 230.4,146.7 233.7,149.7 237.1,152.6 240.4,155.4 243.7,158.2 247.1,160.8 250.4,163.4 253.7,165.9 257.0,168.4 260.4,170.8 263.7,173.1 267.0,175.3 270.3,177.5 273.7,179.6 277.0,181.6 280.3,183.6 283.6,185.6 287.0,187.5 290.3,189.3 293.6,191.1 296.9,192.8 300.3,194.5 303.6,196.1 306.9,197.7 310.3,199.2 313.6,200.7 316.9,202.2 320.2,203.6 323.6,205.0 326.9,206.3 330.2,207.6 333.5,208.9 336.9,210.1 340.2,211.3 343.5,212.4 346.8,213.6 350.2,214.6 353.5,215.7 356.8,216.7 360.1,217.7 363.5,218.7 366.8,219.7 370.1,220.6 373.5,221.5 376.8,222.3 380.1,223.2 383.4,224.0 386.8,224.8 390.1,225.6 393.4,226.3 396.7,227.0 400.1,227.7 403.4,228.4 406.7,229.1 410.0,229.8 413.4,230.4 416.7,231.0 420.0,231.6 423.3,232.2 426.7,232.7 430.0,233.3"/><polyline fill="none" stroke="#000" stroke-width="1.1" stroke-dasharray="1.2 2.2" points="58.0,158.4 62.6,162.1 67.3,165.6 71.9,169.0 76.6,172.3 81.2,175.5 85.9,178.5 90.5,181.4 95.2,184.2 99.9,186.8 104.5,189.4 109.2,191.9 113.8,194.2 118.5,196.5 123.1,198.7 127.8,200.8 132.4,202.8 137.1,204.8 141.7,206.6 146.4,208.4 151.0,210.1 155.7,211.8 160.3,213.4 164.9,214.9 169.6,216.4 174.2,217.8 178.9,219.1 183.6,220.4 188.2,221.7 192.8,222.9 197.5,224.0 202.2,225.1 206.8,226.2 211.4,227.2 216.1,228.2 220.7,229.1 225.4,230.0 230.0,230.9 234.7,231.7 239.4,232.5 244.0,233.3 248.6,234.0 253.3,234.7 258.0,235.4 262.6,236.1 267.2,236.7 271.9,237.3 276.6,237.9 281.2,238.4 285.9,239.0 290.5,239.5 295.2,240.0 299.8,240.4 304.4,240.9 309.1,241.3 313.8,241.8 318.4,242.2 323.1,242.6 327.7,242.9 332.4,243.3 337.0,243.6 341.6,244.0 346.3,244.3 350.9,244.6 355.6,244.9 360.3,245.2 364.9,245.4 369.6,245.7 374.2,245.9 378.9,246.2 383.5,246.4 388.2,246.6 392.8,246.8 397.5,247.0 402.1,247.2 406.8,247.4 411.4,247.6 416.1,247.8 420.7,247.9 425.4,248.1 430.0,248.3"/>
+  <g fill="#000"><circle cx="349.9" cy="64.8" r="2"/><circle cx="430.0" cy="158.4" r="2"/><circle cx="324.1" cy="111.6" r="2"/><circle cx="349.9" cy="139.7" r="2"/><circle cx="430.0" cy="195.8" r="2"/><circle cx="163.9" cy="64.8" r="2"/><circle cx="244.0" cy="158.4" r="2"/><circle cx="324.1" cy="205.2" r="2"/><circle cx="349.9" cy="214.6" r="2"/><circle cx="430.0" cy="233.3" r="2"/><circle cx="58.0" cy="158.4" r="2"/><circle cx="104.9" cy="189.6" r="2"/><circle cx="163.9" cy="214.6" r="2"/><circle cx="244.0" cy="233.3" r="2"/><circle cx="324.1" cy="242.6" r="2"/><circle cx="349.9" cy="244.5" r="2"/><circle cx="430.0" cy="248.3" r="2"/></g>
+  <g font-size="9"><line x1="78" y1="20" x2="102" y2="20" stroke="#000" stroke-width="1.1"/><text x="107" y="23">r = 5.00</text><line x1="78" y1="31" x2="102" y2="31" stroke="#000" stroke-width="1.1" stroke-dasharray="7 2 1.5 2"/><text x="107" y="34">r = 3.00</text><line x1="78" y1="42" x2="102" y2="42" stroke="#000" stroke-width="1.1" stroke-dasharray="5 2.5"/><text x="107" y="45">r = 1.00</text><line x1="78" y1="53" x2="102" y2="53" stroke="#000" stroke-width="1.1" stroke-dasharray="1.2 2.2"/><text x="107" y="56">r = 0.20</text></g>
+  <text x="436" y="60.8" font-size="8.5" text-anchor="end">a target needs at most a 20% move</text>
 </svg>
-<figcaption><b>Figure 1:</b> The underlying move <i>r</i>/<i>&lambda;</i> required to bank a
-tranche, as a function of leverage, for the three risk profiles. Dots mark the leverages offered
-at launch. A 5&times; <i>safe</i> token banks each tranche on a 4% move in the underlying; a
-2&times; <i>degen</i> token demands 50%.</figcaption>
+<figcaption><b>Figure 1:</b> The underlying move <i>r</i>/<i>&lambda;</i> required to close a tranche, as a function of
+leverage (logarithmic axis), for four take-profits. Dots mark the leverages offered at launch. A 5&times; token at +20%
+closes each tranche on a 4% move of the underlying; a 50&times; token at +20% on 0.4%. No target may require more than 20%.</figcaption>
 </figure>
 
+<p><b class="run">Decay.</b> A distant target can leave a tranche in profit and never closed. A tranche of age
+<i>a</i> (in days) runs to</p>
+<div class="eq"><i>r</i>(<i>a</i>) = <i>r</i> &minus; (<i>r</i> &minus; 0.10) <span class="rm">clamp</span><sub>[0,1]</sub> <span class="frac"><span class="top"><i>a</i> &minus; 7</span><span class="bot">23</span></span></div>
+<p>that is, unchanged for a week and then falling in a straight line to +10% on day 30. The keeper never closes a
+tranche at a loss on its own; one that is under water waits.</p>
+<p><b class="run">Proceeds.</b> A tranche decides when and how much to close; what the close pays is what the venue
+pays. For a position of size <i>Q</i>, average entry <i>m&#772;</i> and margin <i>A</i>, closing a size <i>q</i> at an
+average fill <i>p</i> takes out of the engine a capital <i>K</i> and a gain <i>g</i></p>
+<div class="eq"><i>&pi;</i> = <i>&sigma;q</i> (<i>p</i> &minus; <i>m&#772;</i>),&emsp;<i>g</i> = <i>&pi;</i><sup>+</sup>,&emsp;<i>K</i> = (<i>A</i> <span class="frac"><span class="top"><i>q</i></span><span class="bot"><i>Q</i></span></span> &minus; <i>&pi;</i><sup>&minus;</sup>)<sup>+</sup></div>
+<p>where <i>x</i><sup>+</sup> and <i>x</i><sup>&minus;</sup> are the positive and negative parts. Funding is settled by
+the venue in the margin <i>A</i>, and is therefore inside <i>K</i>. With a single tranche open <i>&pi;</i> is its own
+profit. With several, the difference between a tranche&rsquo;s entry and the average stays in the position and comes out
+with the tranches that are left: over a position that is closed entirely the sums coincide.</p>
 <p><b class="run">Execution.</b> When a tranche reaches its target, the keeper closes exactly
-that tranche&rsquo;s size with a reduce-only immediate-or-cancel order under the 2% slippage cap, and
-credits realized profit only for the verified fill: the position is re-read after the order, and
-a partial fill leaves the remainder queued. Freed collateral re-enters as a fresh tranche at the
-current mark, so banked capital keeps compounding.</p>
+that tranche&rsquo;s size with a reduce-only immediate-or-cancel order under the 2% slippage cap. The fill is read from
+the order&rsquo;s own trades; a partial fill leaves the remainder queued, and an order refused by a thin book is retried
+at half the size.</p>
 <p><b class="run">Reconciliation.</b> The venue is authoritative. If the position is gone &mdash;
-liquidation &mdash; the tranche book zeroes. If the onchain size is smaller than the book, tranches
-are rescaled pro-rata; if larger, the excess becomes a synthetic tranche at the current entry.
+liquidation &mdash; the tranche book zeroes. If the venue&rsquo;s size is smaller than the book, tranches
+are rescaled pro-rata; if larger, the excess becomes a synthetic tranche at the current mark.
 The keeper&rsquo;s accounting can only ever converge toward what the venue reports.</p>
-<p><b class="run">Ring-fencing.</b> Realized profit is excluded from the balance the keeper may
-redeploy (deployable = balance &minus; realized). Profit destined for buybacks can never be
-re-risked on the position that produced it.</p>
+<p><b class="run">Ring-fencing.</b> What a take-profit took out, capital and gain, is excluded from the balance the
+keeper may deploy (deployable = cash &minus; <i>K</i> &minus; <i>g</i>). It can only leave toward the buyback; the next
+position is loaded by new fees.</p>
+<p><b class="run">Change of engine.</b> When a managed token&rsquo;s new market or side takes effect, the whole position is
+closed at market, reduce-only, and nothing opens until that close has filled. A net gain is banked like any other; a
+net loss is final; what is left is the collateral of the new position.</p>
 </section>
 
 <section>
 <h2>5.&ensp;Profit Return and Supply Dynamics</h2>
-<p><b class="run">Withdrawal.</b> Once realized profit clears a floor <i>W</i> = $25 &mdash; chosen
-to clear the venue&rsquo;s minimum-withdrawal constraint with margin &mdash; it is withdrawn from Lighter
-over the zk bridge (roughly fifteen minutes in practice) back to the token&rsquo;s treasury. The
-keeper recognizes the settlement from the onchain transfer itself and splits it: 25% to the
-operator treasury, 75% to the token&rsquo;s buyback reserve.</p>
-<p><b class="run">Buyback.</b> When a token&rsquo;s buyback reserve crosses $25, the keeper buys the
-token on its own pool and burns what it bought. A single tick spends at most $25, with a minimum
+<p><b class="run">Withdrawal.</b> Once what take-profits took out clears a floor <i>W</i> = $20, it is withdrawn from
+Lighter over the zk bridge (typically minutes) back to the token&rsquo;s treasury. The keeper recognizes the settlement
+from the onchain transfer itself and divides it as</p>
+<div class="eq"><span class="rm">buyback</span> = <i>K</i> + 0.70 <i>g</i>,&emsp;<span class="rm">operator</span> = 0.30 <i>g</i></div>
+<p>The capital has already been divided once, as a fee, and is not divided again: a dollar that enters the engine
+leaves it either through a liquidation, or whole, and with it the larger part of what it earned.</p>
+<p><b class="run">Buyback.</b> When a token&rsquo;s buyback reserve crosses $20, the keeper buys the
+token on its own pool and burns what it bought. A single buy spends at most $25, with a minimum
 output quoted from live pool state less 3%, so a large reserve drains as a sequence of ordinary
 buys rather than one block-moving order.</p>
-<p><b class="run">Supply identity.</b> Reported burns aggregate three channels in one number,
-<i>B</i>(<i>t</i>) = <i>S</i> &minus; supply(<i>t</i>): the fee-side burns enforced by the locker
-on every claim; the buyback burns funded by realized profit; and any voluntary transfers to the
-dead address. The first channel requires no operator at all.</p>
-<p><b class="run">Operator revenue.</b> The operator&rsquo;s revenue is 25% of realized perpetual
-profit and nothing else: no launch fee, no share of fee flow, no share of the pool. The operator
-is paid if and only if the engines are profitable.</p>
+<p><b class="run">An example.</b> A tranche that closes on target at <i>r</i> = 0.50 returns 1.5 times its capital: 1.35 times
+it buys the token and burns it, 0.15 times it goes to the operator.</p>
+<p><b class="run">Supply identity.</b> Reported burns aggregate two channels in one number,
+<i>B</i>(<i>t</i>) = <i>S</i> &minus; supply(<i>t</i>): the buyback burns funded by take-profits, with the little of the
+token that reaches a sink or a treasury, and any voluntary burn by a holder. Trading fees themselves are not burned:
+they are put to work, which is what makes the buyback larger than they were.</p>
+<p><b class="run">Operator revenue.</b> The operator earns 25% of trading fees and 30% of realized gains, and nothing
+else: no launch fee, no share of capital, no share of the pool. Of those earnings, 70% buys the platform token,
+MULTIPLY, on its own pool and burns it, from the time that token is live; 30% stays in the operator&rsquo;s treasury. The
+keeper counts them from the transfers of the sinks and the treasuries alone, every thirty minutes, and buys in a size
+that moves the price by at most 1%.</p>
 </section>
 
 <section>
 <h2>6.&ensp;Properties</h2>
-<h3>Burn continuity without the operator</h3>
-<p>Because <i>collect</i> is permissionless and its destinations are immutable, the fee-side burn
-and the routing of quote fees to the treasury continue to function with the keeper offline,
-operated by anyone willing to pay gas. The deflationary floor of every token survives the
-operator.</p>
+<h3>Fee continuity without the operator</h3>
+<p>The conversion of fees to USDG happens inside the swap, and <i>flush</i> is permissionless with fixed shares. Both
+continue to function with the keeper offline, operated by anyone willing to pay gas.</p>
 <h3>Bounded engine failure</h3>
 <p>The perpetual runs isolated margin, so the worst case of the engine is the loss of its posted
 collateral. The pool, the locked liquidity, and holder balances are outside the blast radius of a
-liquidation, and the engine re-opens at the next $20 of fees.</p>
+liquidation; what take-profits have already taken out is outside it too, and the engine re-opens at the next
+<i>G</i> of fees.</p>
+<h3>Monotone extraction</h3>
+<p>Capital that has taken profit is never at risk again. The engine cannot give back a gain it has realized, because
+neither the gain nor the capital that made it re-enters a position.</p>
 <h3>Constant opening valuation</h3>
 <p>MC<sub>0</sub> = <i>V</i><sub>0</sub> for every launch, regardless of the market, direction,
-or leverage chosen. The curve&rsquo;s shape adapts; the opening valuation does not.</p>
+or leverage chosen.</p>
 <h3>Per-token isolation</h3>
-<p>Each token has a distinct treasury address and a distinct venue account, and the venue only
+<p>Each token has a distinct sink, a distinct treasury address, and a distinct venue account, and the venue only
 accepts orders from an account&rsquo;s owner. No token&rsquo;s flows can touch another token&rsquo;s position, and
 no creator holds a key to any of it.</p>
 <h3>Realized, not marked, exposure</h3>
@@ -324,40 +306,50 @@ no creator holds a key to any of it.</p>
 only through realized flows: take-profits that become buybacks and burns. This is the price of
 the bounded-failure property above, and it is deliberate.</p>
 <h3>Verifiability</h3>
-<p>Every launch, lock, claim, burn, deposit, and buyback is a confirmed transaction on Robinhood
-Chain [2], and each token&rsquo;s treasury is a single public address. Quote inflow equals locker
-claims plus perpetual withdrawals; outflow equals venue deposits plus buyback swaps, which equal
-onchain burns and venue position deltas. The accounting closes, publicly.</p>
+<p>Every launch, fee, flush, burn, deposit, and buyback is a confirmed transaction on Robinhood
+Chain [2], every engine and every change to it is a public event, and each token&rsquo;s sink and treasury are single
+public addresses. Quote inflow equals sink transfers plus perpetual withdrawals; outflow equals venue deposits, buyback
+swaps, and the operator&rsquo;s share of gains. The accounting closes, publicly.</p>
 <h3>Trust model</h3>
 <p>The design is explicit about what is trustless and what is not. Trustless: the token&rsquo;s supply
-and the absence of admin authority; the permanence of the liquidity lock; the routing and burning
-of fees. Trusted: the keeper&rsquo;s execution of deposit, take-profit, and buyback policy; custody of
-the master secret from which treasuries derive; the operator&rsquo;s 25% profit share. The operator
-can stall the engine; the operator cannot unlock liquidity or redirect fees, because the locker
-has no function for either.</p>
+and the absence of reachable authority over it; the permanence of the liquidity lock; the fee rate; the division of
+fees between engine and operator. Trusted: the keeper&rsquo;s execution of deposit, take-profit, and buyback policy;
+custody of the master secret from which treasuries derive; the division of gains; the router&rsquo;s owner, who sets the
+terms of future launches, may override leverage and take-profit, may re-point a sink whose treasury became unusable,
+and receives the operator&rsquo;s share. The operator can stall the engine or mismanage it; the operator cannot unlock
+liquidity, mint, or change a token&rsquo;s fee, because no contract has a function for any of them.</p>
 </section>
 
 <section>
 <h2>7.&ensp;Risks</h2>
 <h3>Liquidation</h3>
-<p>An isolated position at leverage <i>&lambda;</i> is liquidated by an adverse move on the order
-of 1/<i>&lambda;</i>. At 20&times; that is a few percent. Liquidation forfeits the position&rsquo;s
-posted collateral and zeroes the tranche book; the engine restarts from the next $20 of fees, and
-the contract-level fee burn is unaffected throughout. Higher leverage produces faster burns on a
-good call and faster liquidation on a bad one.</p>
+<p>The venue closes an isolated position while some margin is left: at a maintenance fraction <i>&mu;</i> of notional
+that depends on the market (today 1.2% for BTC, 3% for NVDA). The adverse move that liquidates is therefore not
+1/<i>&lambda;</i> but</p>
+<div class="eq"><i>d</i> = <span class="frac"><span class="top">1</span><span class="bot"><i>&lambda;</i></span></span> &minus; <i>&mu;</i></div>
+<p>At 50&times; on BTC that is 0.8%; at 25&times;, 2.8%; at 10&times;, 8.8%. Liquidation forfeits the collateral in the
+position and zeroes the tranche book; the engine restarts from the next $25 of fees. Higher leverage produces faster
+burns on a good call and faster liquidation on a bad one, and near a market&rsquo;s limit the target can be further than
+the liquidation.</p>
+<h3>Idle engines</h3>
+<p>After a take-profit a token holds no position until its fees reach the gate again. A token nobody trades keeps the
+position it has, and does not open another.</p>
+<h3>Managed tokens</h3>
+<p>A managed token&rsquo;s creator chooses what it trades. Each change costs a close and an opening, and on a thin market
+that can be a large part of the collateral. The notice lets holders see it coming; it does not prevent it.</p>
 <h3>Operator dependency</h3>
 <p>Deposits, take-profits, withdrawals, and buybacks are executed by a single off-chain keeper.
-If it halts, those flows pause &mdash; fees keep accruing and the fee burn keeps running &mdash; until it
+If it halts, those flows pause &mdash; fees keep accruing in USDG &mdash; until it
 resumes. More severely, treasury keys derive from the operator&rsquo;s master secret: its loss would
-strand treasury balances and venue collateral, though never the locked liquidity or holder
-balances.</p>
+strand treasury balances and venue collateral, and its theft would expose them, though never the locked liquidity or
+holder balances.</p>
 <h3>Venue and bridge dependency</h3>
-<p>Lighter, its zk bridge, and the chain&rsquo;s RPC infrastructure are live dependencies. Outages
-pause deposits, closes, or withdrawals until they recover; bridge settlement adds latency
-(minutes, not blocks) to every profit return.</p>
+<p>Lighter, its zk bridge, Doppler&rsquo;s contracts, and the chain&rsquo;s RPC infrastructure are live dependencies.
+Outages pause deposits, closes, or withdrawals until they recover; bridge settlement adds latency
+(minutes, not blocks) to every return. Markets with trading hours neither open nor close a position outside them.</p>
 <h3>Early liquidity depth</h3>
 <p>A token opens at a $4,000 valuation with one-sided liquidity, so early trades have high price
-impact in both directions. The keeper&rsquo;s own buybacks are bounded by the $25 per-tick cap and the
+impact in both directions. The keeper&rsquo;s own buybacks are bounded by the $25 cap and the
 3% slippage floor precisely so that the engine never trades meaningfully against that thinness.</p>
 <h3>Indirect exposure only</h3>
 <p>A buyer seeking continuous delta exposure to an underlying should hold the perpetual itself.
@@ -368,20 +360,20 @@ position that never reaches its targets delivers none of it.</p>
 <section>
 <h2>8.&ensp;Conclusion</h2>
 <p>This paper specifies a launchpad in which a token&rsquo;s trading fees are not income to be split
-but collateral to be deployed. The token is inert and ownerless; its liquidity is locked in a
-contract that can only burn and forward; its fees run a live leveraged perpetual whose realized
-profits return as buybacks and burns. What is enforced by contract &mdash; supply, lock, burn &mdash;
-survives everyone, including the operator. What is operated &mdash; the engine &mdash; is bounded in what
-it can lose and public in everything it does.</p>
+but collateral to be deployed. The token is inert; its liquidity is locked for good; its fees arrive as USDG and run a
+live leveraged perpetual, and what that position wins leaves it whole, to buy the token back and burn it. What is
+enforced by contract &mdash; supply, lock, fee, and its division &mdash; survives everyone, including the operator. What is
+operated &mdash; the engine &mdash; is bounded in what it can lose and public in everything it does.</p>
 </section>
 
 <section class="refs">
 <h2>References</h2>
 <p>[1]&ensp;Lighter, &ldquo;Lighter Documentation,&rdquo; https://docs.lighter.xyz</p>
-<p>[2]&ensp;Robinhood Chain explorer (Blockscout), https://robinhoodchain.blockscout.com</p>
-<p>[3]&ensp;H. Adams, N. Zinsmeister, M. Salem, R. Keefer, D. Robinson, &ldquo;Uniswap v3 Core,&rdquo; March 2021.</p>
-<p>[4]&ensp;Global Dollar Network, &ldquo;USDG &mdash; Global Dollar,&rdquo; https://globaldollar.com</p>
-<p>[5]&ensp;H. Krawczyk, M. Bellare, R. Canetti, &ldquo;HMAC: Keyed-Hashing for Message Authentication,&rdquo; RFC 2104, February 1997.</p>
+<p>[2]&ensp;Robinhood Chain explorer (Etherscan), https://robin.etherscan.io</p>
+<p>[3]&ensp;H. Adams, M. Salem, N. Zinsmeister, S. Reynolds, A. Adams, W. Pote, M. Toda, A. Henshaw, E. Williams, D. Robinson, &ldquo;Uniswap v4 Core,&rdquo; 2023.</p>
+<p>[4]&ensp;Whetstone Research, &ldquo;Doppler Documentation,&rdquo; https://docs.doppler.lol</p>
+<p>[5]&ensp;Global Dollar Network, &ldquo;USDG &mdash; Global Dollar,&rdquo; https://globaldollar.com</p>
+<p>[6]&ensp;H. Krawczyk, M. Bellare, R. Canetti, &ldquo;HMAC: Keyed-Hashing for Message Authentication,&rdquo; RFC 2104, February 1997.</p>
 </section>
 
 </div>

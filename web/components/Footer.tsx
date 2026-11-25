@@ -28,6 +28,7 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
       { label: "The engine", href: "/docs/engine" },
       { label: "Take-profits", href: "/docs/tranches" },
       { label: "Who earns what", href: "/docs/economics" },
+      { label: "Whitepaper", href: "/whitepaper.pdf" },
     ],
   },
 ];
@@ -73,9 +74,13 @@ export default function Footer({ router }: { router?: string }) {
             <Column key={col.heading} heading={col.heading}>
               {col.links.map((l) => (
                 <li key={l.label}>
-                  <Link href={l.href} className={linkClass}>
-                    {l.label}
-                  </Link>
+                  {l.href.endsWith(".pdf") ? (
+                    <External href={l.href}>{l.label}</External>
+                  ) : (
+                    <Link href={l.href} className={linkClass}>
+                      {l.label}
+                    </Link>
+                  )}
                 </li>
               ))}
             </Column>

@@ -280,22 +280,19 @@ function KeeperBody() {
   return (
     <>
       <p>
-        A keeper bot ticks every <N>15 seconds</N>. For every token, each tick, in
-        order:
+        A keeper goes over every token, one after the other, and starts again <N>15 seconds</N> after the last one. For
+        each, in order:
       </p>
       <ol className="space-y-3">
         {[
-          <>credits any perp withdrawal that landed since the last tick, bridge
-            settlements are recognized from the on-chain transfer itself: {PROFIT_SPLIT_PCT.treasury}% of
-            the gain to the treasury, the rest to the buyback reserve;</>,
-          <>flushes the token&apos;s fee sink when it holds enough to be worth the
-            gas ({FEE_SPLIT_PCT.treasury}% to the treasury, {FEE_SPLIT_PCT.engine}% to
-            the sub-wallet, tokens burned) and moves what arrived into the perp
-            reserve; any tokens that reach the sub-wallet (bought back, or sent by
-            holders) are burned, entirely, every tick;</>,
+          <>credits what came home from Lighter since the last pass, recognized from the on-chain transfer itself:{" "}
+            {PROFIT_SPLIT_PCT.treasury}% of the gain to the treasury, all the rest to the buyback reserve;</>,
+          <>flushes the token&apos;s fee sink when it holds enough to be worth the gas ({FEE_SPLIT_PCT.treasury}% to the
+            treasury, {FEE_SPLIT_PCT.engine}% to the sub-wallet, tokens burned) and burns, entirely, any tokens that
+            reached the sub-wallet;</>,
           <>runs the buyback when the reserve clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>;</>,
-          <>marks the perp to market and decides: deposit, top up, or take
-            profit.</>,
+          <>deposits the fees that are due, withdraws what take-profits took out, closes the tranches that reached their
+            target, and opens a new one if there is collateral for it.</>,
         ].map((item, i) => (
           <li key={i} className="flex gap-4">
             <span className="num mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border-2 border-brand text-xs font-semibold text-brand">
@@ -306,11 +303,15 @@ function KeeperBody() {
         ))}
       </ol>
       <p>
-        <K>Crash safety.</K> Every bucket is checkpointed before the transaction is
-        sent, so a crash at any point under-pays for one tick instead of paying
-        twice. An ambiguous outcome, sent but unconfirmed, becomes a pending
-        record and is reconciled against on-chain evidence; it is never blindly
-        re-sent.
+        <K>Crash safety.</K> Every payment, order and withdrawal is written down before it is sent. After a crash or a
+        timeout an order is settled on what it actually traded, found by its own identifier on the venue, and a withdrawal
+        on whether its cash has left the account; until that is known nothing else moves for that token. Nothing is ever
+        re-sent on a guess.
+      </p>
+      <p>
+        <K>When the venue says no.</K> A book too thin for an order refuses it whole: the next attempt is half the size. A
+        closed market or an empty book is not an error, the keeper tries again at every pass. A withdrawal below
+        Lighter&apos;s minimum waits for more.
       </p>
     </>
   );
@@ -351,7 +352,8 @@ function LifecycleBody() {
       </p>
       <p>
         <K>Liquidation.</K> If the venue liquidates the position, the posted
-        collateral is gone and the tranche book zeroes out. That is the whole blast
+        collateral is gone and the tranche book zeroes out. Cash in the account that was not in the position stays, and
+        so does everything already taken out by take-profits. That is the whole blast
         radius: the pool, the locked liquidity and holder balances are untouched,
         and the engine restarts from the next {fmtThreshold(OPEN_GATE_USD)} of fees.
       </p>
@@ -413,7 +415,7 @@ function TranchesBody() {
         <K>What a change of market or side does.</K> When it takes effect the keeper closes the
         whole position at market, reduce-only, and opens nothing until that close has filled. A net profit
         is banked like any other ({PROFIT_SPLIT_PCT.buyback}% buyback, {PROFIT_SPLIT_PCT.treasury}% protocol),
-        net of what the close cost; a net loss is final. What is left is the collateral of the new position.
+        at the price it filled; a net loss is final. What is left is the collateral of the new position.
         If the market is closed or the book is empty, the keeper waits and tries again.
       </p>
       <p>
@@ -427,6 +429,12 @@ function TranchesBody() {
         position is re-read after the order and only what actually closed is
         credited, at the price it filled at. The whole tranche leaves the engine:
         the capital that was in it and its gain. The next position is loaded by new fees.
+      </p>
+      <p>
+        <K>What comes out.</K> A tranche decides when to close, by its own entry. What it pays is what Lighter pays: the
+        margin of the part closed and its result against the position&apos;s average entry, at the actual fill, funding
+        included. When several tranches are open the two differ; nothing is lost, what one close leaves in the position
+        comes out with the others.
       </p>
       <p>
         <K>Ring-fencing.</K> What a take-profit took out, capital and gain, is excluded
@@ -460,7 +468,7 @@ function ProfitsBody() {
         as a series of ordinary buys rather than one block-moving order.
       </p>
       <p>
-        <K>One number.</K> Buybacks, plus any holder who sends to 0xdEaD on their
+        <K>One number.</K> Buybacks, plus any holder who calls <N>burn()</N> on their
         own, show up in <N>initial supply − totalSupply</N>, the burn figure every
         page of this site reports. Trading fees themselves are not burned: they are
         turned into USDG and put to work, which is what makes the buyback bigger.
@@ -481,15 +489,13 @@ function EconomicsBody() {
         other {PROFIT_SPLIT_PCT.buyback}% and all the capital buy and burn supply. No launch fee, beyond gas.
       </p>
       <p>
-        <K>What the protocol does with its share.</K> {FLYWHEEL.buybackPct}% of everything it earns, from fees and from gains, buys{" "}
-        <N>$MULTIPLY</N> on its own pool and burns it; {FLYWHEEL.treasuryPct}% stays in the treasury. The keeper looks every{" "}
-        <N>{FLYWHEEL.everyMin} minutes</N>, buys from <N>${FLYWHEEL.minUsd}</N> up in a size that moves the price by {FLYWHEEL.impactPct}% at
-        most, never while a launch protection is still high, and burns exactly what it bought. Every buyback is listed on{" "}
-        <Link href="/burn" className="font-medium text-brand underline underline-offset-4">the burn page</Link>. It starts when $MULTIPLY launches.
+        <K>What the protocol does with its share.</K> {FLYWHEEL.buybackPct}% of everything it earns buys{" "}
+        <N>$MULTIPLY</N> and burns it, {FLYWHEEL.treasuryPct}% stays in the treasury:{" "}
+        <Link href="/docs/multiply" className="font-medium text-brand underline underline-offset-4">how that works</Link>.
       </p>
       <p>
         Worst case is bounded by design: isolated margin means a liquidation costs
-        the treasury&apos;s allocated collateral, never more. The engine then starts
+        the collateral in the position, never more. The engine then starts
         re-accumulating from the next fee.
       </p>
       <p>
@@ -499,6 +505,39 @@ function EconomicsBody() {
         a continuously repricing reserve. That looseness is what keeps a liquidation
         from ever touching the pool.
       </p>
+    </>
+  );
+}
+
+function MultiplyBody() {
+  return (
+    <>
+      <p>
+        The protocol earns twice: <N>{FEE_SPLIT_PCT.treasury}%</N> of every trading fee, when it is paid, and{" "}
+        <N>{PROFIT_SPLIT_PCT.treasury}%</N> of every take-profit&apos;s gain, when it comes home. Of everything it earns,{" "}
+        <K>{FLYWHEEL.buybackPct}% buys $MULTIPLY on its own pool and burns it</K>; {FLYWHEEL.treasuryPct}% stays in the
+        treasury.
+      </p>
+      <p>
+        <K>Every {FLYWHEEL.everyMin} minutes</K> the keeper adds up what the sinks and the sub-wallets have paid the
+        protocol since the last time, and only that: other money that reaches the treasury is not an earning.
+      </p>
+      <p>
+        <K>How it buys.</K> From <N>${FLYWHEEL.minUsd}</N> up, in the largest size that moves the price by{" "}
+        <N>{FLYWHEEL.impactPct}%</N> at most; what does not fit waits for the next time. It never buys while a launch
+        protection is still high. What it bought, counted from the swap itself, is burned right after with{" "}
+        <N>burn()</N>, so the supply goes down and stays down.
+      </p>
+      <p>
+        <K>Two burns, not one.</K> Each token&apos;s engine buys back and burns that token with its own take-profits; this
+        one is the protocol&apos;s, and burns $MULTIPLY with the earnings of all of them. Every buyback is listed, with its
+        transactions, on the{" "}
+        <Link href="/burn" className="font-medium text-brand underline underline-offset-4">
+          burn page
+        </Link>
+        .
+      </p>
+      <p>It starts when $MULTIPLY launches, and counts from then.</p>
     </>
   );
 }
@@ -514,9 +553,9 @@ function VerifyBody() {
         live Lighter account.
       </p>
       <p>
-        The accounting closes: USDG into a sub-wallet matches the hook&apos;s fee
-        transfers plus perp withdrawals; USDG out matches Lighter deposits and
-        buyback swaps, which match on-chain burns and venue position deltas.
+        The accounting closes: USDG into a sub-wallet matches its sink&apos;s
+        transfers plus perp withdrawals; USDG out matches Lighter deposits, buyback swaps and
+        the protocol&apos;s share of gains, and the swaps match on-chain burns.
       </p>
       <ul className="divide-y divide-line overflow-hidden rounded-[14px] border border-border bg-card">
         {CONTRACTS.map((c) => (
@@ -547,19 +586,33 @@ function RisksBody() {
   return (
     <>
       <p>
-        The keeper is a live dependency: if it stops, deposits, take-profits and
-        buybacks pause; fees keep arriving in USDG at the fee destination, because
-        the hook does that without us. The perp leg carries real market risk:
-        leverage cuts both ways, and a token&apos;s treasury can be liquidated. The
-        master secret that derives sub-wallets is held by the operator: it cannot
-        rug the liquidity (the lock makes that impossible) but it does control the
-        flow of collected fees. Doppler&apos;s contracts are audited but not by us;
-        Lighter, its zk bridge and RPC providers are all moving parts: an outage on
-        any of them pauses deposits, take-profits or withdrawals until it recovers.
+        <K>Leverage.</K> It cuts both ways. A position can be liquidated, and the fees in it are lost; near a
+        market&apos;s maximum leverage a move of a percent or less is enough. A position that never reaches its target
+        buys nothing back.
       </p>
       <p>
-        Read the contracts, check the addresses, verify the burns. Then pick a
-        market, a side, a leverage, and a token you actually believe in.
+        <K>The keeper.</K> It is a live dependency: if it stops, deposits, take-profits and buybacks pause; fees keep
+        arriving in USDG at the fee destination, because the hook does that without us. The master secret that derives
+        sub-wallets is held by the operator: it cannot rug the liquidity (the lock makes that impossible) but it does
+        control the flow of collected fees and the positions.
+      </p>
+      <p>
+        <K>The router&apos;s owner</K> can upgrade the router for future launches, change where the protocol&apos;s share
+        goes, override a token&apos;s leverage and take-profit, and point a sink at another sub-wallet. Never a token, its
+        pool or its lock.
+      </p>
+      <p>
+        <K>Managed tokens.</K> Their creator chooses what they trade, with notice. Moving the position costs what closing
+        and opening cost, and on a thin market that can be a lot of it: read the changes on the token&apos;s page.
+      </p>
+      <p>
+        <K>Other people&apos;s parts.</K> Doppler&apos;s contracts are audited but not by us; Lighter, its zk bridge and
+        RPC providers are all moving parts: an outage on any of them pauses deposits, take-profits or withdrawals until it
+        recovers. Stock markets close, and a closed market neither opens nor closes a position.
+      </p>
+      <p>
+        <K>The token.</K> It is a small market with one-sided liquidity: prices move fast both ways, and it can go to
+        zero whatever its engine does. If you want continuous exposure to an asset, hold the perp itself.
       </p>
     </>
   );
@@ -586,7 +639,7 @@ const GROUPS: { label: string; pages: Omit<DocPage, "group" | "n">[] }[] = [
     label: "The perp engine",
     pages: [
       { slug: "markets", title: "Market universe", lede: "Any perp Lighter lists, long or short, up to the market's cap.", body: MarketsBody },
-      { slug: "keeper", title: "The keeper loop", lede: "Every 15 seconds, the same four steps for every token.", body: KeeperBody },
+      { slug: "keeper", title: "The keeper loop", lede: "The same four steps for every token, around the clock.", body: KeeperBody },
       { slug: "lifecycle", title: "Position lifecycle", lede: "From the first deposit to a liquidation, and what each one touches.", body: LifecycleBody },
       { slug: "tranches", title: "Tranches & take-profit", lede: "Every deposit runs toward a target of its own.", body: TranchesBody },
       { slug: "profits", title: "Profits, buybacks, burns", lede: "How a take-profit becomes a buyback and a burn.", body: ProfitsBody },
@@ -596,6 +649,7 @@ const GROUPS: { label: string; pages: Omit<DocPage, "group" | "n">[] }[] = [
     label: "Protocol",
     pages: [
       { slug: "economics", title: "Economics", lede: "Who gets what, and a worst case bounded by design.", body: EconomicsBody },
+      { slug: "multiply", title: "$MULTIPLY buyback & burn", lede: "Most of what the protocol earns buys its token and burns it.", body: MultiplyBody },
       { slug: "verify", title: "What you can verify", lede: "Every contract, one click from the explorer.", body: VerifyBody },
       { slug: "risks", title: "What we don't promise", lede: "The moving parts, and what pauses when one of them stops.", body: RisksBody },
     ],

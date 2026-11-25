@@ -32,8 +32,8 @@ export default function DocsIndex() {
           </h1>
           <p className="mt-5 max-w-[62ch] text-lg leading-[1.65] text-night-ink-2">
             multiply.cash launches tokens fueled by perps: their trading fees fund a leveraged position on Lighter, on BTC,
-            stocks, even pre-IPO markets. Profits flow back on-chain and burn supply. The market is a Uniswap v4 pool
-            built by Doppler, locked from the first block, with no owner and no admin key.
+            stocks, even pre-IPO markets. When a position wins, its capital and most of the gain come back and burn the token.
+            The market is a Uniswap v4 pool built by Doppler, locked from the first block for good.
           </p>
           <Link
             href={`/docs/${first.slug}`}
