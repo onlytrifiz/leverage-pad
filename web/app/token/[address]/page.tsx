@@ -121,8 +121,8 @@ function TradeColumn({ detail }: { detail: NonNullable<Awaited<ReturnType<typeof
         </div>
         <PanelBody className="pt-3.5">
           <p className="text-xs leading-relaxed text-ink-3">
-            Every fee lands here in USDG, converted by the pool&apos;s hook in the same swap. From here it funds the
-            position; tokens that arrive are burned.
+            The engine&apos;s share of every fee lands here in USDG, converted by the pool&apos;s hook in the same swap. From
+            here it funds the position; tokens that arrive are burned.
           </p>
         </PanelBody>
       </Panel>

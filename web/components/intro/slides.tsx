@@ -264,7 +264,7 @@ function Wild(props: SlideProps) {
       scope={scope}
       title="Tokens go flat."
       accent="Markets keep moving."
-      body="NVDA jumps 31% in a day. Gold, bitcoin and AI names swing on real volume. An idle token doesn't print a candle. With a perp inside, it can."
+      body="NVDA can jump double digits in a day. Gold, bitcoin and AI names swing on real volume. An idle token doesn't print a candle. With a perp inside, it can."
     >
       <div className="relative w-full max-w-[560px] min-[360px]:mt-20 lg:mt-16">
         {/* faded at both ends: the sea has no edge, only the plate does */}
@@ -365,7 +365,7 @@ function Bet(props: SlideProps) {
       title="We put a"
       accent="perp"
       after="inside the token."
-      body="Trading fees load it, in USDG. The creator picks the market, long or short, the leverage and when each deposit takes profit. From there the position runs on its own."
+      body="Trading fees load it, in USDG. The creator picks the market, long or short, the leverage and when each deposit takes profit. From there the position works whether anyone trades or not."
     >
       <div className="relative w-full max-w-[560px] min-[360px]:mt-16 lg:mt-0">
         <div className="js-art pointer-events-none absolute right-[22%] bottom-[calc(100%-24px)] z-0 w-[34%] max-[359px]:hidden sm:w-[34%]">
@@ -675,7 +675,7 @@ function Dump(props: SlideProps) {
     <Frame
       scope={scope}
       title={`${EX.asset} dumps.`}
-      accent="Nothing sells the token."
+      accent="The engine sells nothing."
       body="The position can only lose the fees it was given. The engine never sells the token, so its chart keeps going where its traders take it."
     >
       {/* the bear charges in from the other side and stops on the plate's top edge */}

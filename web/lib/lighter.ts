@@ -60,9 +60,9 @@ export type MarketKind = "stocks" | "crypto" | "commodities" | "preipo";
 const LISTED = new Set(["ANT", "ANTHROPIC"]);
 /**
  * Still trading, so tokens already on it keep working, but replaced by a market
- * on the listed share: a new launch is sent to ANT.
+ * on the listed share: a new launch is sent there.
  */
-const REPLACED = new Set(["ANTHROPIC"]);
+const REPLACED: Record<string, string> = { ANTHROPIC: "ANT" };
 
 /** the family a market is shown under, from the venue's own tags */
 function kindOf(symbol: string, assetType: string, categories: string[]): MarketKind {
@@ -79,6 +79,8 @@ export type MarketRow = {
   kind: MarketKind;
   /** a new token can be pointed at it */
   launchable: boolean;
+  /** where a new token goes instead, when it cannot */
+  replacedBy: string | null;
   marketId: number;
   mark: number | null;
   change24h: number | null; // percento
@@ -116,7 +118,8 @@ export async function allMarkets(): Promise<MarketRow[]> {
         symbol,
         name: String(tag?.name ?? symbol),
         kind: kindOf(symbol, String(tag?.asset_type ?? "CRYPTO"), (tag?.categories as string[] | undefined) ?? []),
-        launchable: !REPLACED.has(symbol),
+        launchable: !(symbol in REPLACED),
+        replacedBy: REPLACED[symbol] ?? null,
         marketId: Number(o.market_id),
         mark: o.mark_price != null ? Number(o.mark_price) : null,
         change24h: o.daily_price_change != null ? Number(o.daily_price_change) : null,

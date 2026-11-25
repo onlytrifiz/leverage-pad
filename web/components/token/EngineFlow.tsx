@@ -1,6 +1,7 @@
 "use client";
 
 import { CircleDollarSign, Flame, Hourglass, TrendingUp } from "lucide-react";
+import { PROFIT_SPLIT_PCT } from "@/lib/doppler";
 import type { CoinDetail } from "@/lib/types";
 import { fmtInt } from "@/lib/format";
 import { AnimatedNumber } from "@/components/motion";
@@ -32,7 +33,7 @@ export default function EngineFlow({ detail }: { detail: CoinDetail }) {
       icon: Hourglass,
       label: "Waiting to buy back",
       value: <AnimatedNumber value={stats.buybackReserveUsd} format="usd" countOnMount />,
-      note: "realized profit, 70% share",
+      note: `realized profit, ${PROFIT_SPLIT_PCT.buyback}% share`,
     },
     {
       icon: Flame,

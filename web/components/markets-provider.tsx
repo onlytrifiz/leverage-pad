@@ -44,11 +44,12 @@ export function MarketsProvider({
       try {
         const r = await fetch("/api/markets");
         const j = (await r.json()) as { markets?: MarketRow[] };
-        if (alive) setMarkets(j.markets ?? []);
+        if (!r.ok || !j.markets?.length) throw new Error("no markets");
+        if (!alive) return;
+        setMarkets(j.markets);
+        setLoaded(true);
       } catch {
-        /* keep the last good list rather than blanking the screen */
-      } finally {
-        if (alive) setLoaded(true);
+        /* keep the last good list, or the skeleton while there is none, rather than an empty one */
       }
     };
     load();

@@ -23,7 +23,6 @@ import CoinCard from "./CoinCard";
  * moving most today.
  */
 
-const CRYPTO = new Set(["BTC", "ETH", "SOL", "HYPE", "ZEC", "DOGE", "XRP", "SUI", "LINK", "AVAX", "LIT"]);
 
 type Filter = "all" | "stock" | "crypto" | "shorts" | "new";
 type Sort = "mcap" | "new" | "launch" | "burned" | "fees";
@@ -55,12 +54,14 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
   const [view, setView] = useState<"grid" | "list">("grid");
   const [q, setQ] = useState("");
   const [mountedAt] = useState(() => Date.now());
+  const { markets } = useMarkets();
+  const crypto = useMemo(() => new Set(markets.filter((m) => m.kind === "crypto").map((m) => m.symbol)), [markets]);
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
     const out = items.filter(({ coin }) => {
-      if (filter === "stock" && CRYPTO.has(coin.market)) return false;
-      if (filter === "crypto" && !CRYPTO.has(coin.market)) return false;
+      if (filter === "stock" && crypto.has(coin.market)) return false;
+      if (filter === "crypto" && !crypto.has(coin.market)) return false;
       if (filter === "shorts" && coin.side !== "short") return false;
       if (filter === "new" && mountedAt - new Date(coin.createdAt).getTime() > 3 * 86_400_000) return false;
       if (!needle) return true;
@@ -79,7 +80,7 @@ export default function CoinsBoard({ items, pnl }: { items: CoinListItem[]; pnl:
       fees: (i) => i.feesCollectedUsd,
     };
     return out.sort((a, b) => key[sort](b) - key[sort](a));
-  }, [items, filter, sort, q, mountedAt]);
+  }, [items, filter, sort, q, mountedAt, crypto]);
 
   return (
     <section aria-label="Tokens">

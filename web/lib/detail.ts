@@ -216,7 +216,8 @@ export async function openPositions(): Promise<OpenPosition[]> {
         accountIndex,
         marketId: p.marketId,
         side,
-        leverage: coin.leverage,
+        // what the venue has, which a change of engine moves later than the coin's own
+        leverage: st?.lighterLeverage ?? coin.leverage,
         notionalUsd: p.positionSizeUsd,
         collateralUsd: p.collateralUsd,
         pnlUsd: p.unrealizedPnlUsd,

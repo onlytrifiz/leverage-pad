@@ -36,7 +36,7 @@ export default function ManageEngine({ coin, delayS }: { coin: Coin; delayS: num
   // the market it already runs on stays choosable even when new launches are sent elsewhere
   const choices = useMemo(() => markets.filter((m) => m.launchable || m.symbol === coin.market), [markets, coin.market]);
   const cap = markets.find((m) => m.symbol === market)?.maxLeverage ?? null;
-  const listed = !loaded || markets.some((m) => m.symbol === market);
+  const listed = markets.some((m) => m.symbol === market);
   const levOk = cap == null || lev <= cap;
   const tpMax = maxTakeProfitPct(lev);
   const tp = Math.min(tpPick, tpMax);
@@ -135,6 +135,7 @@ export default function ManageEngine({ coin, delayS }: { coin: Coin; delayS: num
                 key={l}
                 type="button"
                 disabled={off}
+                aria-pressed={lev === l}
                 onClick={() => setLev(l)}
                 className={cn(
                   "num h-8 rounded-lg border px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-35",
@@ -169,7 +170,8 @@ export default function ManageEngine({ coin, delayS }: { coin: Coin; delayS: num
               key={p.pct}
               type="button"
               disabled={p.pct > tpMax}
-              onClick={() => setTp(p.pct)}
+              aria-pressed={tp === p.pct}
+                onClick={() => setTp(p.pct)}
               className={cn(
                 "rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-35",
                 tp === p.pct ? "border-brand bg-brand-soft text-brand" : "border-line text-ink-2 hover:border-line-2"
@@ -187,7 +189,7 @@ export default function ManageEngine({ coin, delayS }: { coin: Coin; delayS: num
           buyback), a net loss is final. The rest opens {market} {side}.
         </p>
       )}
-      {!listed && <p className="mt-3 text-sm text-down">Lighter does not list {market} right now.</p>}
+      {loaded && !listed && <p className="mt-3 text-sm text-down">Lighter does not list {market} right now.</p>}
 
       <div className="mt-6 flex flex-wrap items-center gap-3">
         <ChainGate connectLabel="Connect the creator wallet" className="w-auto">
@@ -202,17 +204,17 @@ export default function ManageEngine({ coin, delayS }: { coin: Coin; delayS: num
             {busy === "Announcing" && <Spinner data-icon="inline-start" />}
             {busy === "Announcing" ? "Announcing" : !levOk ? `${market} allows up to ${cap}x` : unchanged ? "Nothing to announce" : `Announce: ${diff}`}
           </Button>
+          {coin.pendingEngine && (
+            <Button
+              size="lg"
+              variant="outline"
+              disabled={!!busy}
+              onClick={() => send(ROUTER_IFACE.encodeFunctionData("cancelEngineProposal", [coin.token]), "Withdrawing")}
+            >
+              {busy === "Withdrawing" ? "Withdrawing" : "Withdraw the announcement"}
+            </Button>
+          )}
         </ChainGate>
-        {coin.pendingEngine && (
-          <Button
-            size="lg"
-            variant="outline"
-            disabled={!!busy}
-            onClick={() => send(ROUTER_IFACE.encodeFunctionData("cancelEngineProposal", [coin.token]), "Withdrawing")}
-          >
-            {busy === "Withdrawing" ? "Withdrawing" : "Withdraw the announcement"}
-          </Button>
-        )}
       </div>
       {error && (
         <p className="mt-3 text-sm text-down" role="alert">

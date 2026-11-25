@@ -40,12 +40,15 @@ export default function AssetPicker({
   value,
   onPick,
   levCap,
+  note,
 }: {
   markets: MarketRow[];
   loaded: boolean;
   value: string;
   /** the highest leverage a launch accepts: the venue's max is shown capped to it */
   levCap: number;
+  /** why the chosen market is not the one that was asked for */
+  note?: string;
   /** `side` is a hint from the movers row: the direction of today's move */
   onPick: (symbol: string, side?: "long" | "short") => void;
 }) {
@@ -80,6 +83,7 @@ export default function AssetPicker({
 
   return (
     <div>
+      {note && <p className="mb-3 text-sm text-ink-2">{note}</p>}
       {movers.length > 0 && (
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <span className="text-xs text-ink-3">Moving today</span>

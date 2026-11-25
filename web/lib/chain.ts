@@ -5,6 +5,7 @@ import type { Candle, Coin, EngineLogItem, FeedItem } from "./types";
 import { multicallPerItem, type Call } from "./multicall";
 import { LEGACY_TP, MANAGED_DELAY_FALLBACK_S } from "./doppler";
 import { memo } from "./memo";
+import routerArchive from "./router-logs.json";
 
 /**
  * On-chain reads for coins launched through the multiply router (Uniswap v4 via
@@ -197,6 +198,7 @@ function fetchMetadata(uri: string): Promise<Metadata | null> {
 const SIDES = new Set(["long", "short"]);
 
 let coinsCache: { at: number; coins: Coin[] } | null = null;
+let coinsScan: Promise<Coin[]> | null = null;
 const COINS_TTL_MS = 10_000;
 
 const sideOf = (n: unknown): "long" | "short" => (Number(n) === 1 ? "short" : "long");
@@ -206,7 +208,7 @@ const ENGINE_CHANGE_TOPICS = new Set(
 );
 
 /** the engine's changes after launch, per coin, newest first */
-function engineHistory(logs: ethers.providers.Log[], tOf: (block: number) => number) {
+function engineHistory(logs: RouterLog[], tOf: (block: number) => number) {
   const out = new Map<string, EngineLogItem[]>();
   for (const l of logs) {
     const { name, args: a } = ROUTER_IFACE.parseLog(l);
@@ -219,7 +221,11 @@ function engineHistory(logs: ethers.providers.Log[], tOf: (block: number) => num
           ? { ...base, kind: "override", engine: tuning() }
           : { ...base, kind: "withdrawn", engine: null };
     const k = String(a.asset).toLowerCase();
-    out.set(k, [item, ...(out.get(k) ?? [])]);
+    // an announcement still in its notice ends with the next event: taken back, replaced or overridden
+    const past = (out.get(k) ?? []).map((e): EngineLogItem =>
+      e.kind === "announced" && !e.dropped && (e.effectiveAt ?? 0) > base.ts ? { ...e, dropped: true } : e
+    );
+    out.set(k, [item, ...past]);
   }
   return out;
 }
@@ -228,7 +234,9 @@ function engineHistory(logs: ethers.providers.Log[], tOf: (block: number) => num
 export function readManagedDelay(): Promise<number> {
   return memo("managed-delay", 60_000, async () => {
     const r = new ethers.Contract(LAUNCH_ROUTER, ROUTER_IFACE, provider);
-    return Number((await r.engineConfig()).managedDelay);
+    // a page waits for this: a node that hangs costs two seconds, not its three timeouts
+    const late = new Promise<never>((_, no) => setTimeout(() => no(new Error("timeout")), 2_000));
+    return Number((await Promise.race([r.engineConfig(), late])).managedDelay);
   }).catch(() => MANAGED_DELAY_FALLBACK_S);
 }
 
@@ -241,7 +249,9 @@ export function readManagedDelay(): Promise<number> {
 export async function loadRouterCoins(): Promise<Coin[]> {
   if (coinsCache && Date.now() - coinsCache.at < COINS_TTL_MS) return coinsCache.coins;
   try {
-    return await scanRouterCoins();
+    // callers that arrive while a scan runs share it
+    coinsScan ??= scanRouterCoins().finally(() => (coinsScan = null));
+    return await coinsScan;
   } catch (e) {
     // the RPC is down past its retries: the last good list beats an error page
     if (coinsCache) {
@@ -252,31 +262,50 @@ export async function loadRouterCoins(): Promise<Coin[]> {
   }
 }
 
+type RouterLog = { blockNumber: number; logIndex: number; transactionHash: string; topics: string[]; data: string };
+
+/*
+ * The router's logs. History is in the bundle (`router-logs.json`, written by
+ * scripts/router-logs.mjs) and everything read since stays in memory, so a request only ever asks
+ * for the blocks nobody has read yet. It used to ask for all of history, a hundred windows at
+ * once: the public RPC answered 429 and the coins in the refused windows vanished.
+ */
+const archive: { upTo: number; logs: RouterLog[] } =
+  routerArchive.router.toLowerCase() === LAUNCH_ROUTER.toLowerCase()
+    ? { upTo: routerArchive.upTo, logs: routerArchive.logs }
+    : { upTo: ROUTER_DEPLOY_BLOCK - 1, logs: [] };
+const LOG_STEP = 400_000; // the node's limit for a plain address query
+const LOG_PARALLEL = 3;
+/** blocks behind the head that are read again next time (about five minutes): a node that lags
+ *  behind the one that answered the head gives a short answer, not an error */
+const LOG_SETTLE = 3_000;
+
+/** every router log up to `latest`; throws rather than return a list with a hole in it */
+async function routerLogs(latest: number): Promise<RouterLog[]> {
+  const windows: [number, number][] = [];
+  for (let from = archive.upTo + 1; from <= latest; from += LOG_STEP) windows.push([from, Math.min(latest, from + LOG_STEP - 1)]);
+  const fresh: RouterLog[] = [];
+  for (let i = 0; i < windows.length; i += LOG_PARALLEL) {
+    const chunk = await Promise.all(
+      windows.slice(i, i + LOG_PARALLEL).map(([from, to]) => provider.getLogs({ address: LAUNCH_ROUTER, fromBlock: from, toBlock: to }))
+    );
+    const got = chunk.flat().map(({ blockNumber, logIndex, transactionHash, topics, data }) => ({ blockNumber, logIndex, transactionHash, topics, data }));
+    const done = Math.min(windows[Math.min(i + LOG_PARALLEL, windows.length) - 1][1], latest - LOG_SETTLE);
+    if (done > archive.upTo) {
+      archive.logs = [...archive.logs, ...got.filter((l) => l.blockNumber > archive.upTo && l.blockNumber <= done)];
+      archive.upTo = done;
+    }
+    fresh.push(...got.filter((l) => l.blockNumber > done));
+  }
+  return [...archive.logs, ...fresh];
+}
+
 async function scanRouterCoins(): Promise<Coin[]> {
   const latest = await provider.getBlockNumber();
   const launchTopic = ROUTER_IFACE.getEventTopic("MultiplyLaunch");
   const engineTopic = ROUTER_IFACE.getEventTopic("MultiplyEngine");
   const legacyEngineTopic = LEGACY_ENGINE_IFACE.getEventTopic("MultiplyEngine");
-  // The router's logs by ADDRESS only, topics filtered here: the node allows 400k blocks for a
-  // plain query but only 100k with an OR on topic0 (blocks are ~0.1 s, so that is under three
-  // hours). Windows are fetched in parallel: the scan starts at the first real launch, not at
-  // the router's deploy, but it still grows with the chain.
-  const STEP = 400_000;
-  const windows: [number, number][] = [];
-  for (let from = ROUTER_DEPLOY_BLOCK; from <= latest; from += STEP) windows.push([from, Math.min(latest, from + STEP - 1)]);
-  let missed = 0;
-  const chunks = await Promise.all(
-    windows.map(([from, to]) =>
-      provider.getLogs({ address: LAUNCH_ROUTER, fromBlock: from, toBlock: to }).catch((e) => {
-        missed++;
-        console.error(`[loadRouterCoins] getLogs ${from}-${to}: ${(e as Error).message?.slice(0, 120)}`);
-        return [] as ethers.providers.Log[];
-      })
-    )
-  );
-  // a window that failed would make coins vanish: keep the last full list rather than cache a short one
-  if (missed > 0 && coinsCache) return coinsCache.coins;
-  const all = chunks.flat();
+  const all = await routerLogs(latest);
   const changes = all.filter((l) => ENGINE_CHANGE_TOPICS.has(l.topics[0]));
   const logs = all.filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic || l.topics[0] === legacyEngineTopic);
   // the engine event of each asset, emitted in the same transaction as its launch
@@ -323,7 +352,9 @@ async function scanRouterCoins(): Promise<Coin[]> {
     { target: LAUNCH_ROUTER, iface: ROUTER_IFACE, fn: "sinkOf", args: [ev.asset] },
     // the engine as it stands now; null on a router without stored engines
     { target: LAUNCH_ROUTER, iface: ROUTER_IFACE, fn: "engineOf", args: [ev.asset] },
-  ]).catch(() => launches.map(() => [null, null, null, null]));
+  ]);
+  // a failed batch throws and the last good list is served: filled with blanks it would show every
+  // managed coin on the engine of its launch
   const metas = await Promise.all(launches.map(({ ev }) => fetchMetadata(String(ev.tokenURI))));
 
   const coins: Coin[] = launches.map(({ log, ev }, i) => {

@@ -9,6 +9,6 @@ export async function GET(
 ) {
   const { address } = await params;
   const detail = await coinDetail(address);
-  if (!detail) return NextResponse.json({ error: "coin not found" }, { status: 404 });
+  if (!detail) return NextResponse.json({ error: "token not found" }, { status: 404 });
   return NextResponse.json(detail);
 }

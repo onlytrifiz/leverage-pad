@@ -20,6 +20,8 @@ import { useLiveMark } from "@/hooks/use-lighter-live";
 
 export default function TranchePanel({ detail }: { detail: CoinDetail }) {
   const { coin, perp } = detail;
+  // during a switch the tranches are still the previous engine's
+  const { side } = detail.engineSwitch?.from ?? coin;
   const mark = useLiveMark(perp?.marketId);
 
   const tranches = useMemo(() => {
@@ -30,10 +32,10 @@ export default function TranchePanel({ detail }: { detail: CoinDetail }) {
         ...t,
         progress: span !== 0 ? Math.max(0, Math.min(1, (mark - t.entryMark) / span)) : t.progress,
         movePct:
-          ((coin.side === "short" ? t.entryMark - mark : mark - t.entryMark) / t.entryMark) * 100,
+          ((side === "short" ? t.entryMark - mark : mark - t.entryMark) / t.entryMark) * 100,
       };
     });
-  }, [detail.tranches, mark, coin.side]);
+  }, [detail.tranches, mark, side]);
 
   if (!tranches.length) return null;
   // the lowest target on the ladder: below the coin's take-profit once old deposits decay

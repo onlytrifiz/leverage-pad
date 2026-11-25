@@ -57,7 +57,7 @@ export default function VerifySection({ coin }: { coin: Coin }) {
     },
     {
       label: "Creator",
-      desc: "Wallet that launched the token, recorded in the metadata it signed.",
+      desc: "Wallet that launched the token, recorded by the router.",
       addr: coin.creator,
       href: explorerAddr(coin.creator),
     },

@@ -175,9 +175,14 @@ export default function LaunchForm({
   const markets = useMemo(() => listed.filter((m) => m.launchable), [listed]);
   const [side, setSide] = useState<"long" | "short">(initialSide);
   const [marketPick, setMarket] = useState(initialMarket);
-  // a link can name a market the venue does not list (or no longer takes launches on): the
-  // token would never open a position, so the form falls back to the most traded one
-  const market = markets.length === 0 || markets.some((m) => m.symbol === marketPick) ? marketPick : markets[0].symbol;
+  // A link can name a market the venue does not list, or no longer takes launches on: the token
+  // would never open a position. It goes to the one that replaced it, or to a fixed default, never
+  // to whatever ranks first at the moment.
+  const market = useMemo(() => {
+    if (!loaded || markets.some((m) => m.symbol === marketPick)) return marketPick;
+    const to = listed.find((m) => m.symbol === marketPick)?.replacedBy ?? "NVDA";
+    return markets.some((m) => m.symbol === to) ? to : (markets[0]?.symbol ?? marketPick);
+  }, [loaded, listed, markets, marketPick]);
   const [lev, setLev] = useState(3);
   // the pick is kept as chosen; what applies is capped by the leverage, so lowering the
   // leverage pulls the target in and raising it again gives the pick back
@@ -211,6 +216,8 @@ export default function LaunchForm({
   const selected = markets.find((m) => m.symbol === market) ?? null;
   /** Lighter's cap for the chosen market; null until the list has loaded */
   const maxLev = selected?.maxLeverage ?? null;
+  // nothing is signed for a market we have not seen on the venue's list
+  const marketOk = selected != null;
   const levOk = maxLev == null || lev <= maxLev;
   /*
    * Changing side floods the page with the new side's ink from where the
@@ -441,11 +448,13 @@ export default function LaunchForm({
 
   const launchButton = (
     <ChainGate connectLabel="Connect wallet to launch">
-      <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !orders || !predicted || !!busy || insufficient || !levOk}>
+      <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !orders || !predicted || !!busy || insufficient || !marketOk || !levOk}>
         {busy && <Spinner data-icon="inline-start" />}
         {busy ??
           (!ready
             ? "Name the token"
+            : !marketOk
+              ? "Loading the markets"
             : !levOk
               ? `${market} allows up to ${maxLev}x`
               : !orders
@@ -594,6 +603,7 @@ export default function LaunchForm({
               markets={markets}
               loaded={loaded}
               value={market}
+              note={market !== marketPick ? `${marketPick} takes no new tokens: set to ${market}.` : undefined}
               onPick={(sym, hint) => {
                 pickMarket(sym);
                 if (hint) switchSide(hint);

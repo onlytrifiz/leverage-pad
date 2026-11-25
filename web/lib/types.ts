@@ -8,6 +8,8 @@ export type EngineLogItem = {
   ts: number;
   txHash: string;
   effectiveAt?: number;
+  /** announced, but taken back or replaced before it took effect */
+  dropped?: boolean;
 };
 
 /**

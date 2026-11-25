@@ -49,7 +49,7 @@ function EngineBody() {
                     ├─ ${FEE_SPLIT_PCT.treasury}% protocol treasury
                     └─ ${FEE_SPLIT_PCT.engine}% the token's sub-wallet
                           └─ deposits to Lighter at the ${fmtThreshold(OPEN_GATE_USD)} gate
-                             opens/tops-up the position chosen at launch
+                             opens/tops-up the position the engine says
                              (market · direction · leverage · take-profit)
 
       realized profit → withdrawn on-chain
@@ -74,7 +74,7 @@ function LaunchBody() {
         multiply router (<A href={explorerAddr(LAUNCH_ROUTER)}>{short(LAUNCH_ROUTER)}</A>),
         which builds the whole market on Doppler&apos;s Airlock: the token, the pool,
         the lock and the fee hook, with the shape every multiply token shares. The
-        router holds no funds and never touches a token after its launch.
+        router holds no funds and has no function that reaches a token or its pool after launch.
       </p>
       <p>
         <K>The token.</K> A Doppler ERC-20 with fixed <N>1,000,000,000</N> supply,
@@ -94,7 +94,7 @@ function LaunchBody() {
         <K>The metadata.</K> Name, ticker, the token&apos;s seal and the engine
         settings (market, direction, leverage, take-profit) are pinned to IPFS and
         written into the token, signed by the launching wallet. Terminals and
-        explorers read the logo from there; the keeper reads the engine settings.
+        explorers read the logo from there. The engine settings are on the router itself.
       </p>
       <p>
         <K>The first buy.</K> Optionally, a first buy in USDG is bundled into the
@@ -199,9 +199,9 @@ function ContractsBody() {
         <K>Launch router</K> (<A href={explorerAddr(LAUNCH_ROUTER)}>{short(LAUNCH_ROUTER)}</A>).
         Enforces the shape of every launch: supply, opening market cap, fee range,
         protection limits, fee destination, Doppler&apos;s 5%. It is upgradeable so
-        its address can stay stable for indexers; an upgrade can only change{" "}
-        <em>future</em> launches, because the router has no function that reaches a
-        pool once it exists.
+        its address can stay stable for indexers. No upgrade can reach a token, its pool or
+        its lock: the router has no function that does, and they do not answer to it. What it
+        does hold for running tokens is their engine settings and the treasury address.
       </p>
       <p>
         A rug in the ordinary sense (someone withdraws the pool and walks) is not a
@@ -241,8 +241,9 @@ function FeeDestinationsBody() {
       <p>
         <K>Why nobody can drain the position.</K> Each token&apos;s Lighter account is
         opened under its own sub-wallet, and Lighter only accepts orders signed by
-        the account&apos;s key. A creator cannot drain, close, or borrow against the
-        position backing their token, and neither can the creator of any other token.
+        the account&apos;s key. A creator cannot drain or borrow against the
+        position backing their token, and neither can the creator of any other token. The most a managed
+        token&apos;s creator can do is move its engine, announced ahead, which closes one position to open another.
         The backing is operated by the keeper on a fixed policy, in public, or not at
         all.
       </p>
@@ -283,7 +284,7 @@ function KeeperBody() {
       <ol className="space-y-3">
         {[
           <>credits any perp withdrawal that landed since the last tick, bridge
-            settlements are recognized from the on-chain transfer itself and split
+            settlements are recognized from the on-chain transfer itself and split{" "}
             {PROFIT_SPLIT_PCT.treasury}% treasury / {PROFIT_SPLIT_PCT.buyback}% buyback;</>,
           <>flushes the token&apos;s fee sink when it holds enough to be worth the
             gas ({FEE_SPLIT_PCT.treasury}% to the treasury, {FEE_SPLIT_PCT.engine}% to
@@ -329,8 +330,8 @@ function LifecycleBody() {
         slippage cap.
       </p>
       <p>
-        <K>Losses.</K> If price moves against the position, nothing closes at a loss
-        and nothing averages down. Underwater tranches simply wait. New fees still
+        <K>Losses.</K> If price moves against the position, the engine never closes at a loss
+        on its own (only a managed token&apos;s creator moving it does) and nothing averages down. Underwater tranches simply wait. New fees still
         open new tranches at the current mark. Each runs at its own target from
         where it entered.
       </p>
@@ -353,7 +354,7 @@ function TranchesBody() {
         when the underlying moves <N>trigger ÷ leverage</N> from <em>its</em> entry:
         which is exactly <N>+trigger</N> on that tranche&apos;s own collateral.
         New fees never dilute an old tranche&apos;s progress. The trigger is the
-        token&apos;s take-profit, chosen at launch from <N>+10%</N> up to <N>20×</N> the leverage, so a
+        token&apos;s take-profit, set at launch (and retunable on managed tokens) from <N>+10%</N> up to <N>20×</N> the leverage, so a
         target never needs more than a <N>20%</N> move of the asset: <N>+40%</N> at 2x, <N>+200%</N> at
         10x, the <N>+500%</N> ceiling from 25x up.
         The usual picks:
@@ -389,7 +390,7 @@ function TranchesBody() {
         or <K>managed</K>. A fixed token keeps its market and side for life. A managed
         token&apos;s creator can change all of it later: market, side, leverage and
         take-profit. Every change is announced on-chain by the router and takes effect after
-        a notice, <N>1 hour</N> today, so holders can see it and decide; the token carries a
+        a notice (shown on the launch form and on every managed token&apos;s page), so holders can see it and decide; the token carries a
         Managed badge everywhere and its page lists every change. The notice is one setting for every
         token, kept by the router&apos;s owner, and moving it never moves a change already
         announced.

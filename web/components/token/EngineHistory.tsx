@@ -22,7 +22,15 @@ export default function EngineHistory({ coin, now }: { coin: Coin; now: number }
             ? "Announcement withdrawn"
             : [x.market && `${x.market} ${x.side}`, `${x.leverage}x`, `take-profit +${x.takeProfitPct}%`].filter(Boolean).join(", ");
           const status =
-            e.kind === "override" ? "Protocol override" : e.kind === "withdrawn" ? "Creator" : e.effectiveAt && e.effectiveAt > now ? "Announced" : "Creator";
+            e.kind === "override"
+              ? "Protocol override"
+              : e.kind === "withdrawn"
+                ? "Creator"
+                : e.dropped
+                  ? "Announced, never in effect"
+                  : (e.effectiveAt ?? 0) > now
+                    ? "Announced"
+                    : "Creator";
           return (
             <li key={`${e.txHash}-${e.kind}`} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5 px-5 py-3 text-sm">
               <span className="min-w-0 text-ink">
