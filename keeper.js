@@ -818,7 +818,7 @@ async function chainSteps({ keeper, locker, coin, st, checkpoint, sub, unitUsd, 
         st.treasuryOwedRaw = BN(st.treasuryOwedRaw).add(toTreasury).toString();
         st.perpWithdrawPendingUsd = Math.max(0, pendingUsd - usdOf(creditRaw, coin.pairDecimals, unitUsd));
         st.perpWithdrawPendingProfitUsd = pendingProfitUsd * (st.perpWithdrawPendingUsd / pendingUsd);
-        if (st.perpWithdrawPendingUsd < 0.01) { st.perpWithdrawPendingUsd = 0; st.perpWithdrawPendingProfitUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
+        if (st.perpWithdrawPendingUsd < 0.01) { st.perpDoubtUsd = 0; st.perpWithdrawPendingUsd = 0; st.perpWithdrawPendingProfitUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
         console.log(`  [${coin.symbol}] rientrato dal bridge: $${usdOf(creditRaw, coin.pairDecimals, unitUsd).toFixed(2)} → $${usdOf(toBuyback, coin.pairDecimals, unitUsd).toFixed(2)} buyback / $${usdOf(toTreasury, coin.pairDecimals, unitUsd).toFixed(2)} treasury`);
       }
       checkpoint(); // persiste comunque lo scanBlock (mai ricontare gli stessi log)
@@ -1019,7 +1019,8 @@ function bookOrder(coin, st, o, filled, price) {
   if (o.kind === 'tp') {
     if (!out) { console.log(`  [${coin.symbol}] TAKE-PROFIT: nessun fill (book vuoto o mercato chiuso?), riprovo al tick dopo`); return; }
     st.perpTranches = removeClosedBase(o.ready, filled).concat(o.keep);
-    st.perpOpen = st.perpTranches.length > 0; st.perpTpSplit = 0; st.perpTpSkip = 0;
+    st.perpOpen = st.perpTranches.length > 0; st.perpTpSplit = Math.max(0, Number(st.perpTpSplit || 0) - 1);
+    st.perpTpDeep = o.count && o.count < o.of ? o.count * 2 : 0; // what the book took, and a little more next time
     st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + out.profit;
     st.perpCapitalUsd = Number(st.perpCapitalUsd || 0) + out.capital;
     console.log(`  [${coin.symbol}] TAKE-PROFIT (+${o.tpPct}%): chiusa base ${filled}/${o.ask} @ ${price}, fuori dal motore $${out.capital.toFixed(2)} di capitale + $${out.profit.toFixed(2)} di guadagno`);
@@ -1091,7 +1092,7 @@ async function withdrawProceeds({ coin, st, checkpoint, accountIndex, apiPrivKey
   if (outOfEngine(st) < floor || Date.now() < Number(st.perpWithdrawRetryAt || 0)) return false;
   const now = await lighter.account(accountIndex);
   const cash = isolatedCash(now);
-  const { amount: exact, profit: exactProfit } = withdrawalOf(st, Math.min(cash, Number(now.available_balance ?? cash)));
+  const { amount: exact, profit: exactProfit } = withdrawalOf(st, Math.min(cash, Number(now.available_balance ?? cash)) - Number(st.perpDoubtUsd || 0));
   const amount = Math.floor(exact * 1e6) / 1e6; // USDC's own decimals, never rounded over the balance
   const profit = Math.min(amount, exactProfit);
   if (amount < floor) return false; // the cash is not all there yet
@@ -1131,7 +1132,7 @@ async function withdrawProceeds({ coin, st, checkpoint, accountIndex, apiPrivKey
 
 function clearIntent(st) {
   st.perpWithdrawIntentUsd = 0; st.perpWithdrawIntentProfitUsd = 0;
-  st.perpWithdrawCashUsd = null; st.perpWithdrawWas = null; st.perpWithdrawSent = false; st.perpWithdrawTx = null;
+  st.perpWithdrawCashUsd = null; st.perpWithdrawWas = null; st.perpWithdrawSent = false; st.perpWithdrawTx = null; st.perpWithdrawUnread = 0;
 }
 function undoWithdrawal(st) {
   st.perpRealizedUsd = st.perpWithdrawWas.realized; st.perpCapitalUsd = st.perpWithdrawWas.capital;
@@ -1165,8 +1166,19 @@ async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
   };
   // its own transaction knows, when there is one; nothing that is not executed by its expiry will be
   if (st.perpWithdrawTx) {
-    let t, read = true;
-    try { t = await lighter.tx(st.perpWithdrawTx, accountIndex); } catch { read = false; }
+    let t;
+    try { t = await lighter.tx(st.perpWithdrawTx, accountIndex); }
+    catch {
+      // Not being able to ask is not an answer: nothing else of this token moves until there is one.
+      // After hours of it the token is given back to its work, with that money kept out of it.
+      if (!st.perpWithdrawUnread) { st.perpWithdrawUnread = Date.now(); checkpoint(); }
+      if (Date.now() - st.perpWithdrawUnread < config.TX_UNREAD_MS) return false;
+      st.perpDoubtUsd = Number(st.perpDoubtUsd || 0) + amount;
+      intentToPending(st); checkpoint();
+      console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)}: la sua transazione non si legge da ore, trattato come inviato e tenuto fuori dal motore`);
+      return true;
+    }
+    st.perpWithdrawUnread = 0;
     if (t && t.status === 0) return undo('fallito');
     if (t && t.status >= 2) {
       intentToPending(st); checkpoint();
@@ -1174,8 +1186,7 @@ async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
       return true;
     }
     if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
-    if (read) return undo('mai eseguito');
-    // it cannot be asked about: past its expiry the cash says it, as without it
+    return undo('mai eseguito');
   }
   if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
   // No transaction to ask about (killed between signing and knowing): the cash says it, with the
@@ -1280,7 +1291,7 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
       st.perpCarry = !st.perpOpen; // the old engine's capital opens the new one, whatever is left of it
     }
     bankSwitch(coin, st); // a change taken back half way: what was already closed
-    st.perpEngine = now; st.perpSwitch = null;
+    st.perpEngine = now; st.perpSwitch = null; st.perpTpDeep = 0; st.perpTpSplit = 0;
     if (!sim) checkpoint();
     return false;
   }
@@ -1582,6 +1593,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
       const rec = reconcileTranches(st.perpTranches, 0, 0, mkt.sizeDec);
       if (rec.changed) {
         st.perpTranches = rec.tranches; st.perpOpen = false;
+        st.perpTpDeep = 0; st.perpTpSplit = 0;
         // funding the dead position owed died with its margin: it is not the next one's debt
         if (Number(st.perpRealizedUsd) < 0) st.perpRealizedUsd = 0;
         if (!sim) checkpoint();
@@ -1617,15 +1629,18 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
       }
       const { ready, keep } = matureTranches(st.perpTranches, mark, coin.side, st.lighterLeverage ?? coin.leverage, triggerFrac);
       // The price may not go past the entry of the worst of them, so one just at its target can keep
-      // the deep ones from closing on a book that would take them: each refusal leaves out the
-      // shallowest, and only when one is left are the sizes halved.
-      const gain = (t) => Math.abs(mark - t.entryMark);
-      const skip = Math.min(Number(st.perpTpSkip || 0), Math.max(0, ready.length - 1));
-      const shallow = [...ready].sort((a, b) => gain(a) - gain(b)).slice(0, skip);
-      const closing = ready.filter((t) => !shallow.includes(t)), rest = keep.concat(shallow);
-      const mature = Math.min(closing.reduce((a, t) => a + t.base, 0), posBase);
-      // a book too thin for the whole size refuses the order outright: each refusal halves the next
+      // the deep ones from closing on a book that would take them: the deepest go first, and how
+      // many is found by halving at a refusal and doubling at a fill. Never fewer than make an order
+      // the venue takes; at that point it is the size that is halved.
       const minAsk = Math.max(mkt.minBaseUnits || 1, Math.ceil((mkt.minQuoteUsd || 0) / mark * 10 ** mkt.sizeDec));
+      const gain = (t) => Math.abs(mark - t.entryMark);
+      const deepest = [...ready].sort((a, b) => gain(b) - gain(a));
+      let least = 0;
+      for (let sum = 0; least < deepest.length && sum < minAsk; least++) sum += deepest[least].base;
+      const count = Math.max(least, Number(st.perpTpDeep) > 0 ? Math.min(Number(st.perpTpDeep), deepest.length) : deepest.length);
+      const closing = deepest.slice(0, count), rest = keep.concat(deepest.slice(count));
+      if (!ready.length && (st.perpTpDeep || st.perpTpSplit)) { st.perpTpDeep = 0; st.perpTpSplit = 0; if (!sim) checkpoint(); }
+      const mature = Math.min(closing.reduce((a, t) => a + t.base, 0), posBase);
       const split = Number(st.perpTpSplit || 0);
       let closeBase = split > 0 ? Math.min(mature, Math.max(minAsk, Math.floor(mature / 2 ** split))) : mature;
       if (mature - closeBase < minAsk) closeBase = mature;
@@ -1637,7 +1652,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
           const o = recordOrder(st, checkpoint, {
             kind: 'tp', marketIndex, side: coin.side, sizeDec: mkt.sizeDec, base: posBase, ask: closeBase, avgEntry, mark, cash: isolatedCash(acc), tpPct: Math.round(triggerFrac * 100),
             margin: Number(pos.allocated_margin) > 0 ? Number(pos.allocated_margin) : avgEntry * posBase / 10 ** mkt.sizeDec / Number(st.lighterLeverage ?? coin.leverage),
-            ready: [...closing].sort((a, b) => a.ts - b.ts), keep: rest,
+            ready: [...closing].sort((a, b) => a.ts - b.ts), keep: rest, count, of: ready.length,
           });
           try {
             // never past the entry of the worst of them: a book thinner than the gain is not a gain.
@@ -1648,8 +1663,9 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
             if (!(e && e.definitive)) throw e; // unknown: settled on its trades, next tick
             st.perpOrder = null;
             if (!e.retry) {
-              if (closing.length > 1) st.perpTpSkip = skip + 1;
-              else { st.perpTpSkip = 0; st.perpTpSplit = split >= 5 ? 0 : split + 1; }
+              if (count > least) st.perpTpDeep = Math.max(least, Math.floor(count / 2));
+              // as few as they can be: smaller sizes, and after the smallest everything from the start
+              else { st.perpTpSplit = split >= 5 ? 0 : split + 1; if (split >= 5) st.perpTpDeep = 0; }
             }
             checkpoint();
             if (e.retry) { e.again = true; throw e; }
@@ -1676,7 +1692,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
   //    Si impiega solo COLLATERAL_HEADROOM del libero: Lighter valuta il margine al
   //    prezzo di esecuzione, quindi senza buffer l'ordine viene scartato in silenzio
   //    appena il prezzo si muove tra la lettura del mark e il fill.
-  const usableUsd = Math.max(0, freeCollateralUsd - outOfEngine(st));
+  const usableUsd = Math.max(0, freeCollateralUsd - outOfEngine(st) - Number(st.perpDoubtUsd || 0));
   const deployableUsd = usableUsd * config.COLLATERAL_HEADROOM;
   // one tranche per interval: only finishing one that filled in part does not wait
   const tooSoon = st.perpOpen && !filling(st) && Date.now() - Number(st.perpTrancheAt || 0) < config.TRANCHE_INTERVAL_MS;
@@ -1803,7 +1819,7 @@ function reasonToTick({ coin, st, brief, feedLive, now = Date.now() }) {
   if (depositDue({ coin, st, usd: usd(st.perpReserveRaw), now })) return 'deposit';
   if (Number(st.perpDepositAt || 0) > Number(st.perpTrancheAt || 0) && now - Number(st.perpDepositAt) < 30 * 60 * 1000) return 'deposit on its way';
   if (st.perpSwitch || st.perpCarry || (coin.managed && st.perpEngine && (st.perpEngine.market !== coin.market || st.perpEngine.side !== coin.side))) return 'switch';
-  if (filling(st, now) || Number(st.perpOpenSplit || 0) > 0 || Number(st.perpTpSplit || 0) > 0 || Number(st.perpTpSkip || 0) > 0) return 'unfinished';
+  if (filling(st, now) || Number(st.perpOpenSplit || 0) > 0 || Number(st.perpTpSplit || 0) > 0 || Number(st.perpTpDeep || 0) > 0) return 'unfinished';
   if (outOfEngine(st) >= config.PERP_WITHDRAW_FLOOR_USD && now >= Number(st.perpWithdrawRetryAt || 0)) return 'withdrawal';
   if (!st.engineBlocked && st.lighterLeverage !== coin.leverage && st.lighterLeverageRejected !== coin.leverage) return 'leverage';
   // without the live marks the round is the only one that sees a target touched
@@ -1995,7 +2011,7 @@ async function main() {
     const most = live ? config.LOOKS_PER_ROUND : Math.max(config.LOOKS_PER_ROUND, lighter.spareReads() - 5);
     const own = [], shared = []; // those read on their own allowance, and those on everybody's
     for (const c of looks) (lighter.authed(reg.state[keyOf(c)].lighterAccountIndex) ? own : shared).push(c);
-    due.push(...own.slice(0, live ? config.LOOKS_PER_ROUND * 3 : 200), ...shared.slice(0, most));
+    due.push(...own.slice(0, config.LOOKS_PER_ROUND * (live ? 3 : 6)), ...shared.slice(0, most));
     await lanes.round(due, {
       key: keyOf, parallel: config.TICK_PARALLEL, patienceMs: config.TICK_PATIENCE_MS,
       work: async (coin) => {

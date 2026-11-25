@@ -135,6 +135,7 @@ module.exports = {
   SHORT_BELIEVED_MS: 10 * 60 * 1000, // and a hole after this
   RPC_TIMEOUT_MS: 25_000,
   BROADCAST_TIMEOUT_MS: 15_000,
+  TX_UNREAD_MS: 6 * 3600 * 1000,  // a venue transaction that cannot be read for this long
   TX_GIVE_UP_MS: 15 * 60 * 1000,  // a transfer not mined after this has its nonce used for nothing
   WAIT_TIMEOUT_MS: Number(process.env.PERPSPAD_WAIT_TIMEOUT_MS || 90000), // oltre → la tx e' "stuck", non blocca il loop
 

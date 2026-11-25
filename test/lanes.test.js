@@ -269,7 +269,9 @@ test('a read carries the token of the account it is about, on that account\'s al
     return { ok: true, status: 200, json: async () => ({ code: 200, accounts: [{ ...ACC, index: id }] }) };
   };
   try {
-    rest.useTokens((id) => (id < 900 ? `t${id}` : null));
+    const told = [];
+    let fresh = '';
+    rest.useTokens((id) => (id < 900 ? `t${id}${fresh}` : null), (id, t) => told.push([id, t]));
     const spare = rest.spareReads();
     for (const id of [701, 702, 701]) await rest.account({ accountIndex: id });
     assert.deepEqual(asked, [[701, 't701'], [702, 't702'], [701, 't701']]);
@@ -281,6 +283,8 @@ test('a read carries the token of the account it is about, on that account\'s al
     refuse = new Set(['t703']); asked.length = 0;
     await rest.account({ accountIndex: 703 }); await rest.account({ accountIndex: 703 });
     assert.deepEqual(asked, [[703, 't703'], [703, null], [703, null]]); assert.equal(rest.authed(703), false);
+    assert.deepEqual(told, [[703, 't703']], 'said once');
+    fresh = 'b'; await rest.account({ accountIndex: 703 }); assert.deepEqual(asked.at(-1), [703, 't703b'], 'its replacement is used at once'); fresh = '';
     await rest.account({ accountIndex: 704 }); assert.deepEqual(asked.at(-1), [704, 't704'], 'nobody else\'s');
     // forty accounts at once: each on its own
     asked.length = 0; const before = rest.spareReads();

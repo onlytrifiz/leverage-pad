@@ -37,7 +37,7 @@ const signing = createSemaphore(config.LIGHTER_SIGNERS, { reserved: 1 });
 const call = (cmd, params = {}, env = {}, { staleMs = Infinity } = {}) => {
   const asked = Date.now();
   return signing(() => {
-    if (Date.now() - asked <= staleMs) { rest.charge(3, params.accountIndex); return spawn(cmd, params, env); }
+    if (Date.now() - asked <= staleMs) { rest.charge(3, cmd === 'open' || cmd === 'close' ? params.accountIndex : null); return spawn(cmd, params, env); }
     const e = new Error(`lighter:${cmd}: waited too long for its turn`);
     e.definitive = true; e.retry = true;
     throw e;
@@ -127,25 +127,32 @@ async function marketById(id) {
 // ── the tokens the reads carry ───────────────────────────────────────────────
 // Signed by the account's own key, for hours, and kept in memory only. A read never waits for one:
 // until it is there it goes without.
-const TOKEN_S = 6 * 3600, RENEW_MS = 20 * 60_000, AGAIN_MS = 5 * 60_000;
-const tokens = new Map(); // account → { token, until, asking, askAt }
+const TOKEN_S = 6 * 3600, RENEW_MS = 20 * 60_000, AGAIN_MS = 10 * 60_000;
+const tokens = new Map(); // account → { token, until, renew, asking, askAt }
+// one at a time and on its own: a token is never worth making an order wait
+const tokenSigning = createSemaphore(1);
 let keyOf = () => null;
 /** `fn(account)` → { apiPrivKey, apiKeyIndex } of an account we run, or null */
 function useKeys(fn) {
   keyOf = fn;
   rest.useTokens((id) => {
-    const t = tokens.get(id) || { token: null, until: 0, asking: false, askAt: 0 };
+    // renewed at a moment of its own: asked for together, they would all come due together
+    const t = tokens.get(id) || { token: null, until: 0, renew: RENEW_MS * (1 + 3 * Math.random()), asking: false, askAt: 0 };
     tokens.set(id, t);
-    if (!t.asking && Date.now() >= t.askAt && t.until - Date.now() < RENEW_MS) {
+    if (!t.asking && Date.now() >= t.askAt && t.until - Date.now() < t.renew) {
       const key = keyOf(id);
       if (key) {
         t.asking = true;
-        signing(() => spawn('auth-token', { accountIndex: id, apiKeyIndex: key.apiKeyIndex, seconds: TOKEN_S }, { LIGHTER_API_PRIVKEY: key.apiPrivKey }))
+        tokenSigning(() => spawn('auth-token', { accountIndex: id, apiKeyIndex: key.apiKeyIndex, seconds: TOKEN_S }, { LIGHTER_API_PRIVKEY: key.apiPrivKey }))
           .then((r) => { t.token = r.token; t.until = Date.now() + TOKEN_S * 1000 - 60_000; }, () => { t.askAt = Date.now() + AGAIN_MS; })
           .finally(() => { t.asking = false; });
       }
     }
     return Date.now() < t.until ? t.token : null;
+  }, (id, token) => {
+    // refused: forgotten, unless it has already been replaced
+    const t = tokens.get(id);
+    if (t && t.token === token) Object.assign(t, { token: null, until: 0, askAt: Date.now() + AGAIN_MS });
   });
 }
 

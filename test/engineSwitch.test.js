@@ -674,7 +674,8 @@ test('a withdrawal is known by its own transaction, whatever the cash says', asy
   assert.deepEqual(await run(null, { age: late }), [true, 0, 24], 'answered 200 and never executed: not pending for ever');
   assert.deepEqual(await run(null, { age: late, cash: 60 }), [true, 0, 24], 'nor because a deposit landed');
   assert.deepEqual(await run(new Error('500')), [false, 0, 0], 'cannot be asked: not yet');
-  assert.deepEqual(await run(new Error('500'), { age: late }), [true, 30, 0], 'nor ever: the venue had said yes');
+  assert.deepEqual(await run(new Error('500'), { age: late }), [false, 0, 0], 'one read that fails is never an answer');
+  assert.deepEqual(await run(new Error('500'), { age: late, cash: 60.5 }), [false, 0, 0], 'whatever the cash looks like');
   assert.deepEqual(await run(null, { cash: 0.5 }), [true, 30, 0], 'the cash is gone: it left');
 });
 
@@ -736,5 +737,61 @@ test('one tranche just at its target does not keep the deep ones from closing', 
   };
   for (let i = 0; i < 5 && e.v.closes.length === 0; i++) await e.tick();
   assert.deepEqual(e.v.closes, [10]); assert.deepEqual(e.st.perpTranches.map((t) => t.entryMark), [59.69]);
-  assert.equal(e.st.perpTpSkip, 0);
+  assert.ok(e.st.perpOpen);
+});
+
+test('a transaction that cannot be read for hours: treated as sent, and its money kept out of the engine', async () => {
+  const e = engine({ cash: 130, st: { perpRealizedUsd: 6, perpCapitalUsd: 24 } });
+  lighter.withdraw = async () => ({ txHash: 'h' });
+  lighter.tx = async () => { throw new Error('500'); };
+  for (let i = 0; i < 5; i++) await e.tick();
+  assert.equal(e.v.opens.length, 0, 'nothing moves while it is not known');
+  e.st.perpWithdrawUnread -= config.TX_UNREAD_MS;
+  await e.tick(); await e.tick();
+  assert.deepEqual([e.st.perpWithdrawPendingUsd, e.st.perpDoubtUsd], [30, 30]);
+  close(e.v.opens[0], 100 * config.COLLATERAL_HEADROOM * 10); // not the 30
+});
+
+const book = (e, takes, price) => {
+  // a book that fills `takes` units at `price`, refused whole when the worst price is past what is asked
+  const send = lighter.close; let left = 0, calls = 0;
+  lighter.close = async (o) => {
+    calls++;
+    if (o.baseAmount / 1e4 > takes + 1e-9 || (price && e.v.px * (1 - o.maxSlippage) > price)) { const x = new Error('excessive slippage'); x.definitive = true; throw x; }
+    left += o.baseAmount; return send(o);
+  };
+  return { calls: () => calls };
+};
+const many = (n, size, over = {}) => {
+  const e = engine({ cash: 0, coin: { leverage: 10, takeProfitPct: 100 }, ...over });
+  Object.assign(e.v, { units: n * size, avg: 100, margin: n * size * 10, px: 120 });
+  Object.assign(e.st, { perpOpen: true, perpTrancheAt: Date.now(), perpTranches: Array.from({ length: n }, (_, i) => ({ base: Math.round(size * 1e4), entryMark: 100 + i * 0.01, sizeDec: 4, ts: i + 1, leverage: 10 })) });
+  return e;
+};
+
+test('a deep leftover below the minimum never stops what can be closed', async () => {
+  const e = many(1, 25);
+  e.v.units = 25.05; e.st.perpTranches.push({ base: 500, entryMark: 90, sizeDec: 4, ts: 9, leverage: 10 });
+  let refuse = true; const send = lighter.close;
+  lighter.close = async (o) => { if (refuse) { refuse = false; const x = new Error('thin'); x.definitive = true; throw x; } return send(o); };
+  for (let i = 0; i < 8 && e.v.units > 0.1; i++) await e.tick();
+  assert.ok(e.v.units < 0.1, String(e.v.units));
+});
+
+test('a thin book is found quickly, whatever the number of tranches', async () => {
+  for (const [n, takes, mostFirst, mostAll] of [[10, 3, 6, 30], [40, 10, 8, 40], [40, 2.6, 8, 125]]) {
+    const e = many(n, 2.5); book(e, takes);
+    let first = 0, all = 0;
+    for (let i = 1; i <= 400 && !all; i++) { await e.tick(); if (!first && e.v.closes.length) first = i; if (e.v.units < 1e-6) all = i; }
+    assert.ok(first > 0 && first <= mostFirst, `${n} x 2.5 in ${takes}: first at ${first}`);
+    assert.ok(all > 0 && all <= mostAll, `${n} x 2.5 in ${takes}: all at ${all}`);
+  }
+});
+
+test('what a thin book taught is forgotten when nothing is at its target, and with the position', async () => {
+  const e = many(4, 2.5);
+  Object.assign(e.st, { perpTpDeep: 1, perpTpSplit: 3 });
+  e.v.px = 100.5; await e.tick(); assert.deepEqual([e.st.perpTpDeep, e.st.perpTpSplit], [0, 0]);
+  Object.assign(e.st, { perpTpDeep: 1, perpTpSplit: 3 });
+  e.v.units = 0; await e.tick(); assert.deepEqual([e.st.perpTpDeep, e.st.perpTpSplit], [0, 0]);
 });

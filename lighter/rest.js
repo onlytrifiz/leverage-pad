@@ -58,16 +58,20 @@ const queuesOf = (id) => {
   if (!perAccount.has(id)) perAccount.set(id, { reads: createLimiter({ perMinute: config.LIGHTER_READS_PER_MIN }), trades: createLimiter({ perMinute: config.LIGHTER_TRADES_PER_MIN }) });
   return perAccount.get(id);
 };
-let tokenOf = () => null;          // account → its token now, or null (never waits)
-const barred = new Map();          // account → until when its token is not used
-const barredUntil = (id) => barred.get(id) || 0;
-const tokenFor = (id) => (id == null || Date.now() < barredUntil(id) ? null : tokenOf(id));
+let tokenOf = () => null, refused = () => {}; // account → its token now, or null (never waits)
+const barred = new Map();                     // account → the token of it the venue would not have
+const tokenFor = (id) => {
+  const t = id == null ? null : tokenOf(id);
+  return t && t !== barred.get(id) ? t : null;
+};
 
 async function get(path, params, { isTrades = false, as = null } = {}) {
-  const id = as == null ? null : Number(as), token = tokenFor(id);
-  const q = token ? queuesOf(id) : { reads, trades };
+  const id = as == null ? null : Number(as);
+  const q = tokenFor(id) ? queuesOf(id) : { reads, trades };
   if (isTrades) await q.trades.slot();
   await q.reads.slot();
+  const token = q.reads === reads ? null : tokenFor(id); // as it is now: the turn may have taken a while
+  if (q.reads !== reads && !token) return get(path, params, { isTrades, as });
   const url = `${HOST}${path}?${new URLSearchParams(params)}`;
   let res, body;
   try {
@@ -75,7 +79,8 @@ async function get(path, params, { isTrades = false, as = null } = {}) {
     // before the body: a 429 does not always come with one that can be read
     if (res.status === 429) { q.reads.pause(15_000); q.trades.pause(15_000); }
     if (token && (res.status === 401 || res.status === 403)) {
-      barred.set(id, Date.now() + 10 * 60_000);
+      barred.set(id, token); // that one: its replacement is another matter
+      refused(id, token);
       return get(path, params, { isTrades, as });
     }
     body = await res.json();
@@ -164,7 +169,7 @@ async function markets() {
 module.exports = {
   account, fills, tx, resolveAccount, markets, urgently, isUrgent, createLimiter, spareReads: () => reads.spare(),
   /** `fn(account)`: the token to read it with, now, or null */
-  useTokens(fn) { tokenOf = fn; },
+  useTokens(fn, onRefused = () => {}) { tokenOf = fn; refused = onRefused; },
   authed: (id) => tokenFor(id == null ? null : Number(id)) != null,
   /** requests the sidecar makes for an account: on its token when it has one */
   charge(n, id) { (id != null && tokenFor(Number(id)) ? queuesOf(Number(id)).reads : reads).charge(n); },
