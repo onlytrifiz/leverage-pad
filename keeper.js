@@ -305,19 +305,24 @@ function strayPositions(positions, marketIndex, side) {
 }
 
 /**
- * The profit to bank when a whole position is closed because the engine moved, in USD, never
- * negative: a loss has already left the collateral, and what stays keeps working.
+ * The result of closing (part of) a position because the engine moved, in USD, signed.
  *
  * `bookPnl` is what the tranches say at the mark (the same bookkeeping take-profits use, so
- * nothing is banked twice). A close at market costs slippage the mark does not show, and at high
- * leverage it is most of a thin profit: it is measured on the account itself (equity, unrealized
- * included, before and after) and taken off. A deposit landing in between can
- * only make the measure look better, and it never raises the result above the book.
+ * nothing is banked twice), capped at what the venue says the same size made. A close at market
+ * costs slippage the mark does not show, and at high leverage it is most of a thin profit: it is
+ * measured on the account itself (equity, unrealized included, before and after) and taken off.
+ * When it cannot be measured (no equity, or a deposit may have landed in between) the worst the
+ * order accepted is taken off instead.
  */
-function switchCredit({ bookPnl, equityBefore, equityAfter }) {
+function switchPnl({ bookPnl, venuePnl, equityBefore, equityAfter, notional, maxSlippage, depositPending }) {
+  let pnl = Number(bookPnl || 0);
+  // the book enters at the mark an order was sized at, the venue at the price it filled: what the
+  // opening cost is in its number and not in ours
+  if (Number.isFinite(venuePnl)) pnl = Math.min(pnl, venuePnl);
   // closing turns the unrealized into cash: with no slippage the equity does not move
-  const slippage = Number.isFinite(equityBefore) && Number.isFinite(equityAfter) ? Math.max(0, equityBefore - equityAfter) : 0;
-  return Math.max(0, Number(bookPnl || 0) - slippage);
+  const measured = Number.isFinite(equityBefore) && Number.isFinite(equityAfter) ? equityBefore - equityAfter : NaN;
+  const blind = !Number.isFinite(measured) || (measured < 0 && depositPending);
+  return pnl - (blind ? notional * maxSlippage : Math.max(0, measured));
 }
 
 /** a leftover the venue refused to close for being too small, and not grown since */
@@ -343,7 +348,11 @@ function fundingDelta(seen, positions) {
   let delta = 0;
   for (const p of positions || []) {
     const mid = String(p.market_id);
-    const cum = Number(p.total_funding_paid_out);
+    // A slot the venue keeps for a closed position (size 0, no cumulative). Its baseline goes: a
+    // position opened there later starts from zero. Reading it as "0 paid" would hand back as
+    // profit all the funding the closed one had paid.
+    if (p.size != null && Number(p.size) === 0) continue;
+    const cum = p.total_funding_paid_out == null ? NaN : Number(p.total_funding_paid_out);
     // campo assente (API vecchia o mercato senza funding): la baseline si conserva
     // com'e', cosi' un buco temporaneo nella risposta non si traduce in un delta.
     if (!isFinite(cum)) {
@@ -761,10 +770,11 @@ async function closedBaseAfter(accountIndex, marketIndex, side, sizeDec, baseBef
 }
 
 // speculare per l'open: quanta size e' ENTRATA davvero (fill reale dell'IOC).
-async function openedBaseAfter(accountIndex, marketIndex, sizeDec, baseBefore, requested) {
+async function openedBaseAfter(accountIndex, marketIndex, side, sizeDec, baseBefore, requested) {
   try {
     const acc = await lighter.account(accountIndex);
-    const p = (acc.positions || []).find((x) => Number(x.market_id) === Number(marketIndex));
+    // a leftover on the other side is not what we opened
+    const p = (acc.positions || []).find((x) => Number(x.market_id) === Number(marketIndex) && !strayPositions([x], marketIndex, side).length);
     const after = p && p.size != null ? Math.round(Math.abs(Number(p.size)) * 10 ** sizeDec) : 0;
     return Math.max(0, Math.min(requested, after - baseBefore));
   } catch (e) {
@@ -788,6 +798,15 @@ const equityOf = (acc) => {
   const v = acc && acc.raw ? acc.raw.total_asset_value : undefined;
   return v == null ? NaN : Number(v);
 };
+
+/** the net result of a switch, once: a profit is realized, a loss has already left the collateral */
+function bankSwitch(coin, st) {
+  const pnl = Number((st.perpSwitch || {}).pnl || 0);
+  if (st.perpSwitch) st.perpSwitch.pnl = 0;
+  if (!(pnl > 0)) return;
+  st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + pnl;
+  console.log(`  [${coin.symbol}] switch: banked $${pnl.toFixed(2)}`);
+}
 
 /**
  * A managed coin's creator moved the engine to another market or side: close everything the new
@@ -819,46 +838,56 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
       st.perpTranches = []; st.perpOpen = false;
     }
     if (st.perpSwitch) console.log(`  [${coin.symbol}] ${tag}switch done: now ${now.market} ${now.side}`);
+    bankSwitch(coin, st); // a change taken back half way: what was already closed
     st.perpEngine = now; st.perpSwitch = null;
     if (!sim) checkpoint();
     return false;
   }
 
   if (!st.perpSwitch || st.perpSwitch.to.market !== now.market || st.perpSwitch.to.side !== now.side) {
-    st.perpSwitch = { from, to: now, since: st.perpSwitch ? st.perpSwitch.since : Date.now() };
+    st.perpSwitch = { ...(st.perpSwitch || {}), from, to: now, since: st.perpSwitch ? st.perpSwitch.since : Date.now() };
     if (!sim) checkpoint();
     console.log(`  [${coin.symbol}] ${tag}switch ${from.market} ${from.side} → ${now.market} ${now.side}: closing ${strays.length} position(s) first`);
   }
   applyFunding(coin, st, acc.positions, { sim, tag, checkpoint });
 
+  const sw = st.perpSwitch;
+  const say = (msg) => { // the same trouble every tick is one line, not one line every tick
+    if (sw.said === msg) return;
+    sw.said = msg; console.log(`  [${coin.symbol}] ${tag}switch: ${msg}`);
+  };
   for (const p of strays) {
     const m = await lighter.marketById(p.market_id);
-    if (!m) { console.log(`  [${coin.symbol}] ${tag}switch: market ${p.market_id} is not on the venue's list, waiting`); continue; }
+    if (!m) { say(`market ${p.market_id} is not on the venue's list, waiting`); continue; }
     const side = Number(p.sign) === -1 ? 'short' : 'long';
-    const base = Math.round(Math.abs(Number(p.size)) * 10 ** m.sizeDec);
-    const minBase = m.minBaseUnits || 1;
-    // a book too thin for the whole size within the slippage limit refuses the order outright:
-    // each refusal halves the next attempt, each fill doubles it back
-    const split = Number(st.perpSwitch.split || 0);
-    const ask = split > 0 ? Math.min(base, Math.max(minBase, Math.floor(base / 2 ** split))) : base;
     const label = `${m.symbol} ${side}`;
-    if (sim) { console.log(`  [${coin.symbol}] ${tag}switch: would close ${label} (base ${base})`); continue; }
-    // the book of this position: the tranches, when they are the old engine's
-    const ours = m.symbol === from.market && side === from.side;
+    if (sim) { console.log(`  [${coin.symbol}] ${tag}switch: would close ${label} (${p.size})`); continue; }
     const before = await lighter.account(accountIndex);
-    const live = (before.positions || []).find((x) => Number(x.market_id) === Number(p.market_id));
-    const mark = live ? markFromPosition(live, side) : null;
+    const live = strayPositions((before.positions || []).filter((x) => Number(x.market_id) === Number(p.market_id) && Number(x.sign) === Number(p.sign)), null, side)[0];
+    if (!live) continue; // closed since the first read: the next tick settles the books
+    const base = Math.round(Math.abs(Number(live.size)) * 10 ** m.sizeDec);
+    const mark = markFromPosition(live, side);
+    // the smallest order the venue takes, by size and by value
+    const minAsk = Math.max(m.minBaseUnits || 1, mark > 0 ? Math.ceil((m.minQuoteUsd || 0) / mark * 10 ** m.sizeDec) : 1);
+    // A book too thin for the whole size within the slippage limit refuses the order outright:
+    // each refusal halves the next attempt, and after the smallest it starts over from the whole.
+    const split = Number(sw.split || 0);
+    let ask = split > 0 ? Math.min(base, Math.max(minAsk, Math.floor(base / 2 ** split))) : base;
+    if (base - ask < minAsk) ask = base; // never leave behind what could not be closed on its own
+    const smallTry = () => {
+      if (base >= minAsk) return;
+      sw.small = { ...(sw.small || {}), [p.market_id]: Number((sw.small || {})[p.market_id] || 0) + 1 };
+      if (sw.small[p.market_id] < 3) return;
+      st.perpDust[p.market_id] = Math.abs(Number(live.size));
+      say(`${label} leftover of ${base} units is below the venue's minimum, left alone`);
+    };
     try {
       await lighter.close({ accountIndex, marketIndex: p.market_id, baseAmount: ask, isAsk: side === 'long', maxSlippage: config.LIGHTER_MAX_SLIPPAGE, apiPrivKey, apiKeyIndex });
     } catch (e) {
       if (!(e && e.definitive)) throw e;
-      if (base < minBase) {
-        st.perpDust[p.market_id] = Math.abs(Number(p.size)); checkpoint();
-        console.log(`  [${coin.symbol}] switch: ${label} leftover of ${base} units is below the venue's minimum, left alone`);
-      } else {
-        st.perpSwitch.split = Math.min(6, split + 1); checkpoint();
-        console.log(`  [${coin.symbol}] switch: closing ${label} refused (${e.message.slice(0, 100)}), next attempt with less`);
-      }
+      sw.split = split >= 5 ? 0 : split + 1;
+      say(`closing ${label} refused (${e.message.slice(0, 100)}), trying again with other sizes`);
+      smallTry(); checkpoint();
       continue;
     }
     let after;
@@ -868,27 +897,31 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
     const leftBase = left && Number(left.sign) === Number(p.sign) ? Math.round(Math.abs(Number(left.size)) * 10 ** m.sizeDec) : 0;
     const filled = Math.max(0, Math.min(ask, base - leftBase));
     if (filled <= 0) {
-      if (!st.perpSwitch.waiting) {
-        st.perpSwitch.waiting = true; checkpoint();
-        console.log(`  [${coin.symbol}] switch: closing ${label} did not fill (empty book or market closed), trying again every tick`);
-      }
+      say(`closing ${label} did not fill (empty book or market closed), trying again every tick`);
+      smallTry(); checkpoint();
       continue;
     }
-    st.perpSwitch.waiting = false;
-    st.perpSwitch.split = Math.max(0, split - 1);
-    let credit = 0;
-    if (ours && st.perpTranches.length && mark != null) {
-      // oldest first, the same order a take-profit consumes them in
-      const book = [...reconcileTranches(st.perpTranches, base, mark, m.sizeDec).tranches].sort((a, b) => a.ts - b.ts);
-      const rest = removeClosedBase(book, filled);
-      const bookPnl = realizedFromTranches(book, mark, side, m.sizeDec) - realizedFromTranches(rest, mark, side, m.sizeDec);
-      credit = switchCredit({ bookPnl, equityBefore: equityOf(before), equityAfter: equityOf(after) });
-      st.perpTranches = rest;
+    sw.split = Math.max(0, split - 1);
+    // the book of this position: the tranches, when they are the old engine's
+    if (m.symbol === from.market && side === from.side) {
+      if (st.perpTranches.length && mark != null) {
+        // Pro rata, not oldest first: every part closed carries the same mix of winners and losers.
+        const book = reconcileTranches(st.perpTranches, base, mark, m.sizeDec).tranches;
+        const frac = filled / base;
+        const pnl = switchPnl({
+          bookPnl: realizedFromTranches(book, mark, side, m.sizeDec) * frac, venuePnl: Number(live.unrealized_pnl) * frac,
+          equityBefore: equityOf(before), equityAfter: equityOf(after),
+          notional: mark * filled / 10 ** m.sizeDec, maxSlippage: config.LIGHTER_MAX_SLIPPAGE,
+          depositPending: Number(st.perpPendingDepositUsd || 0) > 0,
+        });
+        sw.pnl = Number(sw.pnl || 0) + pnl;
+        st.perpTranches = reconcileTranches(book, leftBase, mark, m.sizeDec).tranches;
+      }
+      st.perpOpen = leftBase > 0;
     }
-    st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + credit;
-    st.perpOpen = leftBase > 0;
+    console.log(`  [${coin.symbol}] switch: closed ${label} ${filled}/${base}, result so far $${Number(sw.pnl || 0).toFixed(2)}`);
+    if (leftBase === 0) bankSwitch(coin, st);
     checkpoint();
-    console.log(`  [${coin.symbol}] switch: closed ${label} ${filled}/${base}, banked $${credit.toFixed(2)}`);
   }
   return true;
 }
@@ -896,6 +929,11 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
 async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   if (coin.pair.toLowerCase() !== config.USDG.toLowerCase()) {
     if (!st.perpGateLogged) { console.log(`  [${coin.symbol}] perp saltato: quote non USDG (il collaterale Lighter e' USDG)`); st.perpGateLogged = true; checkpoint(); }
+    return;
+  }
+  if (coin.venue === 'v4' && coin.managed && coin.engineRead === false) {
+    // the launch event is not the engine it runs now: wait for one good read of the router
+    console.log(`  [${coin.symbol}] engine not read from the router yet: no perp this tick`);
     return;
   }
   const sim = lighter.simulate; // dry-run: letture ok, nessuna tx/ordine
@@ -1021,9 +1059,11 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   //    usarlo come deployable causerebbe topup compounding fino alla liquidazione.
   const acc = await lighter.account(accountIndex);
   let pos = (acc.positions || []).find((p) => Number(p.market_id) === Number(marketIndex));
-  if (coin.managed && strayPositions(acc.positions, marketIndex, coin.side).some((p) => !isDust(st, p))) {
+  const stray = coin.managed ? strayPositions(acc.positions, marketIndex, coin.side).find((p) => !isDust(st, p)) : null;
+  if (stray) {
     // a position the engine does not own, found outside a switch: close it first, trade after
-    st.perpSwitch = { from: st.perpEngine || { market: coin.market, side: coin.side }, to: { market: coin.market, side: coin.side }, since: Date.now() };
+    const sm = await lighter.marketById(stray.market_id);
+    st.perpSwitch = { from: { market: sm ? sm.symbol : `market ${stray.market_id}`, side: Number(stray.sign) === -1 ? 'short' : 'long' }, to: { market: coin.market, side: coin.side }, since: Date.now() };
     if (!sim) checkpoint();
     return;
   }
@@ -1074,7 +1114,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
       // pre-market: ordine ok, fill zero. La tranche si registra SOLO per la
       // size davvero entrata in posizione, e il collaterale contabilizzato e'
       // proporzionale al fill; il resto resta deployable e si ritenta.
-      const filled = await openedBaseAfter(accountIndex, marketIndex, mkt.sizeDec, baseBefore, Number(r.baseAmount) || 0);
+      const filled = await openedBaseAfter(accountIndex, marketIndex, coin.side, mkt.sizeDec, baseBefore, Number(r.baseAmount) || 0);
       if (filled > 0) {
         const fillFrac = Math.min(1, filled / (Number(r.baseAmount) || filled));
         const usedCollateralUsd = deployableUsd * fillFrac;
@@ -1334,4 +1374,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { strayPositions, switchCredit, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { strayPositions, switchPnl, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

@@ -36,7 +36,17 @@ Comandi:
 """
 import sys, os, json, asyncio
 
+# True from the moment a signed transaction is handed to the API: an exception after that says
+# nothing about whether it was executed, before it nothing can have been.
+SENDING = {"tx": False}
+
+
 def out(obj):
+    # `definitive`: refused, nothing happened on the venue, the caller may restore its state. An
+    # error the SDK RETURNS is one (a local check, or the API's 400); an exception only before the
+    # send. A timeout or a 5xx on the send itself is ambiguous.
+    if not obj.get("ok"):
+        obj.setdefault("definitive", not SENDING["tx"])
     print(json.dumps(obj, default=str))
     sys.exit(0 if obj.get("ok") else 1)
 
@@ -58,12 +68,21 @@ def signer(account_index, api_key_index):
     priv = os.environ.get("LIGHTER_API_PRIVKEY")
     if not priv:
         raise RuntimeError("LIGHTER_API_PRIVKEY mancante nell'ambiente")
-    return lighter.SignerClient(
+    client = lighter.SignerClient(
         url=PROFILE.api_url,
         account_index=int(account_index),
         api_private_keys={int(api_key_index): priv},
         chain_id=PROFILE.chain_id,
     )
+    send = client.send_tx
+
+    async def tracked_send(*args, **kwargs):
+        SENDING["tx"] = True
+        r = await send(*args, **kwargs)
+        return r
+
+    client.send_tx = tracked_send
+    return client
 
 
 def d(o):
@@ -209,13 +228,13 @@ async def cmd_set_leverage(p):
         mode = client.ISOLATED_MARGIN_MODE if p.get("isolated", True) else client.CROSS_MARGIN_MODE
         res = await client.update_leverage(market_index=int(p["marketIndex"]), margin_mode=mode, leverage=int(p["leverage"]))
         err = res[-1]  # (tx, resp, err) — l'err e' sempre l'ultimo elemento
-        return {"ok": err is None, "error": err}
+        return {"ok": err is None, "error": err, "definitive": True}
     finally:
         await client.close()
 
 
-async def _mark_and_sizedec(market_index):
-    """prezzo mark + size_decimals del mercato (per dimensionare da notional)."""
+async def _mark_and_decimals(market_index):
+    """mark price, size decimals and price decimals of the market."""
     c = api_client()
     try:
         det = d(await lighter.OrderApi(c).order_book_details(market_id=int(market_index)))
@@ -224,7 +243,8 @@ async def _mark_and_sizedec(market_index):
             ob = ob[0]
         mark = ob.get("mark_price") or ob.get("index_price") or ob.get("last_trade_price")
         size_dec = ob.get("supported_size_decimals", ob.get("size_decimals"))
-        return float(mark), int(size_dec)
+        price_dec = ob.get("supported_price_decimals", ob.get("price_decimals"))
+        return float(mark), int(size_dec), int(price_dec)
     finally:
         await c.close()
 
@@ -234,11 +254,10 @@ async def _market_order(p, reduce_only):
     # oppure dimensionato da notionalUsd al prezzo mark (per open/topup).
     # Il mark usato per dimensionare torna nel response: e' l'entry della tranche.
     base_amount = p.get("baseAmount")
-    mark = None
+    mark, size_dec, price_dec = await _mark_and_decimals(p["marketIndex"])
+    if not mark or mark <= 0:
+        return {"ok": False, "error": "prezzo mark non disponibile per dimensionare l'ordine"}
     if base_amount is None:
-        mark, size_dec = await _mark_and_sizedec(p["marketIndex"])
-        if not mark or mark <= 0:
-            return {"ok": False, "error": "prezzo mark non disponibile per dimensionare l'ordine"}
         size = float(p["notionalUsd"]) / mark
         base_amount = int(round(size * (10 ** size_dec)))
     if int(base_amount) <= 0:
@@ -250,10 +269,13 @@ async def _market_order(p, reduce_only):
             client_order_index=int(p.get("clientOrderIndex", 0)),
             base_amount=int(base_amount),
             max_slippage=float(p.get("maxSlippage", 0.02)),
+            # slippage from the MARK, not from the top of the book: on a thin market whoever
+            # quotes the top alone would choose the price we accept
+            ideal_price=mark * 10 ** price_dec,
             is_ask=bool(p["isAsk"]),
             reduce_only=reduce_only,
         )
-        return {"ok": err is None, "txHash": tx_hash, "baseAmount": int(base_amount), "mark": mark, "error": err}
+        return {"ok": err is None, "txHash": tx_hash, "baseAmount": int(base_amount), "mark": mark, "error": err, "definitive": True}
     finally:
         await client.close()
 
@@ -272,7 +294,7 @@ async def cmd_add_margin(p):
         _, tx_hash, err = await client.update_margin(
             market_index=int(p["marketIndex"]), usdc_amount=float(p["usdcAmount"]),
             direction=client.ISOLATED_MARGIN_ADD_COLLATERAL)
-        return {"ok": err is None, "txHash": tx_hash, "error": err}
+        return {"ok": err is None, "txHash": tx_hash, "error": err, "definitive": True}
     finally:
         await client.close()
 
@@ -284,7 +306,7 @@ async def cmd_withdraw(p):
     try:
         _, resp, err = await client.withdraw(
             asset_id=client.ASSET_ID_USDC, route_type=client.ROUTE_PERP, amount=float(p["amount"]))
-        return {"ok": err is None, "resp": d(resp) if resp else None, "error": err}
+        return {"ok": err is None, "resp": d(resp) if resp else None, "error": err, "definitive": True}
     finally:
         await client.close()
 

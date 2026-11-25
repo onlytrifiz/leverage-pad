@@ -359,6 +359,20 @@ test('fundingDelta: applica solo la differenza, e non inventa crediti', async (t
     near(r.delta, -0.038555);
   });
 
+  // what the venue really returns for a closed position: the slot stays, size 0, no cumulative
+  await t.test('slot chiuso: il funding pagato non torna indietro come profitto', () => {
+    const closed = { market_id: 15, size: '0.0000', total_funding_paid_out: null };
+    const r = fundingDelta({ 15: -8 }, [closed]);
+    near(r.delta, 0);
+    assert.deepEqual(r.seen, {}, 'a new position starts from zero');
+    near(fundingDelta(r.seen, [{ market_id: 15, size: '1', total_funding_paid_out: -0.5 }]).delta, -0.5);
+  });
+  await t.test('posizione aperta senza il campo: la baseline resta', () => {
+    const r = fundingDelta({ 15: -8 }, [{ market_id: 15, size: '1', total_funding_paid_out: null }]);
+    near(r.delta, 0);
+    assert.deepEqual(r.seen, { 15: -8 });
+  });
+
   await t.test('funding incassato: delta positivo', () => {
     const r = fundingDelta({ 15: -0.25 }, [pos(15, -0.1)]);
     near(r.delta, 0.15);

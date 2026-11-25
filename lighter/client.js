@@ -33,11 +33,10 @@ function call(cmd, params = {}, env = {}) {
         try { parsed = JSON.parse((stdout || '').trim().split('\n').pop()); } catch { /* sotto */ }
         if (parsed && parsed.ok) return resolve(parsed);
         if (parsed && parsed.error) {
-          // il sidecar ha risposto con un errore strutturato: l'API ha VALUTATO e
-          // rifiutato la richiesta, quindi sappiamo che non e' successo nulla.
-          // `definitive` permette al chiamante di ripristinare lo stato in sicurezza.
+          // The sidecar says whether the failure is a refusal (nothing happened on the venue, the
+          // caller may restore its state) or came from the send itself, whose outcome is unknown.
           const e = new Error('lighter:' + cmd + ': ' + parsed.error);
-          e.definitive = true;
+          e.definitive = parsed.definitive === true;
           return reject(e);
         }
         // nessun JSON: timeout, processo ucciso, crash → esito AMBIGUO, la

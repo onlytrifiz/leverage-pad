@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const lighter = require('../lighter/client');
-const { strayPositions, switchCredit, settleEngineSwitch } = require('../keeper');
+const { strayPositions, switchPnl, settleEngineSwitch } = require('../keeper');
 
 /**
  * A managed coin whose creator moved the engine to another market or side.
@@ -58,13 +58,16 @@ test('strayPositions: another market or the other side, never an empty slot or t
   assert.deepEqual(strayPositions(undefined, 15, 'long'), []);
 });
 
-test('switchCredit: the book less the slippage the account paid, never negative', () => {
-  assert.equal(switchCredit({ bookPnl: 50, equityBefore: 1000, equityAfter: 1000 }), 50);
-  assert.equal(switchCredit({ bookPnl: 50, equityBefore: 1000, equityAfter: 980 }), 30);
-  assert.equal(switchCredit({ bookPnl: 50, equityBefore: 1000, equityAfter: 900 }), 0);
-  assert.equal(switchCredit({ bookPnl: -20, equityBefore: 1000, equityAfter: 1000 }), 0);
-  assert.equal(switchCredit({ bookPnl: 50, equityBefore: 1000, equityAfter: 1400 }), 50, 'a deposit in between is not profit');
-  assert.equal(switchCredit({ bookPnl: 50, equityBefore: NaN, equityAfter: NaN }), 50);
+test('switchPnl: the book, capped at the venue, less the slippage the account paid', () => {
+  const x = { notional: 1000, maxSlippage: 0.02, depositPending: false };
+  assert.equal(switchPnl({ ...x, bookPnl: 50, venuePnl: 50, equityBefore: 1000, equityAfter: 1000 }), 50);
+  assert.equal(switchPnl({ ...x, bookPnl: 50, venuePnl: 50, equityBefore: 1000, equityAfter: 980 }), 30);
+  assert.equal(switchPnl({ ...x, bookPnl: 50, venuePnl: 40, equityBefore: 1000, equityAfter: 1000 }), 40, 'the opening slippage is not profit');
+  assert.equal(switchPnl({ ...x, bookPnl: 50, venuePnl: 70, equityBefore: 1000, equityAfter: 1000 }), 50, 'what take-profits already banked is not banked again');
+  assert.equal(switchPnl({ ...x, bookPnl: -20, venuePnl: -20, equityBefore: 1000, equityAfter: 1000 }), -20, 'signed');
+  assert.equal(switchPnl({ ...x, bookPnl: 50, venuePnl: 50, equityBefore: 1000, equityAfter: 1010 }), 50, 'the price moved our way');
+  assert.equal(switchPnl({ ...x, depositPending: true, bookPnl: 50, venuePnl: 50, equityBefore: 1000, equityAfter: 1400 }), 30, 'a deposit may hide the slippage');
+  assert.equal(switchPnl({ ...x, bookPnl: 50, venuePnl: 50, equityBefore: NaN, equityAfter: NaN }), 30);
 });
 
 test('side flip in profit: closed whole, profit net of slippage banked, the next tick is free to trade', async () => {
@@ -125,16 +128,68 @@ test('empty book: nothing is banked, nothing opens, every tick tries again until
   assert.equal(await settleEngineSwitch(c), false);
 });
 
-test('partial fill: the filled part is banked once, the rest waits with its tranches', async () => {
+test('partial fills: one net result, banked once, when the position is closed', async () => {
   venue({ positions: [{ id: 15, sign: 1, units: 10, entry: 100, mark: 120, margin: 100 }], fill: (n) => Math.min(n, 4) });
   const c = setup();
   await settleEngineSwitch(c);
-  assert.ok(Math.abs(c.st.perpRealizedUsd - 80) < 1e-6);
+  assert.equal(c.st.perpRealizedUsd, 0, 'not yet');
+  assert.ok(Math.abs(c.st.perpSwitch.pnl - 80) < 1e-6);
   assert.equal(c.st.perpTranches[0].base, 6_0000);
   assert.equal(c.st.perpOpen, true);
   await settleEngineSwitch(c); await settleEngineSwitch(c);
   assert.ok(Math.abs(c.st.perpRealizedUsd - 200) < 1e-6, 'the total, once');
   assert.equal(await settleEngineSwitch(c), false);
+  assert.ok(Math.abs(c.st.perpRealizedUsd - 200) < 1e-6);
+});
+
+test('partial fills do not undo the netting: winners first, losers forgotten', async () => {
+  venue({ positions: [{ id: 15, sign: 1, units: 10, entry: 115, mark: 120, margin: 100 }], fill: (n) => Math.min(n, 5) });
+  const c = setup({ st: { perpTranches: [tranche(5_0000, 100, 1), tranche(5_0000, 130, 2)] } });
+  await settleEngineSwitch(c); await settleEngineSwitch(c);
+  assert.ok(Math.abs(c.st.perpRealizedUsd - 50) < 1e-6, String(c.st.perpRealizedUsd));
+});
+
+test('opening slippage is not profit: filled above the mark, the thin gain is not there', async () => {
+  // sized at 100, filled at 101, price +0.8%: the book says +8, the account lost
+  venue({ positions: [{ id: 15, sign: 1, units: 10, entry: 101, mark: 100.8, margin: 100 }] });
+  const c = setup();
+  await settleEngineSwitch(c);
+  assert.equal(c.st.perpRealizedUsd, 0);
+});
+
+test('flipping back and forth at a flat price never makes profit out of slippage', async () => {
+  let realized = 0;
+  for (let i = 0; i < 20; i++) {
+    const sign = i % 2 ? -1 : 1, side = sign === 1 ? 'long' : 'short', other = sign === 1 ? 'short' : 'long';
+    venue({ positions: [{ id: 15, sign, units: 10, entry: 100 + sign, mark: 100 + sign * 0.5, margin: 100 }], slip: 0.01 });
+    const c = setup({ coin: { side: other }, st: { perpEngine: { market: 'NVDA', side } } });
+    while (await settleEngineSwitch(c));
+    realized += c.st.perpRealizedUsd;
+  }
+  assert.equal(realized, 0);
+});
+
+test('taken back half way: what was closed is settled, the rest stays', async () => {
+  const v = venue({ positions: [{ id: 15, sign: 1, units: 10, entry: 100, mark: 120, margin: 100 }], fill: (n) => Math.min(n, 4) });
+  const c = setup();
+  await settleEngineSwitch(c);
+  c.coin.side = 'long';
+  assert.equal(await settleEngineSwitch(c), false);
+  assert.ok(Math.abs(c.st.perpRealizedUsd - 80) < 1e-6);
+  assert.equal(c.st.perpTranches[0].base, 6_0000);
+  assert.equal(v.positions[0].units, 6);
+});
+
+test('an empty book is a refusal too, and a healthy one afterwards closes the rest quickly', async () => {
+  let dead = true;
+  const v = venue({ positions: [{ id: 15, sign: 1, units: 2, entry: 100, mark: 100, margin: 20 }], refuse: () => dead, fill: (n) => (n * 100 < 10 ? 0 : n) });
+  const c = setup({ st: { perpTranches: [tranche(2_0000, 100)] } });
+  for (let i = 0; i < 100; i++) assert.equal(await settleEngineSwitch(c), true);
+  dead = false;
+  let n = 0;
+  while (await settleEngineSwitch(c)) assert.ok(++n < 12, 'it ends');
+  assert.equal(v.positions[0].units, 0);
+  assert.ok(v.closes.every((o) => o.baseAmount >= 1000), 'never an order under the venue minimum');
 });
 
 test('a book too thin for the whole size: smaller attempts until it is all closed', async () => {
@@ -178,13 +233,15 @@ test('changed and changed back before it was carried out: the position is kept',
 });
 
 test('a leftover below the venue minimum does not block the switch, and is closed if it grows', async () => {
-  const v = venue({ positions: [{ id: 15, sign: 1, units: 0.01, entry: 100, mark: 100, margin: 0 }], refuse: () => true });
-  const c = setup({ coin: { market: 'ANT', side: 'long' }, ctx: { marketIndex: 4108 }, st: { perpTranches: [] } });
-  assert.equal(await settleEngineSwitch(c), true);
-  assert.equal(await settleEngineSwitch(c), false, 'left alone');
-  v.positions[0].units = 2;
-  c.st.perpEngine = { market: 'NVDA', side: 'long' };
-  assert.equal(await settleEngineSwitch(c), true, 'no longer dust');
+  for (const how of [{ refuse: () => true }, { fill: () => 0 }]) {
+    const v = venue({ positions: [{ id: 15, sign: 1, units: 0.05, entry: 100, mark: 100, margin: 0 }], ...how }); // $5: over min_base, under $10
+    const c = setup({ coin: { market: 'ANT', side: 'long' }, ctx: { marketIndex: 4108 }, st: { perpTranches: [] } });
+    for (let i = 0; i < 3; i++) assert.equal(await settleEngineSwitch(c), true);
+    assert.equal(await settleEngineSwitch(c), false, 'left alone');
+    v.positions[0].units = 2;
+    c.st.perpEngine = { market: 'NVDA', side: 'long' };
+    assert.equal(await settleEngineSwitch(c), true, 'no longer dust');
+  }
 });
 
 test('an engine pointed at a market the venue does not list: the old position still closes', async () => {
