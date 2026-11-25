@@ -118,6 +118,29 @@ export type Candle = {
   high: number;
   low: number;
   close: number;
+  /** USDG traded, the hook's conversions left out */
+  volume?: number;
+  trades?: number;
+  buys?: number;
+};
+
+export type Resolution = keyof typeof import("./resolutions").RESOLUTIONS;
+
+/** something that happened on the pool, drawn on the candle it landed in */
+export type ChartMark = { kind: "buyback" | "bought" | "sold"; ts: number; usd: number; tokens: number };
+
+export type ChartData = {
+  candles: Candle[];
+  /** the series reaches back to the launch */
+  complete: boolean;
+  /** highest price ever, USDG per token */
+  ath: number | null;
+  launchPrice: number;
+  marks: ChartMark[];
+  /** dated moments: the launch, the end of its protection, changes of engine */
+  lines: { ts: number; label: string }[];
+  /** the asking wallet's average cost on what it still holds */
+  entry: number | null;
 };
 
 export type TrancheView = {

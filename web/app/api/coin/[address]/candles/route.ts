@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
-import { memo } from "@/lib/memo";
-import { coinCandles } from "@/lib/detail";
+import { coinChart } from "@/lib/detail";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ address: string }> }
-) {
+/** 15-minute candles, for readers older than `/chart` */
+export async function GET(_req: Request, { params }: { params: Promise<{ address: string }> }) {
   const { address } = await params;
-  return NextResponse.json({ candles: await memo(`candles:${address.toLowerCase()}`, 20_000, () => coinCandles(address)) });
+  const data = await coinChart(address, "15m").catch(() => null);
+  return NextResponse.json({ candles: data?.candles ?? [] });
 }

@@ -1,10 +1,11 @@
 import { ethers } from "ethers";
 import { RPC_URL, PINATA_GATEWAY } from "./config";
 import { USDG, DOPPLER, V4_POOL_MANAGER, LAUNCH_ROUTER, LAUNCH_FEE_HUB, ROUTER_DEPLOY_BLOCK } from "./clientConfig";
-import type { Candle, Coin, EngineLogItem, FeedItem } from "./types";
+import type { Coin, EngineLogItem, FeedItem } from "./types";
 import { multicallPerItem, type Call } from "./multicall";
 import { LEGACY_TP, MANAGED_DELAY_FALLBACK_S } from "./doppler";
 import { memo } from "./memo";
+import { coinSwaps } from "./trades";
 import routerArchive from "./router-logs.json";
 
 /**
@@ -544,7 +545,6 @@ async function getLogsAdaptive(filter: ethers.providers.Filter, latest: number, 
   return { logs: [], fromBlock: latest };
 }
 
-const CANDLE_BUCKET_S = 15 * 60;
 const LOG_RANGE_BLOCKS = 400_000;
 
 /** every Swap on the coin's pool, newest range the RPC accepts */
@@ -554,42 +554,6 @@ async function poolSwaps(coin: Coin, latest: number) {
     latest,
     Math.min(LOG_RANGE_BLOCKS, Math.max(2000, latest - coin.launchBlock + 1))
   );
-}
-
-export async function poolCandles(coin: Coin): Promise<Candle[]> {
-  const latest = await provider.getBlockNumber();
-  const { logs, fromBlock } = await poolSwaps(coin, latest);
-  if (!logs.length) return [];
-  const tOf = await blockTimeEstimator(fromBlock, latest);
-  const coinIsToken0 = coinIsToken0Of(coin);
-  const points = logs.map((l) => {
-    const ev = PM_IFACE.parseLog(l);
-    return { t: tOf(l.blockNumber), p: coinPriceFromSqrtP(ev.args.sqrtPriceX96, coinIsToken0, coin.pairDecimals) };
-  });
-  const buckets = new Map<number, Candle>();
-  for (const { t, p } of points) {
-    const bt = Math.floor(t / CANDLE_BUCKET_S) * CANDLE_BUCKET_S;
-    const c = buckets.get(bt);
-    if (!c) buckets.set(bt, { time: bt, open: p, high: p, low: p, close: p });
-    else {
-      c.high = Math.max(c.high, p);
-      c.low = Math.min(c.low, p);
-      c.close = p;
-    }
-  }
-  const sorted = [...buckets.values()].sort((a, b) => a.time - b.time);
-  const filled: Candle[] = [];
-  for (const c of sorted) {
-    const prev = filled[filled.length - 1];
-    if (prev) {
-      for (let t = prev.time + CANDLE_BUCKET_S; t < c.time; t += CANDLE_BUCKET_S) {
-        filled.push({ time: t, open: prev.close, high: prev.close, low: prev.close, close: prev.close });
-      }
-      c.open = prev.close;
-    }
-    filled.push(c);
-  }
-  return filled;
 }
 
 /**
@@ -621,45 +585,34 @@ export async function poolFeesUsd(coin: Coin): Promise<number> {
   return usd;
 }
 
-/** live feed: trades, the hook's fee conversions, burns — from real logs */
-export async function coinFeed(coin: Coin): Promise<FeedItem[]> {
-  const latest = await provider.getBlockNumber();
-  const token = erc20(coin.token);
-  const transferTopic = token.interface.getEventTopic("Transfer");
-  const [swaps, burns, burnsDead] = await Promise.all([
-    poolSwaps(coin, latest),
-    getLogsAdaptive({ address: coin.token, topics: [transferTopic, null, ethers.utils.hexZeroPad(ethers.constants.AddressZero, 32)] }, latest, LOG_RANGE_BLOCKS),
-    getLogsAdaptive({ address: coin.token, topics: [transferTopic, null, ethers.utils.hexZeroPad("0x000000000000000000000000000000000000dEaD", 32)] }, latest, LOG_RANGE_BLOCKS),
-  ]);
-  const fromBlock = Math.min(swaps.fromBlock, burns.fromBlock, burnsDead.fromBlock);
-  const tOf = await blockTimeEstimator(fromBlock, latest);
+/** live feed: trades, the hook's fee conversions, buybacks, burns — from real logs */
+export async function coinFeed(coin: Coin, engineWallet?: string): Promise<FeedItem[]> {
+  const { swaps, transfers, buybacks } = await coinSwaps(coin, engineWallet);
+  const tsOf = new Map(swaps.map((s) => [s.tx, s.ts]));
+  // a burn is its own transaction: its time is read off the swaps around it
+  const near = (block: number) => {
+    const nowS = Math.floor(Date.now() / 1000);
+    if (!swaps.length) return nowS;
+    const i = swaps.findIndex((s) => s.block >= block);
+    if (i === -1) {
+      const last = swaps[swaps.length - 1];
+      return Math.min(nowS, last.ts + Math.round((block - last.block) * 0.104));
+    }
+    const b = swaps[i];
+    const a = swaps[Math.max(0, i - 1)];
+    return a.block === b.block ? b.ts : Math.round(a.ts + ((b.ts - a.ts) * (block - a.block)) / (b.block - a.block));
+  };
   const items: FeedItem[] = [];
-  const fmtQ = (v: number) => v.toFixed(2);
-  const fmtC = (v: ethers.BigNumber) => Math.round(Number(ethers.utils.formatUnits(v, 18))).toLocaleString("en-US");
-  const coinIsToken0 = coinIsToken0Of(coin);
-
-  for (const l of [...burns.logs, ...burnsDead.logs]) {
-    const ev = token.interface.parseLog(l);
-    if (ev.args.from === ethers.constants.AddressZero || ev.args.value.isZero()) continue; // mint, or the Airlock's zero-value transfer at creation
-    items.push({ kind: "burn", text: "burned", amountText: `${fmtC(ev.args.value)} ${coin.symbol}`, tone: "accent", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
+  for (const t of transfers) {
+    const dead = t.to === ethers.constants.AddressZero || t.to === "0x000000000000000000000000000000000000dead";
+    if (!dead || t.from === ethers.constants.AddressZero || t.tokens === 0) continue; // mint, or the Airlock's zero-value transfer at creation
+    items.push({ kind: "burn", text: "burned", amountText: `${Math.round(t.tokens).toLocaleString("en-US")} ${coin.symbol}`, tone: "accent", txHash: t.tx, ts: tsOf.get(t.tx) ?? near(t.block) });
   }
-  for (const l of swaps.logs) {
-    const ev = PM_IFACE.parseLog(l);
-    const p = coinPriceFromSqrtP(ev.args.sqrtPriceX96, coinIsToken0, coin.pairDecimals);
-    const quoteDelta: ethers.BigNumber = coinIsToken0 ? ev.args.amount1 : ev.args.amount0;
-    const quoteUsd = Math.abs(Number(ethers.utils.formatUnits(quoteDelta, coin.pairDecimals)));
-    const fromHook = String(ev.args.sender).toLowerCase() === DOPPLER.rehype.toLowerCase();
-    if (fromHook) {
-      items.push({ kind: "collect", text: "fees → USDG", amountText: `$${fmtQ(quoteUsd)}`, tone: "plain", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
-      continue;
-    }
-    const isBuyback = String(ev.args.sender).toLowerCase() === coin.subWallet.toLowerCase();
-    const buying = quoteDelta.lt(0);
-    if (isBuyback) {
-      items.push({ kind: "buyback", text: "buyback", amountText: `$${fmtQ(quoteUsd)}`, tone: "accent", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
-    } else {
-      items.push({ kind: "tick", text: `trade @ ${p.toPrecision(4)}`, amountText: `${buying ? "+" : "−"}$${fmtQ(quoteUsd)}`, tone: buying ? "up" : "down", txHash: l.transactionHash, ts: tOf(l.blockNumber) });
-    }
+  for (const s of swaps) {
+    const amountText = `$${s.usd.toFixed(2)}`;
+    if (s.hook) items.push({ kind: "collect", text: "fees → USDG", amountText, tone: "plain", txHash: s.tx, ts: s.ts });
+    else if (s.buy && buybacks.has(s.tx)) items.push({ kind: "buyback", text: "buyback", amountText, tone: "accent", txHash: s.tx, ts: s.ts });
+    else items.push({ kind: "tick", text: `trade @ ${s.price.toPrecision(4)}`, amountText: `${s.buy ? "+" : "−"}${amountText}`, tone: s.buy ? "up" : "down", txHash: s.tx, ts: s.ts });
   }
-  return items.sort((a, b) => b.ts - a.ts).slice(0, 40);
+  return items.sort((x, y) => y.ts - x.ts).slice(0, 40);
 }

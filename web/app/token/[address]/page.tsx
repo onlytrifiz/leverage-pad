@@ -50,7 +50,6 @@ export default async function TokenPage({
   if (!detail) notFound();
   const { coin } = detail;
   const indexed = await isIndexed(coin.poolId);
-  const launchPrice = coin.openingMcapUsd > 0 ? coin.openingMcapUsd / (coin.initialSupply ?? 1e9) : null;
 
   return (
     <MarketsProvider>
@@ -67,8 +66,8 @@ export default async function TokenPage({
             <CoinChart
               address={coin.token}
               symbol={coin.symbol}
-              launchPrice={launchPrice}
-              launchedAt={Math.floor(new Date(coin.createdAt).getTime() / 1000) || null}
+              supply={detail.stats.totalSupply}
+              ageS={Math.max(0, detail.stats.updatedAt - Math.floor(new Date(coin.createdAt).getTime() / 1000))}
               dexSrc={indexed ? dexEmbed(coin.poolId) : null}
               dexPage={dexPage(coin.poolId)}
             />

@@ -1,11 +1,12 @@
 import { ethers } from "ethers";
 import { loadRegistry, type RegistryTranche } from "./registry";
-import { poolCandles, coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd, readManagedDelay } from "./chain";
+import { coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd, readManagedDelay } from "./chain";
 import { resolveAccountIndex, perpPosition } from "./lighter";
 import { demoCoins, demoDetail, demoCandles, demoFeed, demoPositions } from "./mock";
 import { FORCE_DEMO } from "./config";
 import { decayedTakeProfitPct } from "./doppler";
-import type { Candle, Coin, CoinDetail, CoinListItem, FeedItem, OpenPosition, TrancheView } from "./types";
+import { chartData } from "./trades";
+import type { ChartData, Coin, CoinDetail, CoinListItem, FeedItem, OpenPosition, Resolution, TrancheView } from "./types";
 
 /**
  * The tranche ladder from the keeper's book and the live mark. Each tranche runs to its own
@@ -178,12 +179,31 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
   };
 }
 
-export async function coinCandles(address: string): Promise<Candle[]> {
+/** the keeper's wallet for a coin: what it buys is a buyback. The fee sink is another address. */
+async function engineWallet(token: string): Promise<string | undefined> {
+  const { coins } = await loadRegistry();
+  return coins.find((c) => c.token.toLowerCase() === token.toLowerCase())?.subWallet;
+}
+
+/** everything the chart draws; null for an unknown coin, throws when the pool cannot be read */
+export async function coinChart(address: string, resolution: Resolution, trader?: string): Promise<ChartData | null> {
   const reg = await loadAll();
-  if (demoFrom(reg.coins)) return demoCandles(address);
+  if (demoFrom(reg.coins)) {
+    const candles = demoCandles(address);
+    if (!candles.length) return null;
+    return {
+      candles,
+      complete: true,
+      ath: Math.max(...candles.map((c) => c.high)),
+      launchPrice: candles[0].open,
+      marks: [],
+      lines: [{ ts: candles[0].time, label: "Launch" }],
+      entry: null,
+    };
+  }
   const coin = reg.coins.find((c) => c.token.toLowerCase() === address.toLowerCase());
-  if (!coin) return [];
-  return poolCandles(coin).catch(() => []);
+  if (!coin) return null;
+  return chartData(coin, resolution, { trader, engineWallet: await engineWallet(coin.token) });
 }
 
 export async function coinFeedItems(address: string): Promise<FeedItem[]> {
@@ -191,7 +211,7 @@ export async function coinFeedItems(address: string): Promise<FeedItem[]> {
   if (demoFrom(reg.coins)) return demoFeed(address);
   const coin = reg.coins.find((c) => c.token.toLowerCase() === address.toLowerCase());
   if (!coin) return [];
-  return coinFeed(coin).catch(() => []);
+  return coinFeed(coin, await engineWallet(coin.token)).catch(() => []);
 }
 
 /** posizioni perp aperte su tutte le coin (per la sidebar della home) */
