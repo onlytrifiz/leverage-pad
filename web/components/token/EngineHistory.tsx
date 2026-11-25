@@ -58,7 +58,10 @@ export default function EngineHistory({ coin, now }: { coin: Coin; now: number }
                     <ArrowRight size={14} aria-label="to" className="shrink-0 text-ink-3" />
                     {retune ? null : <Engine e={to} struck={off} />}
                     {(retune || from.takeProfitPct !== to.takeProfitPct) && (
-                      <span className={cn("num text-xs text-ink-3", off && "line-through")}>take-profit +{to.takeProfitPct}%</span>
+                      <span className={cn("num text-xs text-ink-3", off && "line-through")}>
+                        take-profit {from.takeProfitPct !== to.takeProfitPct && <>+{from.takeProfitPct}% → </>}
+                        <span className="text-ink">+{to.takeProfitPct}%</span>
+                      </span>
                     )}
                   </>
                 )}

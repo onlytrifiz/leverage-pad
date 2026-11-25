@@ -93,7 +93,7 @@ export default async function TokenPage({
           </div>
         </div>
 
-        <aside className="flex min-w-0 flex-col gap-4 max-lg:order-2 lg:sticky lg:top-[calc(var(--nav-h)+16px)] lg:min-h-[var(--chart-h)] lg:self-start">
+        <aside className="flex min-w-0 flex-col gap-4 max-lg:order-2 lg:sticky lg:top-[calc(var(--nav-h)+16px)] lg:h-[var(--chart-h)] lg:self-start">
           <TradeColumn detail={detail} />
         </aside>
       </Container>

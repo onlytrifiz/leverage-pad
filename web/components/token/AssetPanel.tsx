@@ -122,7 +122,7 @@ export default function AssetPanel({ detail }: { detail: CoinDetail }) {
   const change = stat?.change24h ?? row?.change24h ?? null;
 
   return (
-    <section aria-label={`${market}, what the fees trade`} className="flex min-h-[200px] flex-1 flex-col lg:min-h-[160px] overflow-hidden rounded-[18px] border border-line bg-panel">
+    <section aria-label={`${market}, what the fees trade`} className="flex h-[200px] min-h-0 flex-col lg:h-auto lg:min-h-[96px] lg:flex-1 overflow-hidden rounded-[18px] border border-line bg-panel">
       <div className="flex items-start justify-between gap-3 px-4 pt-3.5">
         <div className="flex min-w-0 items-center gap-2.5">
           <AssetIcon symbol={market} size={26} />
@@ -151,12 +151,15 @@ export default function AssetPanel({ detail }: { detail: CoinDetail }) {
           ))}
         </div>
       </div>
+      <div className={cn("relative mt-1 min-h-0 flex-1 transition-opacity", points != null && points.key !== key && "opacity-45")}>
       <div
         ref={box}
         role="img"
         aria-label={`${market} over ${range}${mark == null ? "" : `, now ${fmtMark(mark)}`}`}
-        className={cn("mt-1 min-h-[90px] flex-1 transition-opacity", points != null && points.key !== key && "opacity-45")}
+        // out of the flow: a canvas in it would hold the panel at the height it was first drawn
+        className="absolute inset-0"
       />
+      </div>
     </section>
   );
 }
