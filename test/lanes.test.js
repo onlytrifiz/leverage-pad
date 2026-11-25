@@ -145,6 +145,11 @@ test('moving: out of its bucket until known, the same transaction again, and giv
     const before = n.sent.length; n.take = (h) => { if (h !== c.st.txOut.hash) n.mine(h); else lost(); };
     assert.equal(await settle(c, n), false); assert.equal(n.sent.length, before + 2); assert.equal(n.nonce, 6);
     await settle(c, n); c.st.txOut.usedAt -= 61_000; assert.equal(await settle(c, n), true); assert.equal(c.st.treasuryOwedRaw, '30');
+    // a nonce before it that nobody used: the first free one, pass after pass
+    c = start(); n = node({ take: lost, nonce: 6 }); await assert.rejects(go(c, n)); c.st.txOut.at -= config.TX_GIVE_UP_MS + 1;
+    n.nonce = 5; n.take = (h) => { if (h !== c.st.txOut.hash) n.mine(h); else lost(); };
+    for (let i = 0; i < 3; i++) await settle(c, n);
+    assert.equal(n.nonce, 7); c.st.txOut.usedAt -= 61_000; assert.equal(await settle(c, n), true); assert.equal(c.st.treasuryOwedRaw, '30');
     // nothing known while the node is down
     c = start(); n = node({ take: lost }); await assert.rejects(go(c, n)); n.deaf = true;
     await assert.rejects(settle(c, n)); assert.equal(c.st.treasuryOwedRaw, '0');

@@ -227,7 +227,7 @@ function giveBack(st) {
 }
 
 /** what came of the transfer in flight; false while it is not known */
-async function settleTxOut({ coin, st, checkpoint, wallet }) {
+async function settleTxOut({ coin, st, checkpoint, wallet, keeper }) {
   const t = st.txOut;
   if (!t) return true;
   const done = (msg) => { checkpoint(); console.log(`  [${coin.symbol}] ${t.label}: ${msg}`); return true; };
@@ -240,7 +240,8 @@ async function settleTxOut({ coin, st, checkpoint, wallet }) {
     st.txOut = null;
     return done(`confirmed ${t.hash}`);
   }
-  if (await prov.getTransactionCount(wallet.address, 'latest') > t.nonce) {
+  const latest = await prov.getTransactionCount(wallet.address, 'latest');
+  if (latest > t.nonce) {
     // the nonce is used and not by it. Two looks a minute apart: nodes do not all see the same head
     if (!t.usedAt) { t.usedAt = Date.now(); checkpoint(); return false; }
     if (Date.now() - t.usedAt < 60_000) return false;
@@ -249,8 +250,12 @@ async function settleTxOut({ coin, st, checkpoint, wallet }) {
   }
   try { await broadcast(prov, t.raw); } catch { /* it has it already, or will have it next time */ }
   if (Date.now() - t.at > config.TX_GIVE_UP_MS) {
-    // a price nobody takes any more: its nonce is used for nothing, and then it is known
-    try { await wallet.sendTransaction({ to: wallet.address, value: 0, nonce: t.nonce, gasPrice: (await cappedGasPrice()), gasLimit: 100_000, type: 0 }); } catch { /* one of the two goes in */ }
+    // A price nobody takes any more, or a nonce before it that nobody used: the first free one is
+    // used for nothing, pass after pass up to its own, and then it is known.
+    try {
+      if (keeper) await ensureGas(keeper, wallet.address);
+      await wallet.sendTransaction({ to: wallet.address, value: 0, nonce: latest, gasPrice: await cappedGasPrice(), gasLimit: 100_000, type: 0 });
+    } catch { /* one of the two goes in, or the next pass tries again */ }
   }
   return false;
 }
@@ -701,7 +706,10 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
 
   // money already on its way out of this wallet comes first: until it is known nothing else leaves
   // it and nothing in it is counted. The position does not wait for it.
-  if (!await settleTxOut({ coin, st, checkpoint, wallet: sub })) {
+  let known = false;
+  try { known = await settleTxOut({ coin, st, checkpoint, wallet: sub, keeper }); }
+  catch (e) { console.log(`  [${coin.symbol}] ${st.txOut.label}: not readable now (${e.message.slice(0, 80)})`); }
+  if (!known) {
     if (lighter.enabled) {
       try { await perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urgent: true }); }
       catch (e) { console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
@@ -898,6 +906,13 @@ async function settleOrder({ coin, st, checkpoint, accountIndex, tries = 1 }) {
     if (i) await pause();
     let f = null, acc;
     try { f = await lighter.fills({ accountIndex, marketIndex: o.marketIndex, clientOrderIndex: o.id, since: o.at }); } catch { /* unknown */ }
+    // the whole order in its own trades: there is nothing the account could add
+    if (f && o.ask != null && Number(f.price) > 0 && Math.round(Number(f.size) * 10 ** o.sizeDec) >= o.ask) {
+      st.perpOrder = null;
+      bookOrder(coin, st, o, o.ask, Number(f.price));
+      checkpoint();
+      return true;
+    }
     try { acc = await lighter.account(accountIndex); } catch { continue; }
     const age = Date.now() - o.at;
     const late = age >= 2 * config.LIGHTER_ORDER_EXPIRY_MS;
@@ -1264,9 +1279,11 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
  * again. Fees that still reach it follow the same way.
  */
 async function retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
+  // what was already leaving is settled first: the sweep takes all that is left
+  const known = await settleTxOut({ coin, st, checkpoint, wallet: sub, keeper });
   if (coin.venue === 'v4') await claimV4(keeper, coin, st, checkpoint, sub, unitUsd);
   const held = await quote.balanceOf(sub.address);
-  if (usdOf(held, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD && config.TREASURY) {
+  if (known && usdOf(held, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD && config.TREASURY) {
     await ensureGas(keeper, sub.address);
     await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [config.TREASURY, held]), gasLimit: 100000 }, 'retired sweep');
     for (const b of ['perpReserveRaw', 'buybackReserveRaw', 'treasuryOwedRaw', 'creatorOwedRaw']) st[b] = '0';
@@ -1847,7 +1864,7 @@ async function main() {
       try {
         let acted = false, again = false;
         const went = await lanes.run(e.key, () => lighter.urgently(async () => { ({ acted, again } = await urgentTick(keeper, e, () => store.commit(e.key))); }));
-        urgent.served(e.key, { acted, went: went && !again }); // at work already: asked again in a moment
+        urgent.served(e.key, { acted, went, again }); // at work already: asked again in a moment
       } catch (err) { urgent.served(e.key, { acted: false, went: true }); console.log(`  [${e.coin.symbol}] urgent: ${String(err.message).slice(0, 140)}`); }
     }
   };

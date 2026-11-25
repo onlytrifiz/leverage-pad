@@ -37,7 +37,7 @@ const signing = createSemaphore(config.LIGHTER_SIGNERS, { reserved: 1 });
 const call = (cmd, params = {}, env = {}, { staleMs = Infinity } = {}) => {
   const asked = Date.now();
   return signing(() => {
-    if (Date.now() - asked <= staleMs) { rest.charge(3); return spawn(cmd, params, env); }
+    if (Date.now() - asked <= staleMs) { rest.charge(1); return spawn(cmd, params, env); }
     const e = new Error(`lighter:${cmd}: waited too long for its turn`);
     e.definitive = true; e.retry = true;
     throw e;

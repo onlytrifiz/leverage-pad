@@ -208,16 +208,17 @@ test('an ambiguous failure stops the tick and banks nothing', async () => {
   assert.equal(c.st.perpTranches.length, 1);
 });
 
-test('closed but the read after it failed: read again, booked all the same', async () => {
+test('closed, and the account cannot be read after it: booked on its trades all the same', async () => {
   const v = venue({ positions: [{ id: 15, sign: 1, units: 10, entry: 100, mark: 120, margin: 100 }] });
   const read = lighter.account;
-  let n = 0;
-  lighter.account = async () => { if (++n === 3) throw new Error('503'); return read(); };
+  lighter.account = async () => { if (v.closes.length) throw new Error('503'); return read(); };
   const c = setup();
   assert.equal(await settleEngineSwitch(c), true);
   assert.equal(v.positions[0].units, 0);
   assert.equal(c.st.perpRealizedUsd, 200);
   assert.deepEqual(c.st.perpTranches, []);
+  await assert.rejects(settleEngineSwitch(c), /503/);
+  lighter.account = read;
   assert.equal(await settleEngineSwitch(c), false);
 });
 
@@ -296,10 +297,10 @@ test('closeProceeds: the margin and the result, as the venue paid them on 25 Nov
 });
 
 test('settleOrder: partial, late, stale and unknown', async () => {
-  const run = async (o, { size = 0, price = 100, here = 10, age = 0, settle = 20_000, cash = 205 } = {}) => {
+  const run = async (o, { size = 0, price = 100, here = 10, age = 0, settle = 20_000, cash = 205, down = false } = {}) => {
     config.LIGHTER_ORDER_SETTLE_MS = settle;
     lighter.fills = async () => { if (size == null) throw new Error('gone'); return { size, price: size ? price : null }; };
-    lighter.account = async () => ({ collateral: String(cash), positions: here ? [{ market_id: 1, sign: 1, size: String(here) }] : [] });
+    lighter.account = async () => { if (down) throw new Error('down'); return { collateral: String(cash), positions: here ? [{ market_id: 1, sign: 1, size: String(here) }] : [] }; };
     const st = { perpOpen: true, perpRealizedUsd: 0, perpCapitalUsd: 0, perpTranches: [tranche(10, 100)], perpOrder: { id: 1, kind: 'tp', marketIndex: 1, side: 'long', sizeDec: 0, base: 10, ask: 10, avgEntry: 90, margin: 100, mark: 101, cash: 5, ready: [tranche(10, 100)], keep: [], at: Date.now() - age, sentAt: Date.now() - age, sent: true, ...o } };
     const done = await settleOrder({ coin: { symbol: 'T' }, st, checkpoint: () => {}, accountIndex: 1 });
     config.LIGHTER_ORDER_SETTLE_MS = 0;
@@ -307,6 +308,8 @@ test('settleOrder: partial, late, stale and unknown', async () => {
   };
   assert.deepEqual(await run({}, { size: 10, here: 0 }), [true, 0, 100, 100], 'whole: at once');
   assert.deepEqual(await run({}, { size: 10, here: 10 }), [true, 0, 100, 100], 'whole, the position read is stale');
+  assert.deepEqual(await run({}, { size: 10, here: 0, down: true }), [true, 0, 100, 100], 'whole: the account is not even asked');
+  assert.deepEqual(await run({}, { size: 4, here: 6, age: 30_000, down: true }), [false, 10, 0, 0], 'in part: it is');
   assert.deepEqual(await run({}, { size: 4, here: 6 }), [false, 10, 0, 0], 'more trades may follow');
   assert.deepEqual(await run({}, { size: 4, here: 6, age: 30_000 }), [true, 6, 40, 40], 'partial');
   assert.deepEqual(await run({}, { size: 0, here: 0, age: 30_000 }), [false, 10, 0, 0], 'closed, trades not there yet');

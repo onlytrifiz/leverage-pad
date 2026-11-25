@@ -114,6 +114,22 @@ test('urgent: nothing to do waits longer each time, acting a moment, and a bad s
   c.t += 5_000; u.onMark(1, 200); assert.equal(u.size(), 1, 'a day later it starts from the beginning');
 });
 
+test('urgent: a venue that is busy is asked less and less, up to a point, and starts over once it answers', () => {
+  const { c, u } = urgentAt();
+  u.load([entry('a')]);
+  const waits = [];
+  for (let i = 0; i < 6; i++) {
+    u.onMark(1, 200); assert.ok(u.take()); u.served('a', { acted: false, went: true, again: true });
+    const from = c.t;
+    while (u.size() === 0) { c.t += 1_000; u.onMark(1, 200); }
+    waits.push((c.t - from) / 1000);
+  }
+  assert.deepEqual(waits, [2, 4, 8, 15, 15, 15]);
+  u.take(); u.served('a', { acted: true, went: true });
+  c.t += 2_000; u.onMark(1, 200); u.take(); u.served('a', { acted: false, went: true, again: true });
+  c.t += 2_000; u.onMark(1, 200); assert.equal(u.size(), 1);
+});
+
 test('urgent: a new round replaces the state, and forgets who is gone', () => {
   const { u } = urgentAt();
   u.load([entry('a'), entry('b')]); u.onMark(1, 200);

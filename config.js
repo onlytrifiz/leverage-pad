@@ -148,7 +148,7 @@ module.exports = {
   // public reads (lighter/rest.js): the venue allows 60 a minute per IP, trades 40, and the signed
   // calls of the sidecar come out of the same allowance
   LIGHTER_REST_URL: process.env.PERPSPAD_LIGHTER_REST_URL || 'https://api.rh.lighter.xyz',
-  LIGHTER_READS_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_READS_PER_MIN || 55), // all of them, trades and signed calls included
+  LIGHTER_READS_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_READS_PER_MIN || 55), // all of them, trades included; a signed call counts for one
   LIGHTER_TRADES_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_TRADES_PER_MIN || 25),
   LIGHTER_READ_TIMEOUT_MS: 15_000,
   LIGHTER_SIGNERS: 4,             // signed calls (one Python process each) at once
