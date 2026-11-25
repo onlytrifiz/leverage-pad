@@ -18,7 +18,7 @@ type Segment = { label: string; value: number; className: string; ink: string };
 const ROWS: { name: string; caption: string; segments: Segment[] }[] = [
   {
     name: "A trading fee, split",
-    caption: `$${FEE_SPLIT_PCT.engine} becomes a position the token owns, in a wallet of its own. ${PROFIT_SPLIT_PCT.buyback}% of every win buys the token back.`,
+    caption: `$${FEE_SPLIT_PCT.engine} becomes a position the token owns, in a wallet of its own. On a win, all of it and ${PROFIT_SPLIT_PCT.buyback}% of the gain buy the token back.`,
     segments: [
       { label: "The token's position", value: FEE_SPLIT_PCT.engine, className: "bg-brand", ink: "text-white" },
       { label: "Protocol", value: FEE_SPLIT_PCT.treasury, className: "bg-step-4/50", ink: "text-ink" },

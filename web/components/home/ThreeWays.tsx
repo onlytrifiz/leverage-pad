@@ -29,7 +29,7 @@ const WAYS = [
     answers: [
       "Both",
       "The perp keeps working",
-      `${PROFIT_SPLIT_PCT.buyback}% of it buys the token and burns it`,
+      `The capital and ${PROFIT_SPLIT_PCT.buyback}% of the gain buy the token and burn it`,
       "Only the fees in it are lost",
     ],
   },

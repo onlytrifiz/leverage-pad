@@ -4,7 +4,7 @@ import { CircleDollarSign, Flame, Hourglass, TrendingUp, Wallet } from "lucide-r
 import { PROFIT_SPLIT_PCT } from "@/lib/doppler";
 import type { CoinDetail } from "@/lib/types";
 import { fmtInt } from "@/lib/format";
-import { OPEN_GATE_USD, TOPUP_STEP_USD, fmtThreshold } from "@/lib/thresholds";
+import { OPEN_GATE_USD, TOPUP_STEP_USD, TRANCHE_INTERVAL_MIN, fmtEvery, fmtThreshold } from "@/lib/thresholds";
 import AutoRefresh from "@/components/AutoRefresh";
 import { AnimatedNumber } from "@/components/motion";
 
@@ -32,7 +32,7 @@ export default function EngineFlow({ detail }: { detail: CoinDetail }) {
       note:
         subWallet.coinBalance != null && subWallet.coinBalance >= 1
           ? `and ${fmtInt(subWallet.coinBalance)} tokens to burn`
-          : `next deposit at ${fmtThreshold(perp?.open ? TOPUP_STEP_USD : OPEN_GATE_USD)}`,
+          : `next deposit at ${fmtThreshold(perp?.open ? TOPUP_STEP_USD : OPEN_GATE_USD)}${perp?.open ? `, one every ${fmtEvery(TRANCHE_INTERVAL_MIN)}` : ""}`,
     },
     {
       icon: TrendingUp,
@@ -43,8 +43,8 @@ export default function EngineFlow({ detail }: { detail: CoinDetail }) {
     {
       icon: Hourglass,
       label: "Waiting to buy back",
-      value: <AnimatedNumber value={stats.buybackReserveUsd} format="usd" countOnMount />,
-      note: `realized profit, ${PROFIT_SPLIT_PCT.buyback}% share`,
+      value: <AnimatedNumber value={stats.buybackWaitingUsd} format="usd" countOnMount />,
+      note: `taken at take-profit: its capital and ${PROFIT_SPLIT_PCT.buyback}% of the gain`,
     },
     {
       icon: Flame,

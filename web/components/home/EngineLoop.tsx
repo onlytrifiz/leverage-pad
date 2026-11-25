@@ -25,8 +25,8 @@ const STEPS = [
     text: `1 to 5%, converted inside the same swap. ${FEE_SPLIT_PCT.engine}% lands in the token's wallet.`,
   },
   { icon: TrendingUp, title: "A leveraged perp", text: "Opened on Lighter at the token's asset, side and leverage." },
-  { icon: Target, title: "Take profit", text: "Each deposit banks at the token's take-profit, up to +500% at high leverage." },
-  { icon: Flame, title: "Buyback & burn", text: `${PROFIT_SPLIT_PCT.buyback}% of the profit buys the token and burns it.` },
+  { icon: Target, title: "Take profit", text: "Each deposit closes whole at the token's take-profit, up to +500% at high leverage." },
+  { icon: Flame, title: "Buyback & burn", text: `Its capital and ${PROFIT_SPLIT_PCT.buyback}% of the gain buy the token and burn it.` },
 ];
 
 export default function EngineLoop() {

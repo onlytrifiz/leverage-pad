@@ -102,6 +102,8 @@ export type PerpPosition = {
   liquidationPrice: number | null;
   /** funding cumulativo pagato (negativo) o incassato dalla posizione */
   fundingPaidUsd: number | null;
+  /** the account's free balance */
+  freeUsd?: number | null;
 };
 
 export type FeedItem = {
@@ -172,6 +174,10 @@ export type CoinDetail = {
     perpReserveUsd: number;
     /** fees on their way to the position: the engine's part of the fee wallet plus what the keeper has set aside */
     waitingUsd: number;
+    /** in the Lighter account with no position open, banked profit aside: what the next one opens with */
+    idleUsd: number;
+    /** taken out by a take-profit and not yet spent: the share of it that buys back */
+    buybackWaitingUsd: number;
     creatorOwedUsd: number;
     treasuryOwedUsd: number;
     perpFundedUsd: number;

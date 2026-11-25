@@ -1,10 +1,10 @@
 import { ethers } from "ethers";
-import { loadRegistry, type RegistryTranche } from "./registry";
+import { loadRegistry, type CoinState, type RegistryTranche } from "./registry";
 import { coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd, readManagedDelay } from "./chain";
 import { resolveAccountIndex, perpPosition } from "./lighter";
 import { demoCoins, demoDetail, demoCandles, demoFeed, demoPositions } from "./mock";
 import { FORCE_DEMO } from "./config";
-import { decayedTakeProfitPct } from "./doppler";
+import { PROFIT_SPLIT_PCT, decayedTakeProfitPct } from "./doppler";
 import { chartData } from "./trades";
 import type { ChartData, Coin, CoinDetail, CoinListItem, FeedItem, OpenPosition, Resolution, TrancheView } from "./types";
 
@@ -51,6 +51,14 @@ export function buildTrancheViews(
  * Assemblaggio dei dati per pagina: registry (bucket) + chain (prezzo, supply,
  * saldi) + Lighter (posizione perp). Demo mode a registry vuoto.
  */
+
+/** what a take-profit took out and has not reached the wallet yet, less the protocol's share of its gain */
+function buybackWaiting(st: CoinState) {
+  const gain = st.perpRealizedUsd ?? 0;
+  const out = Math.max(0, gain + (st.perpCapitalUsd ?? 0)) + (st.perpWithdrawPendingUsd ?? 0);
+  const onGain = Math.max(0, gain) + (st.perpWithdrawPendingProfitUsd ?? st.perpWithdrawPendingUsd ?? 0);
+  return Math.max(0, out - (onGain * PROFIT_SPLIT_PCT.treasury) / 100);
+}
 
 const fmt = (raw: string, dec: number) => Number(ethers.utils.formatUnits(raw || "0", dec));
 
@@ -154,6 +162,8 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
       buybackReserveUsd: st ? fmt(st.buybackReserveRaw, d) : 0,
       perpReserveUsd: st ? fmt(st.perpReserveRaw, d) : 0,
       waitingUsd: (chain.subQuote ?? 0) * chain.subEngineShare + (st ? fmt(st.perpReserveRaw, d) : 0),
+      idleUsd: perp && !perp.open ? Math.max(0, (perp.freeUsd ?? 0) - Math.max(0, (st?.perpRealizedUsd ?? 0) + (st?.perpCapitalUsd ?? 0))) : 0,
+      buybackWaitingUsd: st ? buybackWaiting(st) + fmt(st.buybackReserveRaw, d) : 0,
       creatorOwedUsd: st ? fmt(st.creatorOwedRaw, d) : 0,
       treasuryOwedUsd: st ? fmt(st.treasuryOwedRaw, d) : 0,
       perpFundedUsd: st?.perpDepositedUsd ?? 0,

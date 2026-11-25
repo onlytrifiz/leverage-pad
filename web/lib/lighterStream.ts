@@ -35,7 +35,7 @@ export type MarketStat = {
 export type LivePosition = {
   marketId: number;
   symbol: string;
-  /** 1 long, -1 short (il venue manda 1/0) */
+  /** 1 long, -1 short */
   sign: number;
   size: number;
   entryPrice: number | null;
@@ -96,7 +96,8 @@ function toPosition(raw: Json, prev?: LivePosition): LivePosition {
   return {
     marketId: Number(raw.market_id),
     symbol: String(raw.symbol ?? prev?.symbol ?? ""),
-    sign: Number(raw.sign) === 0 ? -1 : 1,
+    // 1 for a long; a short is -1, and 0 has been seen too
+    sign: Number(raw.sign) > 0 ? 1 : -1,
     size: Math.abs(Number(raw.position ?? 0)),
     entryPrice: num(raw.avg_entry_price),
     positionValueUsd: num(raw.position_value),

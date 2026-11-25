@@ -6,7 +6,7 @@ import { cn } from "cn";
 import { useMarkets } from "@/components/markets-provider";
 import AssetIcon from "@/components/AssetIcon";
 import { fmtChange, fmtMark, fmtSignedUsd, fmtUsd, fmtMove } from "@/lib/format";
-import { FEE_PRESETS, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, liqDistancePct } from "@/lib/doppler";
+import { FEE_PRESETS, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, TP_MIN_PCT, liqDistancePct } from "@/lib/doppler";
 
 /**
  * The asymmetry, as an instrument you can push.
@@ -18,7 +18,8 @@ import { FEE_PRESETS, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, liqDistancePct } from "@/
  *
  *   position P&L  = collateral × leverage × move, and −collateral from the liquidation on
  *                   (isolated margin: a liquidation loses the posted fees, never more)
- *   buyback       = PROFIT_SPLIT_PCT.buyback of a positive P&L, zero otherwise
+ *   buyback       = the collateral and PROFIT_SPLIT_PCT.buyback of the P&L, from the smallest take-profit
+ *                   a token can have; nothing below it, where no deposit closes
  *
  * and a third fact that does not move at all: coins sold by the engine, 0.
  *
@@ -115,7 +116,7 @@ export default function PayoffSimulator() {
   const liqAway = liqDistancePct(lev, live?.maintenancePct ?? 0);
   // past the liquidation there is no position any more: the fees it held are gone
   const pnlAt = (m: number) => (dir * m <= -liqAway ? -collateral : notional * dir * (m / 100));
-  const buybackAt = (m: number) => Math.max(0, pnlAt(m)) * BUYBACK_SHARE;
+  const buybackAt = (m: number) => (collateral > 0 && pnlAt(m) >= (collateral * TP_MIN_PCT) / 100 - 1e-9 ? collateral + pnlAt(m) * BUYBACK_SHARE : 0);
 
   const pnl = pnlAt(move);
   const buyback = buybackAt(move);
@@ -125,7 +126,7 @@ export default function PayoffSimulator() {
   const maxLev = live?.maxLeverage ?? null;
 
   /* chart geometry: y spans the worst case (−collateral) to the best (+30% at this leverage) */
-  const yMax = Math.max(notional * (MOVE_MAX / 100), 1);
+  const yMax = Math.max(notional * (MOVE_MAX / 100), collateral + notional * (MOVE_MAX / 100) * BUYBACK_SHARE, 1);
   const yMin = -collateral;
   const x = (m: number) => PAD_L + ((m + MOVE_MAX) / (MOVE_MAX * 2)) * (W - PAD_L - PAD_R);
   const y = (v: number) => PAD_T + (1 - (v - yMin) / (yMax - yMin)) * (H - PAD_T - PAD_B);
@@ -343,7 +344,7 @@ export default function PayoffSimulator() {
             transition={spring}
             r={7}
             fill="var(--color-panel)"
-            stroke={buyback > 0 ? "var(--color-brand)" : "var(--color-down)"}
+            stroke={pnl >= 0 ? "var(--color-brand)" : "var(--color-down)"}
             strokeWidth={3}
           />
         </svg>
@@ -365,7 +366,7 @@ export default function PayoffSimulator() {
         <div className="mt-4 flex flex-wrap items-center justify-between gap-x-6 gap-y-2 text-xs text-ink-3">
           <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span className="flex items-center gap-1.5">
-              <span className="h-[3px] w-4 rounded-full bg-brand" /> Buyback &amp; burn, {PROFIT_SPLIT_PCT.buyback}% of profit
+              <span className="h-[3px] w-4 rounded-full bg-brand" /> Buyback &amp; burn, the capital and {PROFIT_SPLIT_PCT.buyback}% of the gain
             </span>
             <span className="flex items-center gap-1.5">
               <span className="h-0 w-4 border-t-[1.5px] border-dashed border-ink-3" /> Position P&amp;L

@@ -460,7 +460,10 @@ export type FeeSplit = { sink: string; treasuryBps: number; treasury: string; en
  * its launch: the ones launched before 2026-11-25 keep 80/15/5.
  */
 export const FEE_SPLIT_PCT = { doppler: 5, treasury: 25, engine: 70 } as const;
-/** Realized perp profit, as the keeper splits it when it comes home (TP_MASTER_SHARE_BPS). Every coin. */
+/**
+ * The gain of a take-profit, as the keeper splits it when it comes home (TP_MASTER_SHARE_BPS). The
+ * capital that made it comes home with it and buys back whole.
+ */
 export const PROFIT_SPLIT_PCT = { buyback: 70, treasury: 30 } as const;
 
 const DOPPLER_HOOK_BPS = DOPPLER_HOOK_FEE_BPS; // 500: Doppler's slice of every hook fee

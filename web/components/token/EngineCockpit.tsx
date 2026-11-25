@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "motion/react";
 import { cn } from "cn";
 import type { CoinDetail } from "@/lib/types";
 import { fmtMark, fmtSignedUsd, fmtUsd } from "@/lib/format";
 import { fmtNotice } from "@/lib/doppler";
 import { engineDiff } from "@/lib/engine";
-import { OPEN_GATE_USD, fmtThreshold } from "@/lib/thresholds";
+import { COLLATERAL_HEADROOM, FIRST_OPEN_DELAY_MIN, OPENS_AT_USD, OPEN_LEAST_USD, fmtThreshold } from "@/lib/thresholds";
 import { useLiveMark, useLivePositions } from "@/hooks/use-lighter-live";
 import AssetIcon from "@/components/AssetIcon";
 import { LivePulse } from "@/components/motion";
@@ -56,6 +57,17 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
     tranches[0]?.targetMark ??
     (entry != null ? entry * (1 + (isShort ? -1 : 1) * (trigger / coin.leverage)) : null);
 
+  // closed, with collateral in the account that no take-profit took out (a change of engine, an order that has not filled)
+  const idle = stats.idleUsd * COLLATERAL_HEADROOM;
+  // the stream saw it close before the page did: read what it left
+  const justClosed = !open && !!perp?.open;
+  const gate = OPENS_AT_USD;
+  const opening = !open && !detail.engineBlocked && idle >= OPEN_LEAST_USD;
+  const router = useRouter();
+  useEffect(() => {
+    if (justClosed) router.refresh();
+  }, [justClosed, router]);
+
   const header = (
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-4">
       <div className="flex min-w-0 items-center gap-2.5">
@@ -75,7 +87,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
       </div>
       <span className={cn("flex items-center gap-1.5 text-xs font-medium", open ? "text-brand" : "text-ink-3")}>
         {open && <LivePulse tone="brand" />}
-        {open ? "Live on Lighter" : "Accumulating fees"}
+        {open ? "Live on Lighter" : opening ? "Opening" : "Accumulating fees"}
       </span>
     </div>
   );
@@ -83,8 +95,8 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
   const notices = <EngineNotices detail={detail} />;
 
   if (!open) {
-    const reserve = stats.waitingUsd;
-    const pct = Math.max(0, Math.min(1, reserve / OPEN_GATE_USD));
+    const reserve = stats.waitingUsd + stats.idleUsd;
+    const pct = opening ? 1 : Math.max(0, Math.min(1, reserve / gate));
     const R = 54;
     const C = 2 * Math.PI * R;
     return (
@@ -111,16 +123,32 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
             </svg>
             <div className="absolute inset-0 flex flex-col items-center justify-center">
               <span className="num text-2xl font-semibold text-ink">{Math.round(pct * 100)}%</span>
-              <span className="text-2xs text-ink-3">to the gate</span>
+              <span className="text-2xs text-ink-3">{opening ? "funded" : "to the gate"}</span>
             </div>
           </div>
           <div className="min-w-0">
             <p className="font-display text-2xl leading-tight font-semibold text-ink">
-              {fmtUsd(reserve)} of {fmtThreshold(OPEN_GATE_USD)} collected.
+              {justClosed ? "Position closed." : opening ? `Opening with ${fmtUsd(idle)}.` : `${fmtUsd(reserve)} of ${fmtThreshold(gate)} collected.`}
             </p>
             <p className="mt-2 max-w-[52ch] text-base leading-relaxed text-ink-2">
-              The position opens on Lighter as soon as the token&apos;s fees reach the gate: {coin.market}, {coin.side},{" "}
-              {coin.leverage}x. Every trade on the token brings it closer.
+              {opening ? (
+                <>
+                  {coin.market}, {coin.side}, {coin.leverage}x, as soon as the market fills the order.
+                </>
+              ) : (
+                <>
+                  The position opens on Lighter as soon as the token&apos;s fees reach the gate: {coin.market}, {coin.side},{" "}
+                  {coin.leverage}x. Every trade on the token brings it closer.
+                  {stats.perpFundedUsd === 0 && ` The first one waits ${FIRST_OPEN_DELAY_MIN} minutes from the launch, so the opening fees go in together.`}
+                  {stats.buybackWaitingUsd >= 0.01 && (
+                    <>
+                      {" "}
+                      <span className="num text-ink">{fmtUsd(stats.buybackWaitingUsd)}</span> from its last take-profit is on its way to a
+                      buyback.
+                    </>
+                  )}
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -137,6 +165,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
   const entryPct = at(entry);
   const pnlPct = pnl != null && collateral ? (pnl / collateral) * 100 : null;
   const toTarget = mark != null && target != null ? ((target - mark) / mark) * 100 : null;
+  const reached = toTarget != null && (isShort ? toTarget >= 0 : toTarget <= 0);
   const toLiq = mark != null && liq != null ? (Math.abs(mark - liq) / mark) * 100 : null;
   const tone = pnl == null ? "text-ink" : pnl >= 0 ? "text-up" : "text-down";
 
@@ -172,7 +201,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
             <div>
               <dt className="text-2xs text-ink-3">To take-profit</dt>
               <dd className="num text-base font-semibold text-brand">
-                {toTarget == null ? "—" : `${toTarget >= 0 ? "+" : ""}${toTarget.toFixed(2)}%`}
+                {toTarget == null ? "—" : reached ? "Reached" : `${toTarget >= 0 ? "+" : ""}${toTarget.toFixed(2)}%`}
               </dd>
             </div>
             <div>
@@ -198,7 +227,11 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
                   animate={{ left: `${nowPct}%` }}
                   transition={reduced ? { duration: 0 } : { type: "spring", stiffness: 140, damping: 22 }}
                 >
-                  <span className="absolute bottom-[calc(100%+10px)] left-1/2 -translate-x-1/2 rounded-md bg-ink px-2 py-1 text-2xs font-semibold whitespace-nowrap text-white">
+                  {/* slides from its left edge to its right one along the rail, so it never leaves the card */}
+                  <span
+                    style={{ transform: `translateX(-${nowPct}%)` }}
+                    className="absolute bottom-[calc(100%+10px)] left-1/2 rounded-md bg-ink px-2 py-1 text-2xs font-semibold whitespace-nowrap text-white"
+                  >
                     now <span className="num">{fmtMark(mark)}</span>
                   </span>
                   <span className="relative flex size-4">
@@ -208,12 +241,13 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
                 </motion.div>
               )}
             </div>
-            <div className="mt-3 grid grid-cols-3 text-2xs text-ink-3">
+            <div className="relative mt-3 flex justify-between text-2xs text-ink-3">
               <span className="text-left">
                 {isShort ? "Take profit" : "Liquidation"}
                 <span className="num block text-sm text-ink">{fmtMark(lo)}</span>
               </span>
-              <span className="text-center">
+              {/* under its own mark, as far as the two ends leave it room */}
+              <span className="absolute top-0 -translate-x-1/2 text-center" style={{ left: `clamp(30%, ${entryPct ?? 50}%, 70%)` }}>
                 Entry
                 <span className="num block text-sm text-ink">{fmtMark(entry)}</span>
               </span>

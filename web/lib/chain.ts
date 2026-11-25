@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { RPC_URL, PINATA_GATEWAY } from "./config";
-import { USDG, DOPPLER, V4_POOL_MANAGER, LAUNCH_ROUTER, LAUNCH_FEE_HUB, ROUTER_DEPLOY_BLOCK } from "./clientConfig";
+import { USDG, DOPPLER, V4_POOL_MANAGER, LAUNCH_ROUTER, LAUNCH_FEE_HUB, FIRST_LISTED_BLOCK, ROUTER_DEPLOY_BLOCK } from "./clientConfig";
 import type { Coin, EngineLogItem, FeedItem } from "./types";
 import { multicallPerItem, type Call } from "./multicall";
 import { LEGACY_TP, MANAGED_DELAY_FALLBACK_S } from "./doppler";
@@ -339,7 +339,7 @@ async function scanRouterCoins(): Promise<Coin[]> {
       creator: String(a.creator),
     });
   }
-  const launches = logs.filter((l) => l.topics[0] === launchTopic).map((l) => ({ log: l, ev: ROUTER_IFACE.parseLog(l).args }));
+  const launches = logs.filter((l) => l.topics[0] === launchTopic && l.blockNumber >= FIRST_LISTED_BLOCK).map((l) => ({ log: l, ev: ROUTER_IFACE.parseLog(l).args }));
   if (launches.length === 0) {
     coinsCache = { at: Date.now(), coins: [] };
     return [];

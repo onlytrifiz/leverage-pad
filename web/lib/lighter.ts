@@ -182,6 +182,7 @@ export async function perpPosition(
   const positions = (acc.positions as Record<string, unknown>[] | undefined) ?? [];
   const pos = marketId != null ? positions.find((p) => Number(p.market_id) === marketId) : undefined;
   const mark = marketId != null ? await markPrice(marketId) : null;
+  const freeUsd = acc.available_balance != null ? Number(acc.available_balance) : null;
 
   if (!pos) {
     return {
@@ -195,6 +196,7 @@ export async function perpPosition(
       unrealizedPnlUsd: null,
       liquidationPrice: null,
       fundingPaidUsd: null,
+      freeUsd,
     };
   }
   const size = Math.abs(Number(pos.position ?? 0));
@@ -215,5 +217,6 @@ export async function perpPosition(
     // ma il collaterale l'ha gia' subito — e il keeper lo porta nel realizzato.
     fundingPaidUsd:
       pos.total_funding_paid_out != null ? Number(pos.total_funding_paid_out) : null,
+    freeUsd,
   };
 }

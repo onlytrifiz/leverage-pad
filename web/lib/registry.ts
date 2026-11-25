@@ -38,6 +38,9 @@ export type CoinState = {
   perpOpen: boolean;
   perpDepositedUsd: number;
   perpRealizedUsd: number;
+  /** collateral of the tranches that took profit, out of the engine and not yet withdrawn */
+  perpCapitalUsd?: number;
+  perpWithdrawPendingProfitUsd?: number;
   /** funding cumulativo del perp: negativo = pagato, gia' dentro il realizzato */
   perpFundingUsd?: number;
   perpWithdrawPendingUsd: number;

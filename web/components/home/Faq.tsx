@@ -64,8 +64,8 @@ const QA: { q: string; a: React.ReactNode }[] = [
       <p>
         Every deposit is a tranche with its own target: the token&apos;s take-profit, from +10% up to 20 times the leverage (+500% at most) on
         its collateral. A deposit that has not banked after a week starts lowering its target, so profit never waits
-        forever. When one matures it closes, and {PROFIT_SPLIT_PCT.buyback}% of the profit buys the token on its pool
-        and burns it. The other {PROFIT_SPLIT_PCT.treasury}% goes to the protocol.
+        forever. When one matures it closes whole: the capital that was in it and {PROFIT_SPLIT_PCT.buyback}% of the gain buy the
+        token on its pool and burn it. The other {PROFIT_SPLIT_PCT.treasury}% of the gain goes to the protocol. New fees load the next position.
       </p>
     ),
   },

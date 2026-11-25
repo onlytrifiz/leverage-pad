@@ -1,5 +1,6 @@
 import { ArrowUpRight } from "lucide-react";
 import { OPEN_GATE_USD, TOPUP_STEP_USD, BUYBACK_FLOOR_USD, fmtThreshold } from "@/lib/config";
+import { BUYBACK_MAX_USD, FIRST_OPEN_DELAY_MIN, TRANCHE_INTERVAL_MIN, fmtEvery } from "@/lib/thresholds";
 import { DOPPLER, LAUNCH_ROUTER, V4_POOL_MANAGER, explorerAddr } from "@/lib/clientConfig";
 import { SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, MAX_BUY_ORDERS, fmtSeconds } from "@/lib/doppler";
 
@@ -52,9 +53,9 @@ function EngineBody() {
                              opens/tops-up the position the engine says
                              (market · direction · leverage · take-profit)
 
-      realized profit → withdrawn on-chain
-        ├─ ${PROFIT_SPLIT_PCT.buyback}% buys the token from the pool and burns it
-        └─ ${PROFIT_SPLIT_PCT.treasury}% protocol treasury`}</pre>
+      take-profit → capital and gain withdrawn on-chain
+        ├─ all the capital, ${PROFIT_SPLIT_PCT.buyback}% of the gain: buys the token and burns it
+        └─ ${PROFIT_SPLIT_PCT.treasury}% of the gain: protocol treasury`}</pre>
                   </div>
                   <p>
                     That circuit is the whole product. Fees are not income to be distributed.
@@ -284,8 +285,8 @@ function KeeperBody() {
       <ol className="space-y-3">
         {[
           <>credits any perp withdrawal that landed since the last tick, bridge
-            settlements are recognized from the on-chain transfer itself and split{" "}
-            {PROFIT_SPLIT_PCT.treasury}% treasury / {PROFIT_SPLIT_PCT.buyback}% buyback;</>,
+            settlements are recognized from the on-chain transfer itself: {PROFIT_SPLIT_PCT.treasury}% of
+            the gain to the treasury, the rest to the buyback reserve;</>,
           <>flushes the token&apos;s fee sink when it holds enough to be worth the
             gas ({FEE_SPLIT_PCT.treasury}% to the treasury, {FEE_SPLIT_PCT.engine}% to
             the sub-wallet, tokens burned) and moves what arrived into the perp
@@ -320,12 +321,15 @@ function LifecycleBody() {
       <p>
         <K>Open at {fmtThreshold(OPEN_GATE_USD)}.</K> Once <N>{fmtThreshold(OPEN_GATE_USD)}</N> of fees have accrued, the keeper
         deposits into the token&apos;s Lighter account and opens the position at the
-        chosen market, side and leverage. Deposits travel as plain USDG transfers to
+        chosen market, side and leverage. The first position waits <N>{FIRST_OPEN_DELAY_MIN} minutes</N> from the
+        launch, so the fees of the opening go in together. After a take-profit a new one opens as soon as
+        the gate is met again. Deposits travel as plain USDG transfers to
         a deterministic intent address; Lighter credits the token&apos;s own account
         across the bridge.
       </p>
       <p>
-        <K>Top up every {fmtThreshold(TOPUP_STEP_USD)}.</K> Every further <N>{fmtThreshold(TOPUP_STEP_USD)}</N> of fees is deposited and
+        <K>One tranche every {fmtEvery(TRANCHE_INTERVAL_MIN)}.</K> While the position is open, the fees that have
+        accrued (at least <N>{fmtThreshold(TOPUP_STEP_USD)}</N>) are deposited together and
         put to work at the same leverage, as a market order with a <N>2%</N>{" "}
         slippage cap.
       </p>
@@ -419,13 +423,13 @@ function TranchesBody() {
       <p>
         <K>Banking a tranche.</K> When a tranche matures, the keeper closes exactly
         that tranche&apos;s size: reduce-only, at market, fill-verified: the
-        position is re-read after the order and profit is credited only for what
-        actually closed. Freed collateral re-enters as a fresh tranche at the
-        current mark, so banked capital keeps compounding.
+        position is re-read after the order and only what actually closed is
+        credited, at the price it filled at. The whole tranche leaves the engine:
+        the capital that was in it and its gain. The next position is loaded by new fees.
       </p>
       <p>
-        <K>Ring-fencing.</K> Realized profit is excluded from what the keeper can
-        redeploy. Profit destined for burns can never be re-risked on the position
+        <K>Ring-fencing.</K> What a take-profit took out, capital and gain, is excluded
+        from what the keeper can deploy. It can never be re-risked on the position
         it came from. It can only leave toward the buyback.
       </p>
       <p>
@@ -442,15 +446,15 @@ function ProfitsBody() {
   return (
     <>
       <p>
-        <K>Coming home.</K> Once realized profit clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>, it&apos;s
+        <K>Coming home.</K> Once what take-profits took out clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>, it&apos;s
         withdrawn from Lighter over the zk bridge (~15 minutes) back to the
-        token&apos;s sub-wallet, where it splits <K>{PROFIT_SPLIT_PCT.treasury}% protocol treasury /{" "}
-        {PROFIT_SPLIT_PCT.buyback}% buyback reserve</K>.
+        token&apos;s sub-wallet. <K>All the capital and {PROFIT_SPLIT_PCT.buyback}% of the gain</K> go to the
+        buyback reserve, {PROFIT_SPLIT_PCT.treasury}% of the gain to the protocol treasury.
       </p>
       <p>
         <K>The buyback.</K> When a token&apos;s buyback reserve crosses <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>,
         the keeper buys the token on its own pool and burns what it bought with the
-        token&apos;s <N>burn()</N>. A single tick spends at most <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>, with a
+        token&apos;s <N>burn()</N>. A single tick spends at most <N>{fmtThreshold(BUYBACK_MAX_USD)}</N>, with a
         minimum-out quoted from the live pool price minus 3%: a large reserve drains
         as a series of ordinary buys rather than one block-moving order.
       </p>
@@ -472,9 +476,8 @@ function EconomicsBody() {
         perp treasury</K>, {FEE_SPLIT_PCT.treasury}% goes to the protocol and{" "}
         {FEE_SPLIT_PCT.doppler}% to Doppler for the market infrastructure. No creator
         cut. The split is enforced by the token&apos;s fee sink, not by the keeper. On
-        the way back the protocol takes {PROFIT_SPLIT_PCT.treasury}% of realized
-        profits, with the other {PROFIT_SPLIT_PCT.buyback}% buying and burning
-        supply. No launch fee, beyond gas.
+        the way back the protocol takes {PROFIT_SPLIT_PCT.treasury}% of the gain; the
+        other {PROFIT_SPLIT_PCT.buyback}% and all the capital buy and burn supply. No launch fee, beyond gas.
       </p>
       <p>
         Worst case is bounded by design: isolated margin means a liquidation costs

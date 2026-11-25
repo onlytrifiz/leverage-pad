@@ -20,7 +20,7 @@ import { PROFIT_SPLIT_PCT } from "@/lib/doppler";
  *
  * One worked example runs through the last chapters so the numbers add up:
  * $1,540 of fees already in the engine, at 20x a $30,800 position, an 8% move is
- * $2,464 of profit and 70% of it, $1,725, buys the token back. 20x is Lighter's
+ * $2,464 of profit; the $1,540 and 70% of the profit, $3,265, buy the token back. 20x is Lighter's
  * own cap on NVDA. A position is loaded by fees once; after that it works whether
  * or not anyone is trading, which is the claim the Pump chapter draws.
  * Every plate that shows those figures says it is an example.
@@ -44,7 +44,7 @@ const EX = {
     return (this.notional * this.pump) / 100;
   },
   get buyback() {
-    return (this.profit * PROFIT_SPLIT_PCT.buyback) / 100;
+    return this.collateral + (this.profit * PROFIT_SPLIT_PCT.buyback) / 100;
   },
   dump: 12,
 };
@@ -489,7 +489,7 @@ function Pump(props: SlideProps) {
       scope={scope}
       title={`${EX.asset} rips.`}
       accent="The token gets bought."
-      body={`The position takes its profit and ${PROFIT_SPLIT_PCT.buyback}% of it buys the token on its own pool, then burns it. Nobody has to be trading for that to happen.`}
+      body={`At take-profit the position closes: its capital and ${PROFIT_SPLIT_PCT.buyback}% of the gain buy the token on its own pool, then burn it. Nobody has to be trading for that to happen.`}
     >
       {/* the bull charges in along with the move and stops on the plate's top edge */}
       <div className="relative w-full max-w-[560px] min-[360px]:mt-16 lg:mt-0">
@@ -607,7 +607,7 @@ function Pump(props: SlideProps) {
               <div className="js-pnl num text-lg font-semibold text-night-up">+$0</div>
             </div>
             <div className="rounded-lg border border-night-line bg-night/60 px-3 py-2">
-              <div className="text-2xs text-night-ink-2">Buyback &amp; burn</div>
+              <div className="text-2xs text-night-ink-2">Buyback &amp; burn, capital included</div>
               <div className="js-buyback num text-lg font-semibold text-mint">$0</div>
             </div>
           </div>
@@ -801,7 +801,7 @@ function Start(props: SlideProps) {
       body={
         <>
           Stocks, crypto, gold, indices. Launch a long if it goes up, a short if it goes down: when the call is right,
-          the profit buys the token.
+          the winnings buy the token.
           <span className="js-ctas mt-7 flex flex-wrap items-center gap-3">
             <Link
               href="/launch"

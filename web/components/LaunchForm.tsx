@@ -661,8 +661,8 @@ export default function LaunchForm({
             <span className="font-semibold text-ink">
               ${symbol || "TICKER"} runs on a {lev}x {side} on {market}.
             </span>{" "}
-            If {market} moves 10% {up ? "up" : "down"}, the position gains about {move10}%. Each deposit banks at +{trigger}%, then {PROFIT_SPLIT_PCT.buyback}%
-            of the profit buys the token back and burns it.
+            If {market} moves 10% {up ? "up" : "down"}, the position gains about {move10}%. Each deposit closes at +{trigger}%: its capital and {PROFIT_SPLIT_PCT.buyback}%
+            of the gain buy the token back and burn it.
           </motion.p>
 
           {/* live mark of the chosen asset */}
@@ -1425,7 +1425,7 @@ function TakeProfitSlider({
           tone="up"
           label="At take-profit the fees become"
           value={`×${(1 + value / 100).toFixed(2).replace(/\.?0+$/, "")}`}
-          note="each deposit, when it banks"
+          note={`its capital and ${PROFIT_SPLIT_PCT.buyback}% of the gain buy back`}
         />
         <div className="col-span-2 sm:col-span-1">
           <Readout

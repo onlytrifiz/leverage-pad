@@ -28,7 +28,7 @@ export async function generateMetadata({
   if (!detail) return { title: "Token not found" };
   return {
     title: `$${detail.coin.symbol} · ${detail.coin.leverage}× ${detail.coin.side} ${detail.coin.market}`,
-    description: `${detail.coin.name}: trading fees fund a ${detail.coin.leverage}× ${detail.coin.side} perp on ${detail.coin.market}, profits buy back and burn.`,
+    description: `${detail.coin.name}: trading fees fund a ${detail.coin.leverage}× ${detail.coin.side} perp on ${detail.coin.market}, every take-profit buys back and burns.`,
   };
 }
 
