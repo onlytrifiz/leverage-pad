@@ -21,16 +21,13 @@ import { ArrowUpRight, ChartCandlestick, ChartSpline } from "lucide-react";
 import { cn } from "cn";
 import type { ChartData, Resolution } from "@/lib/types";
 import { RESOLUTIONS } from "@/lib/resolutions";
-import AssetIcon from "@/components/AssetIcon";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ARROW_PATH, HatchLayer, MarksLayer, placeBuybacks, placeLines } from "./chart-marks";
 
 /**
- * The token's chart, as the story it tells: the market the engine trades on top, the token under it,
- * one time axis. A buyback is marked where it landed, and a dated line runs through both where the
- * engine changed. Quiet stretches are drawn flat, because a token nobody trades while its market
- * moves is what the engine is for.
+ * The token's chart, drawn from its pool's swaps, with the engine on it: a buyback is marked where it
+ * landed and a dated line stands where the engine changed. Quiet stretches are drawn flat.
  *
  * Printed like the notes: the line stands on engraved strokes, a rising candle is hollow and a
  * falling one solid, so direction never hangs on telling green from red.
@@ -41,7 +38,6 @@ import { ARROW_PATH, HatchLayer, MarksLayer, placeBuybacks, placeLines } from ".
 const LINE = "#0f6b3f";
 const UP = "#1f8f5f";
 const DOWN = "#b3261e";
-const ASSET = "#3b6fb5";
 const INK = "#0c3420";
 const MINT = "#8ce8b0";
 const AXIS = "#566c5e";
@@ -49,7 +45,8 @@ const PAPER = "#ffffff";
 const GRID = "rgba(12,52,32,0.05)";
 const VOLUME = "rgba(12,52,32,0.13)";
 
-const HEIGHT = "h-[380px] sm:h-[470px]";
+/** on desktop the section has a set height, the one the column beside it lines up with, and the plot takes what is left */
+const HEIGHT = "h-[340px] sm:h-[420px] lg:h-auto lg:min-h-0 lg:flex-1";
 const POLL_MS = 5_000;
 /** narrower than this, a tooltip beside the cursor runs off the chart */
 const TOOLTIP_BESIDE = 480;
@@ -105,7 +102,6 @@ function sig(n: number): string {
   return `${n < 0 ? "−" : ""}0.0${sub}${Math.round(a * 10 ** (zeros + 4))}`;
 }
 const usd = (n: number) => `$${sig(n)}`;
-const plain = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: n >= 1000 ? 0 : n >= 1 ? 2 : 5 })}`;
 const pct = (n: number) => `${n >= 0 ? "+" : "−"}${Math.abs(n * 100).toFixed(2)}%`;
 
 const firstResolution = (ageS: number): Resolution => (ageS < 6 * 3600 ? "1m" : ageS < 3 * 86_400 ? "5m" : "1h");
@@ -169,7 +165,7 @@ export default function CoinChart({
   const shown: View = view ?? (lost && dexSrc ? "dex" : "chart");
 
   return (
-    <section aria-label={`${symbol} chart`} className="relative overflow-hidden rounded-[18px] border border-line bg-panel">
+    <section aria-label={`${symbol} chart`} className="relative flex flex-col overflow-hidden rounded-[18px] border border-line bg-panel lg:h-[var(--chart-h)]">
       {/* the source, as quiet text in the corner: the figure is the header */}
       <div className="absolute top-4 right-4 z-10 flex gap-3 text-xs sm:right-5">
         <Tab on={shown === "chart"} onClick={() => setView("chart")}>
@@ -181,7 +177,7 @@ export default function CoinChart({
       </div>
 
       {shown === "dex" ? (
-        <div className="relative mt-12 h-[420px] border-t border-line sm:h-[520px]">
+        <div className="relative mt-12 h-[420px] border-t border-line sm:h-[520px] lg:h-auto lg:min-h-0 lg:flex-1">
           {dexSrc ? (
             <iframe src={dexSrc} title={`${symbol} on DexScreener`} className="absolute inset-0 h-full w-full border-0" loading="lazy" />
           ) : (
@@ -201,8 +197,8 @@ export default function CoinChart({
           </Note>
         </div>
       ) : !loaded ? (
-        <div className="p-5 pt-14">
-          <Skeleton className={cn("w-full", HEIGHT)} />
+        <div className={cn("p-5 pt-14", HEIGHT)}>
+          <Skeleton className="h-full w-full" />
         </div>
       ) : loaded.data.candles.length === 0 ? (
         <div className={cn("relative", HEIGHT)}>
@@ -223,7 +219,7 @@ export default function CoinChart({
       )}
 
       {shown === "chart" && (
-        <div className="flex items-center justify-between gap-3 border-t border-line px-4 sm:px-5">
+        <div className="mt-auto flex shrink-0 items-center justify-between gap-3 border-t border-line px-4 sm:px-5">
           <div role="radiogroup" aria-label="Candle size" className="flex min-w-0">
             {(Object.keys(RESOLUTIONS) as Resolution[]).map((r) => (
               <button
@@ -306,16 +302,12 @@ function Plot({
   const bars = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const line = useRef<ISeriesApi<"Line"> | null>(null);
   const volume = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const asset = useRef<ISeriesApi<"Line"> | null>(null);
   const hatch = useRef<HatchLayer | null>(null);
   const marks = useRef<MarksLayer | null>(null);
-  const assetMarks = useRef<MarksLayer | null>(null);
   const seconds = useRef(false);
   const framed = useRef<string | null>(null);
   const mono = useRef("monospace");
   const [hover, setHover] = useState<{ time: number; x: number; y: number; w: number; h: number } | null>(null);
-  /** top of the token's pane: where the asset's ends */
-  const [split, setSplit] = useState(0);
 
   const asLine = style === "line";
   const { candles } = data;
@@ -334,7 +326,6 @@ function Plot({
   );
   const buybacks = useMemo(() => placeBuybacks(candles, scale, asLine, data.marks), [candles, scale, asLine, data.marks]);
   const lines = useMemo(() => placeLines(candles, data.lines), [candles, data.lines]);
-  const hasAsset = data.asset != null;
 
   // made once; everything below pushes into it
   useEffect(() => {
@@ -349,7 +340,6 @@ function Plot({
         fontSize: 11,
         // the library's licence asks for TradingView's attribution; its own logo is the intended way
         attributionLogo: true,
-        panes: { separatorColor: "rgba(12,52,32,0.12)", separatorHoverColor: "rgba(12,52,32,0.12)", enableResize: false },
       },
       grid: { vertLines: { visible: false }, horzLines: { color: GRID } },
       rightPriceScale: { borderVisible: false },
@@ -389,8 +379,7 @@ function Plot({
     // room for the labels and the buybacks over the highs, and for the volume underneath
     line.current.priceScale().applyOptions({ scaleMargins: { top: 0.2, bottom: 0.18 } });
     hatch.current = new HatchLayer("rgba(15,107,63,0.42)");
-    marks.current = new MarksLayer({ ink: INK, mint: MINT, axis: AXIS, paper: PAPER, font: mono.current }, true);
-    assetMarks.current = new MarksLayer({ ink: INK, mint: MINT, axis: AXIS, paper: PAPER, font: mono.current }, false);
+    marks.current = new MarksLayer({ ink: INK, mint: MINT, axis: AXIS, paper: PAPER, font: mono.current });
     const move = (p: MouseEventParams) =>
       setHover(typeof p.time === "number" && p.point ? { time: p.time, x: p.point.x, y: p.point.y, w: el.clientWidth, h: el.clientHeight } : null);
     c.subscribeCrosshairMove(move);
@@ -398,7 +387,6 @@ function Plot({
       c.unsubscribeCrosshairMove(move);
       c.remove();
       chart.current = null;
-      asset.current = null;
       framed.current = null;
     };
   }, []);
@@ -408,31 +396,6 @@ function Plot({
     chart.current?.applyOptions({ timeScale: { secondsVisible: res === "1s" } });
   }, [res]);
 
-  // the market's own pane, on top; gone when there is nothing to draw in it
-  useEffect(() => {
-    const c = chart.current;
-    if (!c || !hasAsset) return;
-    const s = c.addSeries(
-      LineSeries,
-      { color: ASSET, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: "custom", formatter: plain, minMove: 1e-9 } },
-      1
-    );
-    s.priceScale().applyOptions({ scaleMargins: { top: 0.34, bottom: 0.12 } });
-    s.moveToPane(1);
-    c.panes()[1].moveTo(0);
-    c.panes()[0].setStretchFactor(0.3);
-    c.panes()[1].setStretchFactor(0.7);
-    if (assetMarks.current) s.attachPrimitive(assetMarks.current);
-    asset.current = s;
-    return () => {
-      asset.current = null;
-      if (chart.current) {
-        c.removeSeries(s);
-        setSplit(0);
-      }
-    };
-  }, [hasAsset]);
-
   useEffect(() => {
     bars.current?.setData(series.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
     // the line starts where the token did: one bar before its first trade, at the launch price
@@ -441,10 +404,7 @@ function Plot({
     line.current?.setData(pts);
     hatch.current?.set(pts);
     volume.current?.setData(series.map((s) => ({ time: s.time, value: s.volume })));
-    asset.current?.setData((data.asset?.points ?? []).map((p) => ({ time: p.time as UTCTimestamp, value: p.value })));
-    const c = chart.current;
-    if (c && hasAsset) requestAnimationFrame(() => chart.current && setSplit(chart.current.panes()[0]?.getHeight() ?? 0));
-  }, [series, data.complete, data.launchPrice, data.asset, hasAsset, res, scale]);
+  }, [series, data.complete, data.launchPrice, res, scale]);
 
   // one series on screen; the glyphs ride on it
   useEffect(() => {
@@ -467,8 +427,7 @@ function Plot({
 
   useEffect(() => {
     marks.current?.set(buybacks, lines);
-    assetMarks.current?.set([], lines);
-  }, [buybacks, lines, asLine, hasAsset]);
+  }, [buybacks, lines, asLine]);
 
   const ath = data.ath == null ? null : data.ath * scale;
   useEffect(() => {
@@ -499,12 +458,10 @@ function Plot({
   const at = (hover && series.find((s) => s.time === hover.time)) || last;
   const sinceLaunch = data.launchPrice > 0 ? at.close / (data.launchPrice * scale) - 1 : 0;
   const here = hover ? buybacks.find((b) => b.time === hover.time) : undefined;
-  const assetAt = data.asset ? ((hover && data.asset.points.find((p) => p.time === hover.time)) ?? data.asset.points[data.asset.points.length - 1]) : null;
-  const assetMove = data.asset && assetAt ? assetAt.value / data.asset.points[0].value - 1 : 0;
   const beside = hover != null && hover.w >= TOOLTIP_BESIDE;
 
   return (
-    <div>
+    <div className="flex flex-col lg:min-h-0 lg:flex-1">
       <div className="px-4 pt-4 pb-3 sm:px-5">
         {onUnit ? (
           <button
@@ -536,28 +493,13 @@ function Plot({
         </div>
       </div>
 
-      <div className="relative">
+      <div className={cn("relative", HEIGHT)}>
         <div
           ref={box}
           role="img"
           aria-label={`${symbol} ${unit === "mcap" ? "market cap" : "price"}, ${asLine ? "line" : "candles"}, ${res}, latest ${usd(last.close)}. The live feed below lists every trade.`}
-          className={cn("w-full transition-opacity motion-reduce:transition-none", HEIGHT, dimmed && "opacity-45")}
+          className={cn("absolute inset-0 transition-opacity motion-reduce:transition-none", dimmed && "opacity-45")}
         />
-        {data.asset && assetAt && (
-          <div className="pointer-events-none absolute top-1.5 left-4 flex items-center gap-1.5 rounded bg-panel/85 pr-1.5 text-xs sm:left-5">
-            <AssetIcon symbol={data.asset.symbol} size={15} />
-            <span className="font-semibold text-ink">{data.asset.symbol}</span>
-            <span aria-hidden className="h-0.5 w-3.5 rounded-full" style={{ background: ASSET }} />
-            <span className="num text-ink">{plain(assetAt.value)}</span>
-            <span className={cn("num", assetMove >= 0 ? "text-up" : "text-down")}>{pct(assetMove)}</span>
-          </div>
-        )}
-        {data.asset && split > 0 && (
-          <div className="pointer-events-none absolute right-[78px] flex items-center gap-1.5 rounded bg-panel/85 px-1.5 text-xs" style={{ top: split + 7 }}>
-            <span aria-hidden className="h-0.5 w-3.5 rounded-full" style={{ background: asLine ? LINE : UP }} />
-            <span className="font-semibold text-ink">${symbol}</span>
-          </div>
-        )}
         {hover && here && (
           <div
             aria-hidden
@@ -565,7 +507,7 @@ function Plot({
             style={
               beside
                 ? { top: Math.min(Math.max(hover.y - 56, 8), hover.h - 60), ...(hover.w - hover.x < hover.x ? { right: hover.w - hover.x + 14 } : { left: hover.x + 14 }) }
-                : { top: split + 8, left: 8 }
+                : { top: 8, left: 8 }
             }
           >
             <b className="font-semibold text-ink">{usd(here.usd)}</b> buyback, {sig(here.tokens)} burned

@@ -141,8 +141,6 @@ export type ChartData = {
   marks: ChartMark[];
   /** dated moments: the launch with its engine, the end of its protection, changes of engine */
   lines: { ts: number; label: string }[];
-  /** the market the engine trades, on the same buckets, since it has traded it; null when Lighter has no such candles */
-  asset: { symbol: string; points: { time: number; value: number }[] } | null;
 };
 
 export type TrancheView = {

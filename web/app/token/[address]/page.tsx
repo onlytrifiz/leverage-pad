@@ -2,16 +2,14 @@ import { notFound } from "next/navigation";
 import { coinDetail } from "@/lib/detail";
 import { dexscreenerPool } from "@/lib/doppler";
 import { Container } from "@/components/ui/container";
-import { Panel, PanelHeader, PanelTitle, PanelBody } from "@/components/ui/panel";
-import { Stat } from "@/components/ui/stat";
 import { isIndexed, dexEmbed, dexPage } from "@/components/Chart";
 import { MarketsProvider } from "@/components/markets-provider";
 import LiveFeed from "@/components/LiveFeed";
 import SwapPanel from "@/components/SwapPanel";
 import TranchePanel from "@/components/TranchePanel";
 import VerifySection from "@/components/VerifySection";
-import AutoRefresh from "@/components/AutoRefresh";
 import TokenHero from "@/components/token/TokenHero";
+import AssetPanel from "@/components/token/AssetPanel";
 import CoinChart from "@/components/token/CoinChart";
 import EngineCockpit from "@/components/token/EngineCockpit";
 import EngineFlow from "@/components/token/EngineFlow";
@@ -60,7 +58,7 @@ export default async function TokenPage({
         (`contents`) so the trade panel can sit right after the chart; on
         desktop it is a sticky column beside the long read.
       */}
-      <Container width="landing" className="mt-8 grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <Container width="landing" className="mt-8 grid [--chart-h:640px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="flex min-w-0 flex-col gap-6 max-lg:contents">
           <div className="min-w-0 max-lg:order-1">
             <CoinChart
@@ -95,7 +93,7 @@ export default async function TokenPage({
           </div>
         </div>
 
-        <aside className="flex min-w-0 flex-col gap-4 max-lg:order-2 lg:sticky lg:top-[calc(var(--nav-h)+16px)] lg:self-start">
+        <aside className="flex min-w-0 flex-col gap-4 max-lg:order-2 lg:sticky lg:top-[calc(var(--nav-h)+16px)] lg:min-h-[var(--chart-h)] lg:self-start">
           <TradeColumn detail={detail} />
         </aside>
       </Container>
@@ -104,31 +102,12 @@ export default async function TokenPage({
 }
 
 function TradeColumn({ detail }: { detail: NonNullable<Awaited<ReturnType<typeof coinDetail>>> }) {
-  const { coin } = detail;
   return (
     <>
       <div id="trade" className="scroll-mt-[calc(var(--nav-h)+16px)]">
         <SwapPanel detail={detail} />
       </div>
-      <Panel>
-        <PanelHeader>
-          <PanelTitle>Fee wallet</PanelTitle>
-        </PanelHeader>
-        <div className="grid grid-cols-2 gap-px bg-border">
-          <Stat label={coin.pairSymbol} amount={detail.subWallet.quoteBalanceUsd} format="usd" size="sm" />
-          <Stat label={coin.symbol} amount={detail.subWallet.coinBalance} format="int" size="sm" />
-        </div>
-        <PanelBody className="pt-3.5">
-          <p className="text-xs leading-relaxed text-ink-3">
-            The engine&apos;s share of every fee lands here in USDG, converted by the pool&apos;s hook in the same swap. From
-            here it funds the position; tokens that arrive are burned.
-          </p>
-        </PanelBody>
-      </Panel>
-      {/* last, so the trade panel starts level with the chart beside it */}
-      <div className="flex items-center justify-end">
-        <AutoRefresh />
-      </div>
+      <AssetPanel detail={detail} />
     </>
   );
 }

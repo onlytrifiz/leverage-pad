@@ -2,7 +2,6 @@ import { ethers } from "ethers";
 import { CHAIN_ID, DOPPLER, LAUNCH_ROUTER, UNIVERSAL_ROUTER, V4_POOL_MANAGER } from "./clientConfig";
 import { coinPriceFromSqrtP, provider } from "./chain";
 import type { Candle, ChartData, ChartMark, Coin, Resolution } from "./types";
-import { marketCloses } from "./lighter";
 import { RESOLUTIONS } from "./resolutions";
 
 /**
@@ -217,7 +216,7 @@ async function read(coin: Coin): Promise<Store> {
 // ── candles ─────────────────────────────────────────────────────────────────
 
 const CANDLES = 1_000;
-/** quiet buckets are drawn, flat, this far back: a token nobody trades while its market moves is the point */
+/** quiet buckets are drawn, flat, this far back: quiet is part of the picture, and a gap would hide it */
 const FILLED = 500;
 
 /**
@@ -328,8 +327,7 @@ async function protectionEnd(coin: Coin): Promise<number | null> {
 }
 
 export async function chartData(coin: Coin, resolution: Resolution, engineWallet?: string): Promise<ChartData> {
-  const size = RESOLUTIONS[resolution];
-  const [s, end, closes] = await Promise.all([read(coin), protectionEnd(coin), marketCloses(coin.market, resolution, size).catch(() => [])]);
+  const [s, end] = await Promise.all([read(coin), protectionEnd(coin)]);
   const launchPrice = coin.openingMcapUsd / (coin.initialSupply ?? 1e9);
   const { candles, complete } = candlesOf(s.swaps, resolution, s.partial ? (s.swaps[0]?.price ?? launchPrice) : launchPrice);
   const now = Math.floor(Date.now() / 1000);
@@ -344,16 +342,6 @@ export async function chartData(coin: Coin, resolution: Resolution, engineWallet
     ...(end != null && end <= now && end - launchedAt >= 60 ? [{ ts: end, label: "Protection over" }] : []),
     ...changes.map((c) => ({ ts: c.ts, label: say(c.engine) })),
   ].sort((x, y) => x.ts - y.ts);
-  // the asset is drawn from when the engine took it: another market's price on the same scale would be a lie
-  let market = coin.launchEngine.market;
-  let took = 0;
-  for (const c of [...changes].sort((x, y) => x.ts - y.ts)) {
-    if (!c.engine.market || c.engine.market === market) continue;
-    market = c.engine.market;
-    took = Math.floor(c.ts / size) * size;
-  }
-  const since = Math.max(candles[0]?.time ?? 0, took);
-  const points = closes.filter((p) => p.time >= since);
   const highs = s.swaps.map((x) => x.price);
   return {
     candles,
@@ -362,7 +350,6 @@ export async function chartData(coin: Coin, resolution: Resolution, engineWallet
     launchPrice,
     marks,
     lines,
-    asset: points.length > 1 ? { symbol: coin.market, points } : null,
   };
 }
 

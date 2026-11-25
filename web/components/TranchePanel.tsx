@@ -72,7 +72,7 @@ export default function TranchePanel({ detail }: { detail: CoinDetail }) {
                 </div>
                 <div className="flex items-baseline gap-3 text-xs text-ink-3">
                   <span>coll {fmtUsd(t.collateralUsd)}</span>
-                  <span>{timeAgo(t.ts)}</span>
+                  <span>{timeAgo(Math.floor(t.ts / 1000), detail.stats.updatedAt)}</span>
                 </div>
               </div>
               <div className="mt-2 flex items-center gap-2.5">

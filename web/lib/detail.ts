@@ -197,7 +197,6 @@ export async function coinChart(address: string, resolution: Resolution): Promis
       ath: Math.max(...candles.map((c) => c.high)),
       launchPrice: candles[0].open,
       marks: [],
-      asset: null,
       lines: [{ ts: candles[0].time, label: "Launch" }],
     };
   }

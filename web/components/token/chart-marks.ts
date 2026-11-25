@@ -14,7 +14,7 @@ import type { Candle, ChartMark } from "@/lib/types";
 
 /**
  * What the chart draws over its series: the engraved hatch under the line, the engine's buybacks,
- * and the dated lines that run through both panes.
+ * and the dated lines.
  */
 
 export type Buyback = { time: UTCTimestamp; above: number; usd: number; tokens: number };
@@ -143,14 +143,11 @@ export class HatchLayer extends Layer {
 
 export type MarkPalette = { ink: string; mint: string; axis: string; paper: string; font: string };
 
-/** buybacks and dated lines; on the asset's pane the same lines without their labels */
+/** buybacks and dated lines */
 export class MarksLayer extends Layer {
   private buybacks: Buyback[] = [];
   private lines: DatedLine[] = [];
-  constructor(
-    private readonly p: MarkPalette,
-    private readonly labelled: boolean
-  ) {
+  constructor(private readonly p: MarkPalette) {
     super("top");
   }
   set(buybacks: Buyback[], lines: DatedLine[]) {
@@ -182,7 +179,6 @@ export class MarksLayer extends Layer {
       ctx.globalAlpha = 1;
       labels.push({ x, row, text: l.label });
     }
-    if (!this.labelled) return;
     // after every line, so none of them runs through a label
     for (const { x, row: r, text } of labels) {
       const tw = ctx.measureText(text).width;

@@ -1,27 +1,40 @@
 "use client";
 
-import { CircleDollarSign, Flame, Hourglass, TrendingUp } from "lucide-react";
+import { CircleDollarSign, Flame, Hourglass, TrendingUp, Wallet } from "lucide-react";
 import { PROFIT_SPLIT_PCT } from "@/lib/doppler";
 import type { CoinDetail } from "@/lib/types";
 import { fmtInt } from "@/lib/format";
+import { OPEN_GATE_USD, TOPUP_STEP_USD, fmtThreshold } from "@/lib/thresholds";
+import AutoRefresh from "@/components/AutoRefresh";
 import { AnimatedNumber } from "@/components/motion";
 
 /**
  * This coin's fees, followed from the swap to the burn, with its own numbers.
  *
- * The same four stations as the home page's loop, but here they hold money:
- * what the pool collected, what reached the position, what is waiting to buy
- * back, and what has been burned. The dashes between them flow in the
+ * The stations of the home page's loop, but here they hold money: what the pool
+ * collected, what sits in the token's fee wallet, what reached the position, what
+ * is waiting to buy back, and what has been burned. The dashes between them flow in the
  * direction the money travels.
  */
 export default function EngineFlow({ detail }: { detail: CoinDetail }) {
-  const { stats, coin } = detail;
+  const { stats, coin, perp, subWallet } = detail;
+  // what has landed and what the keeper has already set aside for the next deposit
+  const waiting = (subWallet.quoteBalanceUsd ?? 0) + (stats.perpReserveUsd ?? 0);
   const stations = [
     {
       icon: CircleDollarSign,
       label: "Fees collected",
       value: <AnimatedNumber value={stats.feesCollectedUsd} format="usd" countOnMount />,
       note: "in USDG, from every swap",
+    },
+    {
+      icon: Wallet,
+      label: "In the fee wallet",
+      value: <AnimatedNumber value={waiting} format="usd" countOnMount />,
+      note:
+        subWallet.coinBalance != null && subWallet.coinBalance >= 1
+          ? `and ${fmtInt(subWallet.coinBalance)} tokens to burn`
+          : `next deposit at ${fmtThreshold(perp?.open ? TOPUP_STEP_USD : OPEN_GATE_USD)}`,
     },
     {
       icon: TrendingUp,
@@ -48,8 +61,11 @@ export default function EngineFlow({ detail }: { detail: CoinDetail }) {
 
   return (
     <section className="rounded-[18px] border border-line bg-panel p-5 sm:p-6">
-      <h2 className="font-display text-xl font-semibold">Where the fees went</h2>
-      <ol className="mt-6 grid grid-cols-1 gap-0 md:grid-cols-4">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-display text-xl font-semibold">Where the fees went</h2>
+        <AutoRefresh />
+      </div>
+      <ol className="mt-6 grid grid-cols-1 gap-0 md:grid-cols-5">
         {stations.map((s, i) => {
           const Icon = s.icon;
           return (
