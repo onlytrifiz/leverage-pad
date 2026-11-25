@@ -46,6 +46,8 @@ export type Coin = {
   managed: boolean;
   /** a managed coin's announced change, not in effect yet */
   pendingEngine: (EngineSettings & { effectiveAt: number }) | null;
+  /** the engine it was launched with */
+  launchEngine: EngineSettings;
   /** every change announced, withdrawn or overridden since launch, newest first */
   engineLog: EngineLogItem[];
   tokenURI: string;
@@ -126,8 +128,8 @@ export type Candle = {
 
 export type Resolution = keyof typeof import("./resolutions").RESOLUTIONS;
 
-/** something that happened on the pool, drawn on the candle it landed in */
-export type ChartMark = { kind: "buyback" | "bought" | "sold"; ts: number; usd: number; tokens: number };
+/** a buyback of the engine, drawn on the candle it landed in */
+export type ChartMark = { ts: number; usd: number; tokens: number };
 
 export type ChartData = {
   candles: Candle[];
@@ -137,10 +139,10 @@ export type ChartData = {
   ath: number | null;
   launchPrice: number;
   marks: ChartMark[];
-  /** dated moments: the launch, the end of its protection, changes of engine */
+  /** dated moments: the launch with its engine, the end of its protection, changes of engine */
   lines: { ts: number; label: string }[];
-  /** the asking wallet's average cost on what it still holds */
-  entry: number | null;
+  /** the market the engine trades, on the same buckets, since it has traded it; null when Lighter has no such candles */
+  asset: { symbol: string; points: { time: number; value: number }[] } | null;
 };
 
 export type TrancheView = {

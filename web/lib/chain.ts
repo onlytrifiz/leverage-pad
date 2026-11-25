@@ -421,6 +421,12 @@ async function scanRouterCoins(): Promise<Coin[]> {
               effectiveAt: pendingAt,
             }
           : null,
+      launchEngine: {
+        market: onChain?.market ?? market,
+        side: onChain?.side ?? side,
+        leverage: onChain?.leverage ?? (live ? Number(live.leverage) : 0),
+        takeProfitPct: onChain?.takeProfitPct ?? takeProfitPct,
+      },
       engineLog: engineLogs.get(String(ev.asset).toLowerCase()) ?? [],
       tokenURI: String(ev.tokenURI),
       image: imageUrl(m?.image),

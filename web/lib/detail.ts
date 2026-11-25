@@ -186,7 +186,7 @@ async function engineWallet(token: string): Promise<string | undefined> {
 }
 
 /** everything the chart draws; null for an unknown coin, throws when the pool cannot be read */
-export async function coinChart(address: string, resolution: Resolution, trader?: string): Promise<ChartData | null> {
+export async function coinChart(address: string, resolution: Resolution): Promise<ChartData | null> {
   const reg = await loadAll();
   if (demoFrom(reg.coins)) {
     const candles = demoCandles(address);
@@ -197,13 +197,13 @@ export async function coinChart(address: string, resolution: Resolution, trader?
       ath: Math.max(...candles.map((c) => c.high)),
       launchPrice: candles[0].open,
       marks: [],
+      asset: null,
       lines: [{ ts: candles[0].time, label: "Launch" }],
-      entry: null,
     };
   }
   const coin = reg.coins.find((c) => c.token.toLowerCase() === address.toLowerCase());
   if (!coin) return null;
-  return chartData(coin, resolution, { trader, engineWallet: await engineWallet(coin.token) });
+  return chartData(coin, resolution, await engineWallet(coin.token));
 }
 
 export async function coinFeedItems(address: string): Promise<FeedItem[]> {

@@ -86,6 +86,7 @@ const specCoin = (s: DemoSpec): Coin => ({
   managed: false,
   pendingEngine: null,
   engineLog: [],
+  launchEngine: { market: s.market, side: s.side, leverage: s.leverage, takeProfitPct: 50 },
   createdAt: new Date(Date.now() - s.ageDays * 86_400_000).toISOString(),
 });
 

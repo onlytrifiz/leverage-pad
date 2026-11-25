@@ -137,6 +137,20 @@ export async function allMarkets(): Promise<MarketRow[]> {
   return rows.sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0));
 }
 
+/** the last 500 closes of a market, oldest first; empty when the venue does not answer or has no such size */
+export async function marketCloses(symbol: string, resolution: string, size: number): Promise<{ time: number; value: number }[]> {
+  if (size < 60) return []; // Lighter's smallest candle is a minute
+  const id = await marketIdBySymbol(symbol);
+  if (id == null) return [];
+  const now = Math.ceil(Date.now() / 1000 / size) * size;
+  const j = await lighterGet(
+    `/api/v1/candles?market_id=${id}&resolution=${resolution}&start_timestamp=${(now - 500 * size) * 1000}&end_timestamp=${now * 1000}&count_back=500`,
+    10
+  );
+  const rows = Array.isArray(j?.c) ? (j.c as { t: number; c: number }[]) : [];
+  return rows.map((r) => ({ time: Math.floor(r.t / 1000 / size) * size, value: Number(r.c) })).filter((p) => p.value > 0);
+}
+
 export async function markPrice(marketId: number): Promise<number | null> {
   const j = await lighterGet(`/api/v1/orderBookDetails?market_id=${marketId}`);
   if (!j) return null;
