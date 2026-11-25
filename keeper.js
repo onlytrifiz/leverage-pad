@@ -1166,7 +1166,7 @@ async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
   // its own transaction knows, when there is one; nothing that is not executed by its expiry will be
   if (st.perpWithdrawTx) {
     let t, read = true;
-    try { t = await lighter.tx(st.perpWithdrawTx); } catch { read = false; }
+    try { t = await lighter.tx(st.perpWithdrawTx, accountIndex); } catch { read = false; }
     if (t && t.status === 0) return undo('fallito');
     if (t && t.status >= 2) {
       intentToPending(st); checkpoint();
@@ -1931,6 +1931,13 @@ async function main() {
   const keyOf = (coin) => coin.token.toLowerCase();
   const trading = lighter.enabled && !lighter.simulate;
 
+  // reads carry the token of the account they are about: its own 60 a minute, instead of everybody's
+  if (trading && config.LIGHTER_AUTH_READS) lighter.useKeys((id) => {
+    const st = Object.values(reg.state).find((s) => Number(s.lighterAccountIndex) === Number(id) && s.lighterApiPrivKey);
+    if (!st) return null;
+    try { return { apiPrivKey: decryptSecret(st.lighterApiPrivKey), apiKeyIndex: st.lighterApiKeyIndex }; } catch { return null; }
+  });
+
   // live marks: a token at its target goes at once, in a lane of its own, whatever the round is doing
   const watching = trading && !flag('once') && !!config.LIGHTER_WS_URL;
   const urgent = createUrgent({ isDue: (e, mark) => hasMature(e.coin, e.st, mark) });
@@ -1984,8 +1991,11 @@ async function main() {
     // the routine looks come last, a few per round, the longest unseen first: they all cost a read
     looks.sort((a, b) => Number(reg.state[keyOf(a)].perpLookAt || 0) - Number(reg.state[keyOf(b)].perpLookAt || 0));
     // without the live marks they are the only ones that see a target: all the reads there are go to them
-    const most = feed && feed.live() ? config.LOOKS_PER_ROUND : Math.max(config.LOOKS_PER_ROUND, lighter.spareReads() - 5);
-    due.push(...looks.slice(0, most));
+    const live = feed && feed.live();
+    const most = live ? config.LOOKS_PER_ROUND : Math.max(config.LOOKS_PER_ROUND, lighter.spareReads() - 5);
+    const own = [], shared = []; // those read on their own allowance, and those on everybody's
+    for (const c of looks) (lighter.authed(reg.state[keyOf(c)].lighterAccountIndex) ? own : shared).push(c);
+    due.push(...own.slice(0, live ? config.LOOKS_PER_ROUND * 3 : 200), ...shared.slice(0, most));
     await lanes.round(due, {
       key: keyOf, parallel: config.TICK_PARALLEL, patienceMs: config.TICK_PATIENCE_MS,
       work: async (coin) => {

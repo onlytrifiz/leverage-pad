@@ -8,8 +8,9 @@ const config = require('../config');
  * up; here it is one request on a connection already open. The answers have the sidecar's shape,
  * so whoever calls does not know the difference.
  *
- * Unauthenticated requests share 60 a minute per IP, of which 40 may be trades, and the sidecar's
- * own come out of the same allowance. The queues keep under it; what runs inside `urgently` goes first.
+ * A request that carries an account's token counts on that account's 60 a minute; without one, all
+ * of them share 60 per IP, of which 40 may be trades. The queues keep under both; what runs inside
+ * `urgently` goes first. A token the venue will not have is dropped and the read goes without it.
  */
 const HOST = config.LIGHTER_REST_URL;
 const lane = new AsyncLocalStorage();
@@ -52,15 +53,31 @@ function createLimiter({ perMinute, now = Date.now, setTimer = setTimeout }) {
 const reads = createLimiter({ perMinute: config.LIGHTER_READS_PER_MIN });
 const trades = createLimiter({ perMinute: config.LIGHTER_TRADES_PER_MIN });
 
-async function get(path, params, limiter = reads) {
-  if (limiter !== reads) await limiter.slot();
-  await reads.slot();
+const perAccount = new Map(); // account → its own queues
+const queuesOf = (id) => {
+  if (!perAccount.has(id)) perAccount.set(id, { reads: createLimiter({ perMinute: config.LIGHTER_READS_PER_MIN }), trades: createLimiter({ perMinute: config.LIGHTER_TRADES_PER_MIN }) });
+  return perAccount.get(id);
+};
+let tokenOf = () => null;          // account → its token now, or null (never waits)
+const barred = new Map();          // account → until when its token is not used
+const barredUntil = (id) => barred.get(id) || 0;
+const tokenFor = (id) => (id == null || Date.now() < barredUntil(id) ? null : tokenOf(id));
+
+async function get(path, params, { isTrades = false, as = null } = {}) {
+  const id = as == null ? null : Number(as), token = tokenFor(id);
+  const q = token ? queuesOf(id) : { reads, trades };
+  if (isTrades) await q.trades.slot();
+  await q.reads.slot();
   const url = `${HOST}${path}?${new URLSearchParams(params)}`;
   let res, body;
   try {
-    res = await fetch(url, { headers: { 'user-agent': 'node' }, signal: AbortSignal.timeout(config.LIGHTER_READ_TIMEOUT_MS) });
+    res = await fetch(url, { headers: { 'user-agent': 'node', ...(token ? { authorization: token } : {}) }, signal: AbortSignal.timeout(config.LIGHTER_READ_TIMEOUT_MS) });
     // before the body: a 429 does not always come with one that can be read
-    if (res.status === 429) { reads.pause(15_000); trades.pause(15_000); }
+    if (res.status === 429) { q.reads.pause(15_000); q.trades.pause(15_000); }
+    if (token && (res.status === 401 || res.status === 403)) {
+      barred.set(id, Date.now() + 10 * 60_000);
+      return get(path, params, { isTrades, as });
+    }
     body = await res.json();
   } catch (e) {
     throw new Error(`lighter:${path}: ${e.name === 'TimeoutError' ? 'timeout' : `${res ? `${res.status} ` : ''}${e.message}`}`);
@@ -74,7 +91,7 @@ async function get(path, params, limiter = reads) {
 }
 
 async function account({ accountIndex }) {
-  const a = (await get('/api/v1/account', { by: 'index', value: accountIndex })).accounts?.[0];
+  const a = (await get('/api/v1/account', { by: 'index', value: accountIndex }, { as: accountIndex })).accounts?.[0];
   // an answer about another account, or about none, is not an empty account
   if (!a || Number(a.index ?? a.account_index) !== Number(accountIndex)) throw new Error(`lighter:account: no account ${accountIndex} in the answer`);
   if (!Array.isArray(a.positions) || a.collateral == null) throw new Error('lighter:account: incomplete answer');
@@ -101,7 +118,7 @@ async function fills({ accountIndex, marketIndex, clientOrderIndex, since = 0 })
   const me = Number(accountIndex), cid = Number(clientOrderIndex);
   let size = 0, quote = 0, cursor;
   for (let page = 0; page < 10; page++) {
-    const r = await get('/api/v1/trades', { sort_by: 'timestamp', limit: 100, account_index: me, market_id: marketIndex, ...(cursor ? { cursor } : {}) }, trades);
+    const r = await get('/api/v1/trades', { sort_by: 'timestamp', limit: 100, account_index: me, market_id: marketIndex, ...(cursor ? { cursor } : {}) }, { isTrades: true, as: me });
     if (!Array.isArray(r.trades)) throw new Error('lighter:trades: incomplete answer');
     for (const t of r.trades) {
       const mine = (Number(t.ask_account_id) === me && Number(t.ask_client_id) === cid) || (Number(t.bid_account_id) === me && Number(t.bid_client_id) === cid);
@@ -116,8 +133,8 @@ async function fills({ accountIndex, marketIndex, clientOrderIndex, since = 0 })
 }
 
 /** 0 failed, 1 pending, 2 and 3 executed; null: the venue has never seen it */
-async function tx({ hash }) {
-  try { return { status: Number((await get('/api/v1/tx', { by: 'hash', value: hash })).status) }; }
+async function tx({ hash, accountIndex = null }) {
+  try { return { status: Number((await get('/api/v1/tx', { by: 'hash', value: hash }, { as: accountIndex })).status) }; }
   catch (e) { if (/transaction not found/i.test(e.venue || '')) return null; throw e; }
 }
 
@@ -144,4 +161,11 @@ async function markets() {
   return { ok: true, markets: out };
 }
 
-module.exports = { account, fills, tx, resolveAccount, markets, urgently, isUrgent, createLimiter, charge: (n) => reads.charge(n), spareReads: () => reads.spare() };
+module.exports = {
+  account, fills, tx, resolveAccount, markets, urgently, isUrgent, createLimiter, spareReads: () => reads.spare(),
+  /** `fn(account)`: the token to read it with, now, or null */
+  useTokens(fn) { tokenOf = fn; },
+  authed: (id) => tokenFor(id == null ? null : Number(id)) != null,
+  /** requests the sidecar makes for an account: on its token when it has one */
+  charge(n, id) { (id != null && tokenFor(Number(id)) ? queuesOf(Number(id)).reads : reads).charge(n); },
+};

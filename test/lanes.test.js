@@ -259,6 +259,37 @@ test('fills: one order, both sides, across pages, until before it was sent', asy
   await assert.rejects(withFetch([{ body: { code: 200 } }], () => rest.fills({ accountIndex: 7, marketIndex: 1, clientOrderIndex: 5 })), /incomplete/);
 });
 
+test('a read carries the token of the account it is about, on that account\'s allowance', async () => {
+  const real = globalThis.fetch, asked = [];
+  let refuse = new Set();
+  globalThis.fetch = async (url, o) => {
+    const id = Number(new URL(url).searchParams.get('value')), token = o.headers.authorization ?? null;
+    asked.push([id, token]);
+    if (token && refuse.has(token)) return { ok: false, status: 401, json: async () => ({ code: 20013, message: 'invalid auth: expired token' }) };
+    return { ok: true, status: 200, json: async () => ({ code: 200, accounts: [{ ...ACC, index: id }] }) };
+  };
+  try {
+    rest.useTokens((id) => (id < 900 ? `t${id}` : null));
+    const spare = rest.spareReads();
+    for (const id of [701, 702, 701]) await rest.account({ accountIndex: id });
+    assert.deepEqual(asked, [[701, 't701'], [702, 't702'], [701, 't701']]);
+    assert.equal(rest.spareReads(), spare, 'nothing of everybody\'s was used');
+    assert.equal(rest.authed(701), true); assert.equal(rest.authed(950), false); assert.equal(rest.authed(null), false);
+    await rest.account({ accountIndex: 950 });
+    assert.deepEqual(asked.at(-1), [950, null]); assert.equal(rest.spareReads(), spare - 1);
+    // a token the venue will not have: the read goes without it, and so do the next ones
+    refuse = new Set(['t703']); asked.length = 0;
+    await rest.account({ accountIndex: 703 }); await rest.account({ accountIndex: 703 });
+    assert.deepEqual(asked, [[703, 't703'], [703, null], [703, null]]); assert.equal(rest.authed(703), false);
+    await rest.account({ accountIndex: 704 }); assert.deepEqual(asked.at(-1), [704, 't704'], 'nobody else\'s');
+    // forty accounts at once: each on its own
+    asked.length = 0; const before = rest.spareReads();
+    await Promise.all(Array.from({ length: 40 }, (_, i) => rest.account({ accountIndex: 800 + i })));
+    assert.equal(asked.length, 40); assert.equal(rest.spareReads(), before);
+    rest.charge(3, 801); assert.equal(rest.spareReads(), before); rest.charge(3, 951); assert.equal(rest.spareReads(), before - 3);
+  } finally { globalThis.fetch = real; rest.useTokens(() => null); }
+});
+
 test('resolveAccount and markets: not found is an answer, incomplete is not', async () => {
   assert.deepEqual((await withFetch([{ status: 400, body: { code: 21100, message: 'account not found' } }], () => rest.resolveAccount({ address: '0x1' })))[0].accountIndex, null);
   assert.equal((await withFetch([{ body: { code: 200, sub_accounts: [{ index: 9 }, { index: 4 }] } }], () => rest.resolveAccount({ address: '0x1' })))[0].accountIndex, 4);

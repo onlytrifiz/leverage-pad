@@ -37,7 +37,7 @@ const signing = createSemaphore(config.LIGHTER_SIGNERS, { reserved: 1 });
 const call = (cmd, params = {}, env = {}, { staleMs = Infinity } = {}) => {
   const asked = Date.now();
   return signing(() => {
-    if (Date.now() - asked <= staleMs) { rest.charge(3); return spawn(cmd, params, env); }
+    if (Date.now() - asked <= staleMs) { rest.charge(3, params.accountIndex); return spawn(cmd, params, env); }
     const e = new Error(`lighter:${cmd}: waited too long for its turn`);
     e.definitive = true; e.retry = true;
     throw e;
@@ -124,6 +124,31 @@ async function marketById(id) {
   return hit ? { symbol: hit[0], ...parseMarket(hit[0], hit[1]) } : null;
 }
 
+// ── the tokens the reads carry ───────────────────────────────────────────────
+// Signed by the account's own key, for hours, and kept in memory only. A read never waits for one:
+// until it is there it goes without.
+const TOKEN_S = 6 * 3600, RENEW_MS = 20 * 60_000, AGAIN_MS = 5 * 60_000;
+const tokens = new Map(); // account → { token, until, asking, askAt }
+let keyOf = () => null;
+/** `fn(account)` → { apiPrivKey, apiKeyIndex } of an account we run, or null */
+function useKeys(fn) {
+  keyOf = fn;
+  rest.useTokens((id) => {
+    const t = tokens.get(id) || { token: null, until: 0, asking: false, askAt: 0 };
+    tokens.set(id, t);
+    if (!t.asking && Date.now() >= t.askAt && t.until - Date.now() < RENEW_MS) {
+      const key = keyOf(id);
+      if (key) {
+        t.asking = true;
+        signing(() => spawn('auth-token', { accountIndex: id, apiKeyIndex: key.apiKeyIndex, seconds: TOKEN_S }, { LIGHTER_API_PRIVKEY: key.apiPrivKey }))
+          .then((r) => { t.token = r.token; t.until = Date.now() + TOKEN_S * 1000 - 60_000; }, () => { t.askAt = Date.now() + AGAIN_MS; })
+          .finally(() => { t.asking = false; });
+      }
+    }
+    return Date.now() < t.until ? t.token : null;
+  });
+}
+
 const selftest = () => call('selftest');
 const resolveAccount = (address) => rest.resolveAccount({ address });
 const account = (accountIndex) => rest.account({ accountIndex });
@@ -139,7 +164,7 @@ const open = ({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clie
 const close = ({ accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, limitPrice, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
   call('close', { accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, limitPrice, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
 /** a transaction on the venue by its hash: { status }, or null when it has never seen it */
-const tx = (hash) => rest.tx({ hash });
+const tx = (hash, accountIndex) => rest.tx({ hash, accountIndex });
 /** what the order with this client index traded: { size, price }, price null when nothing is seen yet */
 const fills = ({ accountIndex, marketIndex, clientOrderIndex, since = 0 }) => rest.fills({ accountIndex, marketIndex, clientOrderIndex, since });
 const addMargin = ({ accountIndex, marketIndex, usdcAmount, apiPrivKey, apiKeyIndex = 4 }) =>
@@ -149,7 +174,7 @@ const withdraw = ({ accountIndex, amount, apiPrivKey, apiKeyIndex = 4 }) =>
   call('withdraw', { accountIndex, amount, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
 
 module.exports = {
-  enabled, simulate, mode: MODE, urgently: rest.urgently, spareReads: rest.spareReads,
+  enabled, simulate, mode: MODE, urgently: rest.urgently, spareReads: rest.spareReads, authed: rest.authed, useKeys,
   selftest, markets, market, marketById, parseMarket, maxLeverageFromImf, resolveAccount, account,
   intentAddress, depositLatest, registerKey, setLeverage, open, close, fills, tx, addMargin, withdraw,
 };

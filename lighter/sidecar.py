@@ -234,20 +234,24 @@ async def cmd_set_leverage(p):
         await client.close()
 
 
-async def _mark_and_decimals(market_index):
+async def _mark_and_decimals(client, market_index):
     """mark price, size decimals and price decimals of the market."""
-    c = api_client()
     try:
-        det = d(await lighter.OrderApi(c).order_book_details(market_id=int(market_index)))
-        ob = det.get("order_book_details", det)
-        if isinstance(ob, list):
-            ob = ob[0]
-        mark = ob.get("mark_price") or ob.get("index_price") or ob.get("last_trade_price")
-        size_dec = ob.get("supported_size_decimals", ob.get("size_decimals"))
-        price_dec = ob.get("supported_price_decimals", ob.get("price_decimals"))
-        return float(mark), int(size_dec), int(price_dec)
-    finally:
-        await c.close()
+        r = await client.order_api.order_book_details(market_id=int(market_index))
+    except lighter.ApiException as e:
+        if getattr(e, "status", None) not in (401, 403) or "Authorization" not in client.api_client.default_headers:
+            raise
+        # a token the venue will not have: the order goes without it, on the IP's allowance
+        client.api_client.default_headers.pop("Authorization")
+        r = await client.order_api.order_book_details(market_id=int(market_index))
+    det = d(r)
+    ob = det.get("order_book_details", det)
+    if isinstance(ob, list):
+        ob = ob[0]
+    mark = ob.get("mark_price") or ob.get("index_price") or ob.get("last_trade_price")
+    size_dec = ob.get("supported_size_decimals", ob.get("size_decimals"))
+    price_dec = ob.get("supported_price_decimals", ob.get("price_decimals"))
+    return float(mark), int(size_dec), int(price_dec)
 
 
 async def _market_order(p, reduce_only):
@@ -255,7 +259,19 @@ async def _market_order(p, reduce_only):
     # oppure dimensionato da notionalUsd al prezzo mark (per open/topup).
     # Il mark usato per dimensionare torna nel response: e' l'entry della tranche.
     base_amount = p.get("baseAmount")
-    mark, size_dec, price_dec = await _mark_and_decimals(p["marketIndex"])
+    client = signer(p["accountIndex"], p.get("apiKeyIndex", 4))
+    try:
+        # an order's reads count on its own account, not on everybody's
+        token, err = client.create_auth_token_with_expiry(600, api_key_index=int(p.get("apiKeyIndex", 4)))
+        if token and not err:
+            client.api_client.set_default_header("Authorization", token)
+        return await _with_client(client, p, base_amount, reduce_only)
+    finally:
+        await client.close()
+
+
+async def _with_client(client, p, base_amount, reduce_only):
+    mark, size_dec, price_dec = await _mark_and_decimals(client, p["marketIndex"])
     if not mark or mark <= 0:
         return {"ok": False, "error": "prezzo mark non disponibile per dimensionare l'ordine"}
     if base_amount is None:
@@ -271,22 +287,18 @@ async def _market_order(p, reduce_only):
         if room <= 0:
             return {"ok": False, "error": "the mark went past the limit price", "definitive": True, "retry": True}
         slippage = min(slippage, room)
-    client = signer(p["accountIndex"], p.get("apiKeyIndex", 4))
-    try:
-        _, tx_hash, err = await client.create_market_order_if_slippage(
-            market_index=int(p["marketIndex"]),
-            client_order_index=int(p.get("clientOrderIndex", 0)),
-            base_amount=int(base_amount),
-            max_slippage=slippage,
-            # slippage from the MARK, not from the top of the book: on a thin market whoever
-            # quotes the top alone would choose the price we accept
-            ideal_price=mark * 10 ** price_dec,
-            is_ask=bool(p["isAsk"]),
-            reduce_only=reduce_only,
-        )
-        return {"ok": err is None, "txHash": tx_hash, "baseAmount": int(base_amount), "mark": mark, "error": err, "definitive": True}
-    finally:
-        await client.close()
+    _, tx_hash, err = await client.create_market_order_if_slippage(
+        market_index=int(p["marketIndex"]),
+        client_order_index=int(p.get("clientOrderIndex", 0)),
+        base_amount=int(base_amount),
+        max_slippage=slippage,
+        # slippage from the MARK, not from the top of the book: on a thin market whoever
+        # quotes the top alone would choose the price we accept
+        ideal_price=mark * 10 ** price_dec,
+        is_ask=bool(p["isAsk"]),
+        reduce_only=reduce_only,
+    )
+    return {"ok": err is None, "txHash": tx_hash, "baseAmount": int(base_amount), "mark": mark, "error": err, "definitive": True}
 
 
 async def cmd_open(p):
@@ -319,6 +331,16 @@ async def cmd_fills(p):
         return {"ok": True, "size": size, "price": quote / size if size > 0 else None}
     finally:
         await c.close()
+
+
+async def cmd_auth_token(p):
+    # signed here, nothing is asked of the venue
+    client = signer(p["accountIndex"], p.get("apiKeyIndex", 4))
+    try:
+        token, err = client.create_auth_token_with_expiry(int(p.get("seconds", 3600)), api_key_index=int(p.get("apiKeyIndex", 4)))
+        return {"ok": err is None and bool(token), "token": token, "error": err, "definitive": True}
+    finally:
+        await client.close()
 
 
 async def cmd_add_margin(p):
@@ -357,7 +379,7 @@ COMMANDS = {
     "selftest": cmd_selftest, "markets": cmd_markets, "resolve-account": cmd_resolve_account,
     "account": cmd_account, "intent-address": cmd_intent_address, "deposit-latest": cmd_deposit_latest,
     "register-key": cmd_register_key, "set-leverage": cmd_set_leverage,
-    "open": cmd_open, "close": cmd_close, "fills": cmd_fills, "add-margin": cmd_add_margin, "withdraw": cmd_withdraw,
+    "open": cmd_open, "close": cmd_close, "fills": cmd_fills, "auth-token": cmd_auth_token, "add-margin": cmd_add_margin, "withdraw": cmd_withdraw,
 }
 
 

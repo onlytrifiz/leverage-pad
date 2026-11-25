@@ -147,11 +147,12 @@ module.exports = {
   // Il collaterale entra da Robinhood Chain (4663) via intent-address; ogni
   // sub-wallet della coin e' il proprio account Lighter (isolamento per-coin).
   LIGHTER_PROFILE: process.env.PERPSPAD_LIGHTER_PROFILE || 'robinhood',
-  // public reads (lighter/rest.js): the venue allows 60 a minute per IP, trades 40, and the signed
-  // calls of the sidecar come out of the same allowance
+  // reads (lighter/rest.js): the venue allows 60 a minute, trades 40, per account when they carry its
+  // token and per IP when they do not; the signed calls of the sidecar come out of the same allowance
   LIGHTER_REST_URL: process.env.PERPSPAD_LIGHTER_REST_URL || 'https://api.rh.lighter.xyz',
   LIGHTER_READS_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_READS_PER_MIN || 55), // all of them, trades included; a signed call counts for three
   LIGHTER_TRADES_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_TRADES_PER_MIN || 25),
+  LIGHTER_AUTH_READS: process.env.PERPSPAD_LIGHTER_AUTH_READS !== '0',
   LIGHTER_READ_TIMEOUT_MS: 15_000,
   LIGHTER_SIGNERS: 4,             // signed calls (one Python process each) at once
   LIGHTER_STALE_ORDER_MS: 10_000, // an order that waited longer than this for its turn is decided again
