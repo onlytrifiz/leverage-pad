@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { listCoins } from "@/lib/detail";
+import { loadRegistry } from "@/lib/registry";
 import { Container } from "@/components/ui/container";
 import { MarketsProvider } from "@/components/markets-provider";
 import TickerTape from "@/components/TickerTape";
@@ -13,6 +14,7 @@ import PayoffSimulator from "@/components/home/PayoffSimulator";
 import FeeDestination from "@/components/home/FeeDestination";
 import EngineLoop from "@/components/home/EngineLoop";
 import Faq from "@/components/home/Faq";
+import { FLYWHEEL } from "@/lib/doppler";
 import FinalCta from "@/components/home/FinalCta";
 import MarketPreview from "@/components/market/MarketPreview";
 import type { CoinListItem } from "@/lib/types";
@@ -33,7 +35,7 @@ function pickFeatured(coins: CoinListItem[]): CoinListItem | null {
  * of the live coins; the full board is its own page, /market.
  */
 export default async function Home() {
-  const coins = await listCoins();
+  const [coins, flywheelLive] = await Promise.all([listCoins(), loadRegistry().then((r) => r.flywheel != null, () => false)]);
   const totalFees = coins.reduce((a, c) => a + c.feesCollectedUsd, 0);
   const totalBurned = coins.reduce((a, c) => a + c.burnedTokens, 0);
   const liveEngines = coins.filter((c) => c.perpOpen).length;
@@ -130,6 +132,29 @@ export default async function Home() {
             </div>
           </Container>
         </div>
+
+        {/* the protocol's own burn, a step away from the tokens' */}
+        <Container width="landing" className="pt-24 sm:pt-32">
+          <Link
+            href="/burn"
+            className="intro-night group relative isolate flex flex-wrap items-end justify-between gap-x-10 gap-y-6 overflow-hidden rounded-[22px] px-6 py-9 text-night-ink sm:px-10 sm:py-12"
+          >
+            <span className="min-w-0">
+              <span className="block font-display text-3xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-4xl">
+                {FLYWHEEL.buybackPct}% of what the protocol earns{" "}
+                <span className="text-mint">burns $MULTIPLY.</span>
+              </span>
+              <span className="mt-3 block max-w-[52ch] text-base leading-relaxed text-night-ink-2">
+                Bought on its own pool every {FLYWHEEL.everyMin} minutes, burned right after.
+                {!flywheelLive && " It starts when $MULTIPLY launches."}
+              </span>
+            </span>
+            <span className="inline-flex items-center gap-1.5 text-md font-semibold text-mint underline-offset-4 group-hover:underline">
+              Buyback &amp; burn
+              <ArrowUpRight size={16} aria-hidden />
+            </span>
+          </Link>
+        </Container>
 
         {/* questions */}
         <Container width="page" className="pt-24 sm:pt-32">

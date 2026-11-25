@@ -1,8 +1,9 @@
+import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { OPEN_GATE_USD, TOPUP_STEP_USD, BUYBACK_FLOOR_USD, fmtThreshold } from "@/lib/config";
 import { BUYBACK_MAX_USD, FIRST_OPEN_DELAY_MIN, TRANCHE_INTERVAL_MIN, fmtEvery } from "@/lib/thresholds";
 import { DOPPLER, LAUNCH_ROUTER, V4_POOL_MANAGER, explorerAddr } from "@/lib/clientConfig";
-import { SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, MAX_BUY_ORDERS, fmtSeconds } from "@/lib/doppler";
+import { FLYWHEEL, SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, MAX_BUY_ORDERS, fmtSeconds } from "@/lib/doppler";
 
 /**
  * The docs, as data: every page's title, one-line lede and body, grouped the
@@ -478,6 +479,13 @@ function EconomicsBody() {
         cut. The split is enforced by the token&apos;s fee sink, not by the keeper. On
         the way back the protocol takes {PROFIT_SPLIT_PCT.treasury}% of the gain; the
         other {PROFIT_SPLIT_PCT.buyback}% and all the capital buy and burn supply. No launch fee, beyond gas.
+      </p>
+      <p>
+        <K>What the protocol does with its share.</K> {FLYWHEEL.buybackPct}% of everything it earns, from fees and from gains, buys{" "}
+        <N>$MULTIPLY</N> on its own pool and burns it; {FLYWHEEL.treasuryPct}% stays in the treasury. The keeper looks every{" "}
+        <N>{FLYWHEEL.everyMin} minutes</N>, buys from <N>${FLYWHEEL.minUsd}</N> up in a size that moves the price by {FLYWHEEL.impactPct}% at
+        most, never while a launch protection is still high, and burns exactly what it bought. Every buyback is listed on{" "}
+        <Link href="/burn" className="font-medium text-brand underline underline-offset-4">the burn page</Link>. It starts when $MULTIPLY launches.
       </p>
       <p>
         Worst case is bounded by design: isolated margin means a liquidation costs

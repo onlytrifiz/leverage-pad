@@ -16,6 +16,7 @@ const COLUMNS: { heading: string; links: { label: string; href: string; external
       { label: "Market", href: "/market" },
       { label: "Launch a token", href: "/launch" },
       { label: "Stats", href: "/stats" },
+      { label: "Buyback & burn", href: "/burn" },
     ],
   },
   {

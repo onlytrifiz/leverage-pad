@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "cn";
 import { motion } from "motion/react";
-import { BookOpenText, ChartBar, RocketLaunch, Storefront, type Icon } from "@phosphor-icons/react";
+import { BookOpenText, ChartBar, Flame, RocketLaunch, Storefront, type Icon } from "@phosphor-icons/react";
 import { LaunchIcon } from "@/components/brand/LaunchIcon";
 import { LogoMark } from "@/components/brand/LogoMark";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ const LINKS: { href: string; label: string; icon: Icon }[] = [
   { href: "/market", label: "Market", icon: Storefront },
   { href: "/launch", label: "Launch", icon: RocketLaunch },
   { href: "/stats", label: "Stats", icon: ChartBar },
+  { href: "/burn", label: "Burn", icon: Flame },
   { href: "/docs", label: "Docs", icon: BookOpenText },
 ];
 
@@ -97,7 +98,7 @@ export function BottomBar() {
       aria-label="Main"
       className="fixed inset-x-3 bottom-[calc(12px+env(safe-area-inset-bottom))] z-40 rounded-full border border-border bg-card/92 p-1.5 shadow-[0_12px_36px_-14px_rgba(12,52,32,0.45)] backdrop-blur-xl sm:hidden"
     >
-      <ul className="grid grid-cols-4">
+      <ul className="grid grid-cols-5">
         {LINKS.map(({ href, label, icon: Glyph }) => {
           const active = pathname.startsWith(href);
           return (

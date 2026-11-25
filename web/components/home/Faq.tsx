@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
+import { FEE_SPLIT_PCT, FLYWHEEL, PROFIT_SPLIT_PCT } from "@/lib/doppler";
 import { OPEN_GATE_LABEL } from "@/lib/thresholds";
 
 /**
@@ -66,6 +67,19 @@ const QA: { q: string; a: React.ReactNode }[] = [
         its collateral. A deposit that has not banked after a week starts lowering its target, so profit never waits
         forever. When one matures it closes whole: the capital that was in it and {PROFIT_SPLIT_PCT.buyback}% of the gain buy the
         token on its pool and burn it. The other {PROFIT_SPLIT_PCT.treasury}% of the gain goes to the protocol. New fees load the next position.
+      </p>
+    ),
+  },
+  {
+    q: "What does the protocol do with its share?",
+    a: (
+      <p>
+        {FLYWHEEL.buybackPct}% of it buys $MULTIPLY and burns it, every {FLYWHEEL.everyMin} minutes, once $MULTIPLY is live. The rest
+        stays in the treasury. Every buyback is on the{" "}
+        <Link href="/burn" className="font-medium text-brand underline underline-offset-4">
+          burn page
+        </Link>
+        .
       </p>
     ),
   },

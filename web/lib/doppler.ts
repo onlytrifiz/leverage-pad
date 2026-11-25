@@ -465,6 +465,8 @@ export const FEE_SPLIT_PCT = { doppler: 5, treasury: 25, engine: 70 } as const;
  * capital that made it comes home with it and buys back whole.
  */
 export const PROFIT_SPLIT_PCT = { buyback: 70, treasury: 30 } as const;
+/** The platform's own buyback & burn: the share of what the protocol earns, and the keeper's pace (config.js, lib/flywheel.js) */
+export const FLYWHEEL = { buybackPct: 70, treasuryPct: 30, everyMin: 30, minUsd: 5, impactPct: 1 } as const;
 
 const DOPPLER_HOOK_BPS = DOPPLER_HOOK_FEE_BPS; // 500: Doppler's slice of every hook fee
 

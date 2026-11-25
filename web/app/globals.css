@@ -470,6 +470,14 @@
     }
   }
 
+  /* the burning note's edge: an ember that breathes */
+  @keyframes ember {
+    50% { opacity: 0.62; }
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .burn-rim { animation: ember 2.6s ease-in-out infinite; }
+  }
+
   /* the engine rail: red on the liquidation side, green toward the take-profit */
   .engine-rail {
     background: linear-gradient(

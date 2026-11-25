@@ -55,7 +55,18 @@ export type CoinState = {
   lighterLeverage?: number | null;
 };
 
-export type Registry = { coins: Coin[]; state: Record<string, CoinState> };
+/** the platform's buyback & burn, as the keeper publishes it; null until its token is set */
+export type FlywheelState = {
+  token: string;
+  revenueRaw: string;
+  owedRaw: string;
+  spentRaw: string;
+  burnedRaw: string;
+  lastRunAt: number;
+  history: { at: number; usd: number; tokens: string; buyTx: string; burnTx: string | null }[];
+};
+
+export type Registry = { coins: Coin[]; state: Record<string, CoinState>; flywheel?: FlywheelState | null };
 
 const EMPTY: Registry = { coins: [], state: {} };
 
@@ -66,7 +77,7 @@ export async function loadRegistry(): Promise<Registry> {
       const r = await fetch(REGISTRY_URL, { next: { revalidate: 5 } });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = (await r.json()) as Registry;
-      return { coins: j.coins ?? [], state: j.state ?? {} };
+      return { coins: j.coins ?? [], state: j.state ?? {}, flywheel: j.flywheel ?? null };
     } catch (e) {
       console.error(`[registry] snapshot remoto illeggibile (${(e as Error).message}), provo il file locale`);
     }
@@ -74,7 +85,7 @@ export async function loadRegistry(): Promise<Registry> {
   try {
     if (!fs.existsSync(REGISTRY_PATH)) return EMPTY;
     const j = JSON.parse(fs.readFileSync(REGISTRY_PATH, "utf8")) as Registry;
-    return { coins: j.coins ?? [], state: j.state ?? {} };
+    return { coins: j.coins ?? [], state: j.state ?? {}, flywheel: j.flywheel ?? null };
   } catch {
     return EMPTY;
   }
