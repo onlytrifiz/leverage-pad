@@ -1019,7 +1019,7 @@ function bookOrder(coin, st, o, filled, price) {
   if (o.kind === 'tp') {
     if (!out) { console.log(`  [${coin.symbol}] TAKE-PROFIT: nessun fill (book vuoto o mercato chiuso?), riprovo al tick dopo`); return; }
     st.perpTranches = removeClosedBase(o.ready, filled).concat(o.keep);
-    st.perpOpen = st.perpTranches.length > 0; st.perpTpSplit = 0;
+    st.perpOpen = st.perpTranches.length > 0; st.perpTpSplit = 0; st.perpTpSkip = 0;
     st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + out.profit;
     st.perpCapitalUsd = Number(st.perpCapitalUsd || 0) + out.capital;
     console.log(`  [${coin.symbol}] TAKE-PROFIT (+${o.tpPct}%): chiusa base ${filled}/${o.ask} @ ${price}, fuori dal motore $${out.capital.toFixed(2)} di capitale + $${out.profit.toFixed(2)} di guadagno`);
@@ -1157,13 +1157,16 @@ async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
     return true;
   }
   const undo = (why) => {
-    undoWithdrawal(st); checkpoint();
+    undoWithdrawal(st);
+    st.perpWithdrawRetryAt = Date.now() + 30 * 60 * 1000; // whatever failed it is not asked again at once
+    checkpoint();
     console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} ${why}: riaccreditato`);
     return true;
   };
   // its own transaction knows, when there is one; nothing that is not executed by its expiry will be
   if (st.perpWithdrawTx) {
-    const t = await lighter.tx(st.perpWithdrawTx);
+    let t, read = true;
+    try { t = await lighter.tx(st.perpWithdrawTx); } catch { read = false; }
     if (t && t.status === 0) return undo('fallito');
     if (t && t.status >= 2) {
       intentToPending(st); checkpoint();
@@ -1171,7 +1174,8 @@ async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
       return true;
     }
     if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
-    return undo('mai eseguito');
+    if (read) return undo('mai eseguito');
+    // it cannot be asked about: past its expiry the cash says it, as without it
   }
   if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
   // No transaction to ask about (killed between signing and knowing): the cash says it, with the
@@ -1338,7 +1342,10 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
 async function retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   // what was already leaving is settled first: the sweep takes all that is left
   const known = await settleTxOut({ coin, st, checkpoint, wallet: sub, keeper });
-  if (coin.venue === 'v4') await claimV4(keeper, coin, st, checkpoint, sub, unitUsd);
+  if (coin.venue === 'v4') {
+    try { await claimV4(keeper, coin, st, checkpoint, sub, unitUsd); }
+    catch (e) { console.log(`  [${coin.symbol}] retired: fees not collected now (${e.message.slice(0, 80)})`); }
+  }
   const held = await quote.balanceOf(sub.address);
   if (known && usdOf(held, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD && config.TREASURY) {
     await ensureGas(keeper, sub.address);
@@ -1609,7 +1616,14 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
         console.log(`  [${coin.symbol}] ${tag}perpOpen riallineato al venue: posizione viva (base ${posBase})`);
       }
       const { ready, keep } = matureTranches(st.perpTranches, mark, coin.side, st.lighterLeverage ?? coin.leverage, triggerFrac);
-      const mature = Math.min(ready.reduce((a, t) => a + t.base, 0), posBase);
+      // The price may not go past the entry of the worst of them, so one just at its target can keep
+      // the deep ones from closing on a book that would take them: each refusal leaves out the
+      // shallowest, and only when one is left are the sizes halved.
+      const gain = (t) => Math.abs(mark - t.entryMark);
+      const skip = Math.min(Number(st.perpTpSkip || 0), Math.max(0, ready.length - 1));
+      const shallow = [...ready].sort((a, b) => gain(a) - gain(b)).slice(0, skip);
+      const closing = ready.filter((t) => !shallow.includes(t)), rest = keep.concat(shallow);
+      const mature = Math.min(closing.reduce((a, t) => a + t.base, 0), posBase);
       // a book too thin for the whole size refuses the order outright: each refusal halves the next
       const minAsk = Math.max(mkt.minBaseUnits || 1, Math.ceil((mkt.minQuoteUsd || 0) / mark * 10 ** mkt.sizeDec));
       const split = Number(st.perpTpSplit || 0);
@@ -1623,14 +1637,21 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
           const o = recordOrder(st, checkpoint, {
             kind: 'tp', marketIndex, side: coin.side, sizeDec: mkt.sizeDec, base: posBase, ask: closeBase, avgEntry, mark, cash: isolatedCash(acc), tpPct: Math.round(triggerFrac * 100),
             margin: Number(pos.allocated_margin) > 0 ? Number(pos.allocated_margin) : avgEntry * posBase / 10 ** mkt.sizeDec / Number(st.lighterLeverage ?? coin.leverage),
-            ready: [...ready].sort((a, b) => a.ts - b.ts), keep,
+            ready: [...closing].sort((a, b) => a.ts - b.ts), keep: rest,
           });
           try {
-            // never past the entry of the worst of them: a book thinner than the gain is not a gain
-            await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: Math.min(config.LIGHTER_MAX_SLIPPAGE, 0.9 * Math.min(...ready.map((t) => Math.abs(mark - t.entryMark))) / mark), clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
+            // never past the entry of the worst of them: a book thinner than the gain is not a gain.
+            // As a price, not only as a distance: the mark may have moved by the time it is signed
+            const worst = closing.reduce((a, t) => (gain(t) < gain(a) ? t : a));
+            await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: Math.min(config.LIGHTER_MAX_SLIPPAGE, 0.9 * gain(worst) / mark), limitPrice: worst.entryMark + 0.1 * (mark - worst.entryMark), clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
           } catch (e) {
             if (!(e && e.definitive)) throw e; // unknown: settled on its trades, next tick
-            st.perpOrder = null; if (!e.retry) st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
+            st.perpOrder = null;
+            if (!e.retry) {
+              if (closing.length > 1) st.perpTpSkip = skip + 1;
+              else { st.perpTpSkip = 0; st.perpTpSplit = split >= 5 ? 0 : split + 1; }
+            }
+            checkpoint();
             if (e.retry) { e.again = true; throw e; }
             if (split === 0) console.log(`  [${coin.symbol}] TAKE-PROFIT rifiutato (${e.message.slice(0, 100)}): riprovo con size minori`);
           }
@@ -1782,7 +1803,7 @@ function reasonToTick({ coin, st, brief, feedLive, now = Date.now() }) {
   if (depositDue({ coin, st, usd: usd(st.perpReserveRaw), now })) return 'deposit';
   if (Number(st.perpDepositAt || 0) > Number(st.perpTrancheAt || 0) && now - Number(st.perpDepositAt) < 30 * 60 * 1000) return 'deposit on its way';
   if (st.perpSwitch || st.perpCarry || (coin.managed && st.perpEngine && (st.perpEngine.market !== coin.market || st.perpEngine.side !== coin.side))) return 'switch';
-  if (filling(st, now) || Number(st.perpOpenSplit || 0) > 0 || Number(st.perpTpSplit || 0) > 0) return 'unfinished';
+  if (filling(st, now) || Number(st.perpOpenSplit || 0) > 0 || Number(st.perpTpSplit || 0) > 0 || Number(st.perpTpSkip || 0) > 0) return 'unfinished';
   if (outOfEngine(st) >= config.PERP_WITHDRAW_FLOOR_USD && now >= Number(st.perpWithdrawRetryAt || 0)) return 'withdrawal';
   if (!st.engineBlocked && st.lighterLeverage !== coin.leverage && st.lighterLeverageRejected !== coin.leverage) return 'leverage';
   // without the live marks the round is the only one that sees a target touched
@@ -1812,7 +1833,7 @@ async function urgentTick(keeper, entry, checkpoint) {
   try {
     await perpTick(keeper, coin, st, checkpoint, deriveSubWallet(coin.token, provider), priceUsd(coin.pair, coin.pairSymbol), erc20(coin.pair), { urgent: true });
   }
-  catch (e) { again = !!e.again; console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
+  catch (e) { again = true; console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
   checkpoint();
   return { acted: size() !== before || !!st.perpOrder, again };
 }

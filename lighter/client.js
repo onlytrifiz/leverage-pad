@@ -136,8 +136,8 @@ const setLeverage = ({ accountIndex, marketIndex, leverage, isolated = true, api
 // open: dimensiona da notionalUsd (il sidecar legge il mark). close: baseAmount esplicito.
 const open = ({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
   call('open', { accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
-const close = ({ accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
-  call('close', { accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
+const close = ({ accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, limitPrice, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
+  call('close', { accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, limitPrice, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
 /** a transaction on the venue by its hash: { status }, or null when it has never seen it */
 const tx = (hash) => rest.tx({ hash });
 /** what the order with this client index traded: { size, price }, price null when nothing is seen yet */

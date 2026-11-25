@@ -263,13 +263,21 @@ async def _market_order(p, reduce_only):
         base_amount = int(round(size * (10 ** size_dec)))
     if int(base_amount) <= 0:
         return {"ok": False, "error": "base_amount 0 (notional troppo piccolo per il size step)"}
+    slippage = float(p.get("maxSlippage", 0.02))
+    limit = p.get("limitPrice")
+    if limit is not None:
+        # the price this must not go past, whatever the mark did since it was decided
+        room = (mark - float(limit)) / mark * (1 if p["isAsk"] else -1)
+        if room <= 0:
+            return {"ok": False, "error": "the mark went past the limit price", "definitive": True, "retry": True}
+        slippage = min(slippage, room)
     client = signer(p["accountIndex"], p.get("apiKeyIndex", 4))
     try:
         _, tx_hash, err = await client.create_market_order_if_slippage(
             market_index=int(p["marketIndex"]),
             client_order_index=int(p.get("clientOrderIndex", 0)),
             base_amount=int(base_amount),
-            max_slippage=float(p.get("maxSlippage", 0.02)),
+            max_slippage=slippage,
             # slippage from the MARK, not from the top of the book: on a thin market whoever
             # quotes the top alone would choose the price we accept
             ideal_price=mark * 10 ** price_dec,

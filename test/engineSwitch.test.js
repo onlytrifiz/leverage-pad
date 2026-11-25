@@ -470,9 +470,11 @@ test('a withdrawal whose end is unknown: sent, or never executed, and nothing is
   lost.st.perpWithdrawAt -= 11 * 60_000; lost.st.perpDepositAt = Date.now() - 20 * 60_000;
   lighter.withdraw = send;
   await lost.tick();
-  assert.equal(lost.st.perpWithdrawPendingUsd, 0); assert.equal(lost.v.opens.length, 0);
-  assert.deepEqual([lost.st.perpRealizedUsd, lost.st.perpCapitalUsd], [0, 0], 'given back and sent again');
-  assert.equal(lost.st.perpWithdrawIntentUsd, 30);
+  assert.equal(lost.st.perpWithdrawPendingUsd, 0);
+  assert.deepEqual([lost.st.perpRealizedUsd, lost.st.perpCapitalUsd], [6, 24], 'given back, and not asked again at once');
+  close(lost.v.opens[0], 30 * config.COLLATERAL_HEADROOM * 10); // what was never out of the engine, and nothing else
+  lost.st.perpWithdrawRetryAt = 0; lost.v.cash = 31; await lost.tick();
+  assert.equal(lost.st.perpWithdrawIntentUsd, 30, 'asked again later');
 });
 
 test('a market that is not listed, or a switch that waits, does not hold the withdrawal', async () => {
@@ -671,7 +673,8 @@ test('a withdrawal is known by its own transaction, whatever the cash says', asy
   assert.deepEqual(await run(null), [false, 0, 0], 'not seen yet');
   assert.deepEqual(await run(null, { age: late }), [true, 0, 24], 'answered 200 and never executed: not pending for ever');
   assert.deepEqual(await run(null, { age: late, cash: 60 }), [true, 0, 24], 'nor because a deposit landed');
-  assert.deepEqual(await run(new Error('500')), ['threw', 0, 0]);
+  assert.deepEqual(await run(new Error('500')), [false, 0, 0], 'cannot be asked: not yet');
+  assert.deepEqual(await run(new Error('500'), { age: late }), [true, 30, 0], 'nor ever: the venue had said yes');
   assert.deepEqual(await run(null, { cash: 0.5 }), [true, 30, 0], 'the cash is gone: it left');
 });
 
@@ -708,4 +711,30 @@ test('a take-profit never accepts a price past the entry of what it closes', asy
   lighter.close = async (o) => { asked.push(o.maxSlippage); return send(o); };
   e.v.px = e.st.perpTranches[0].entryMark * 1.005; await e.tick();
   assert.equal(asked.length, 1); assert.ok(asked[0] < 0.005 && asked[0] > 0.003, String(asked[0]));
+});
+
+test('a withdrawal that failed is not sent again at once, ahead of everything else', async () => {
+  const e = engine({ cash: 130, st: { perpRealizedUsd: 6, perpCapitalUsd: 24 } });
+  let sent = 0;
+  lighter.withdraw = async () => { sent++; return { txHash: 'h' }; };
+  lighter.tx = async () => ({ status: 0 });
+  for (let i = 0; i < 20; i++) await e.tick();
+  assert.equal(sent, 1); assert.equal(e.st.perpCapitalUsd, 24); assert.equal(e.v.opens.length, 1, 'the rest of the token goes on');
+  e.st.perpWithdrawRetryAt = 0; await e.tick(); assert.equal(sent, 2);
+});
+
+test('one tranche just at its target does not keep the deep ones from closing', async () => {
+  const e = engine({ cash: 0, coin: { leverage: 20, takeProfitPct: 10 } });
+  const tr = (base, entryMark, ts) => ({ base, entryMark, sizeDec: 4, ts, leverage: 20 });
+  Object.assign(e.v, { units: 20, avg: 58.345, margin: 58, px: 60 });
+  Object.assign(e.st, { perpOpen: true, perpTranches: [tr(10_0000, 57, 1), tr(10_0000, 59.69, 2)], lighterLeverage: 20, perpTrancheAt: Date.now() });
+  const send = lighter.close, bid = 59.7;
+  lighter.close = async (o) => {
+    assert.ok(o.limitPrice < 60 && o.limitPrice > 57, String(o.limitPrice));
+    if (60 * (1 - o.maxSlippage) > bid) { const x = new Error('excessive slippage'); x.definitive = true; throw x; }
+    return send(o);
+  };
+  for (let i = 0; i < 5 && e.v.closes.length === 0; i++) await e.tick();
+  assert.deepEqual(e.v.closes, [10]); assert.deepEqual(e.st.perpTranches.map((t) => t.entryMark), [59.69]);
+  assert.equal(e.st.perpTpSkip, 0);
 });
