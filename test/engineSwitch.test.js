@@ -601,3 +601,38 @@ test('retired: the position is closed, all the cash withdrawn, nothing opened or
   assert.equal(e.v.pulls.length, 1); assert.equal(e.v.opens.length, 1);
   assert.equal(e.st.perpWithdrawPendingProfitUsd, 0);
 });
+
+test('a venue that is busy is not one that refuses: the same size again, and the round is not stopped', async () => {
+  const e = engine({ cash: 1000 });
+  await e.tick();
+  const send = lighter.close, margin = e.v.units;
+  lighter.close = async () => { const x = new Error('429'); x.definitive = true; x.retry = true; throw x; };
+  e.v.px = 111;
+  for (let i = 0; i < 2; i++) await assert.rejects(e.tick(), (x) => x.again === true, 'asked again in a moment, not as one that had nothing to do');
+  assert.equal(e.st.perpTpSplit ?? 0, 0); assert.equal(e.st.perpOrder, null);
+  lighter.close = send;
+  const asked = [];
+  lighter.close = async (o) => { asked.push(o.baseAmount); return send(o); };
+  await e.tick();
+  assert.deepEqual(asked, [Math.round(margin * 1e4)]);
+});
+
+test('an urgent take-profit does not stop for a deposit', async () => {
+  const e = engine({ cash: 100 });
+  await e.tick();
+  e.st.perpReserveRaw = '100000000'; e.st.perpTrancheAt = 0; e.v.px = 111;
+  let bridge = 0;
+  lighter.intentAddress = async () => { bridge++; throw new Error('bridge'); };
+  await perpTick(null, e.coin, e.st, () => {}, {}, 1, null, { urgent: true });
+  assert.equal(bridge, 0); assert.equal(e.v.closes.length, 1);
+});
+
+test('a leverage the venue was too busy to set opens nothing at the old one', async () => {
+  const e = engine({ cash: 100, coin: { leverage: 2 }, st: { lighterLeverage: 50 } });
+  lighter.setLeverage = async () => { const x = new Error('429'); x.definitive = true; x.retry = true; throw x; };
+  await assert.rejects(e.tick());
+  assert.equal(e.v.opens.length, 0); assert.equal(e.st.lighterLeverageRejected ?? null, null);
+  lighter.setLeverage = async () => {};
+  await e.tick();
+  assert.equal(e.st.lighterLeverage, 2); assert.equal(e.v.opens.length, 1);
+});

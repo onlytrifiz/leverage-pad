@@ -121,11 +121,19 @@ module.exports = {
   RETIRED: new Set((process.env.PERPSPAD_RETIRED || '').toLowerCase().split(/[\s,]+/).filter((a) => /^0x[0-9a-f]{40}$/.test(a))),
 
   TICK_MS: Number(process.env.PERPSPAD_TICK_MS || 15000),
+  TICK_PARALLEL: Number(process.env.PERPSPAD_TICK_PARALLEL || 4),   // tokens side by side in a round
+  URGENT_PARALLEL: 4,                                               // and in front of it, on a live mark
+  TICK_PATIENCE_MS: 60_000,       // a token still at work after this is left to its own timeouts
+  LOOKS_PER_ROUND: 10,            // of those, so that a round does not become all reads
+  PERP_LOOK_MS: 5 * 60 * 1000,    // a token with nothing to do is looked at this often all the same
 
   // ── guardie operative del keeper ───────────────────────────────────────────
   MAX_GAS_PRICE_WEI: process.env.PERPSPAD_MAX_GAS_PRICE_WEI || '5000000000', // 5 gwei: cap anti-drain se l'RPC gonfia il gasPrice
   GAS_TICK_UNITS: 700000,         // gas del tick peggiore del sub-wallet (approve+swap+burn)
   GAS_TOPUP_MULT: 3,              // il top-up porta il sub-wallet a MULT × il costo del tick
+  RPC_TIMEOUT_MS: 25_000,
+  BROADCAST_TIMEOUT_MS: 15_000,
+  TX_GIVE_UP_MS: 15 * 60 * 1000,  // a transfer not mined after this has its nonce used for nothing
   WAIT_TIMEOUT_MS: Number(process.env.PERPSPAD_WAIT_TIMEOUT_MS || 90000), // oltre → la tx e' "stuck", non blocca il loop
 
   // probe per il fingerprint del master secret (H3): address stabile derivato dal
@@ -137,6 +145,15 @@ module.exports = {
   // Il collaterale entra da Robinhood Chain (4663) via intent-address; ogni
   // sub-wallet della coin e' il proprio account Lighter (isolamento per-coin).
   LIGHTER_PROFILE: process.env.PERPSPAD_LIGHTER_PROFILE || 'robinhood',
+  // public reads (lighter/rest.js): the venue allows 60 a minute per IP, trades 40, and the signed
+  // calls of the sidecar come out of the same allowance
+  LIGHTER_REST_URL: process.env.PERPSPAD_LIGHTER_REST_URL || 'https://api.rh.lighter.xyz',
+  LIGHTER_READS_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_READS_PER_MIN || 55), // all of them, trades and signed calls included
+  LIGHTER_TRADES_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_TRADES_PER_MIN || 25),
+  LIGHTER_READ_TIMEOUT_MS: 15_000,
+  LIGHTER_SIGNERS: 4,             // signed calls (one Python process each) at once
+  LIGHTER_STALE_ORDER_MS: 10_000, // an order that waited longer than this for its turn is decided again
+  LIGHTER_HEARTBEAT_MARKET: 1,    // always listened to (BTC): it never sleeps, so silence is a dead line
   // public stream of marks (lib/marketFeed.js); empty = none, the keeper only looks at each round
   LIGHTER_WS_URL: process.env.PERPSPAD_LIGHTER_WS_URL ?? 'wss://api.rh.lighter.xyz/stream?encoding=json&readonly=true',
   LIGHTER_PYTHON: process.env.PERPSPAD_LIGHTER_PYTHON || 'python3', // interprete col lighter-sdk installato

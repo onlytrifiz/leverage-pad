@@ -195,6 +195,8 @@ test('syncRouterCoins: a token whose name() does not answer is retried next tick
 });
 
 // ── refreshEngines: the engine as it stands now, every tick ─────────────────
+const { MULTICALL3 } = require('../lib/multicall');
+const MC = new ethers.utils.Interface(['function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) view returns (tuple(bool success, bytes returnData)[])']);
 const ZERO = ethers.constants.AddressZero;
 const addr = (n) => ethers.utils.getAddress('0x' + String(n).padStart(40, '0'));
 
@@ -206,7 +208,13 @@ function engineProvider(table) {
   return {
     _isProvider: true,
     resolveName: async (n) => n,
-    call: async (tx) => {
+    call: async function (tx) {
+      // the keeper reads them in one multicall: each call answered on its own, a revert is its own
+      if (tx.to.toLowerCase() === MULTICALL3.toLowerCase()) {
+        const [calls] = MC.decodeFunctionData('aggregate3', tx.data);
+        const rows = await Promise.all(calls.map((c) => this.call({ to: c.target, data: c.callData }).then((r) => [true, r], () => [false, '0x'])));
+        return MC.encodeFunctionResult('aggregate3', [rows]);
+      }
       const parsed = rc.ROUTER_IFACE.parseTransaction({ data: tx.data });
       if (parsed.name !== 'engineOf') throw new Error('execution reverted');
       const e = table[parsed.args[0].toLowerCase()];
@@ -315,7 +323,10 @@ test('refreshEngines: applies changes, records the pending one, ignores what it 
     const reads = [];
     const p = engineProvider({ [bad.toLowerCase()]: new Error('missing response'), [good.toLowerCase()]: { leverage: 50, takeProfitPct: 500 } });
     const call = p.call;
-    p.call = async (tx) => { reads.push(rc.ROUTER_IFACE.parseTransaction({ data: tx.data }).args[0]); return call(tx); };
+    p.call = async function (tx) {
+      if (tx.to.toLowerCase() !== MULTICALL3.toLowerCase()) reads.push(rc.ROUTER_IFACE.parseTransaction({ data: tx.data }).args[0]);
+      return call.call(this, tx);
+    };
     const reg = { coins: [v4coin(bad), v4coin(good), { token: addr(0xa8), leverage: 3 }, v4coin(addr(0xa9), { engineError: 'x' })], state: {} };
     const logs = [];
     const n = await rc.refreshEngines(p, reg, { log: (m) => logs.push(m) });

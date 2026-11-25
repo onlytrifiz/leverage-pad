@@ -11,6 +11,9 @@ const registry = require('./lib/registry');
 const publish = require('./lib/publish');
 const { flywheelTick } = require('./lib/flywheel');
 const { createFeed, createUrgent } = require('./lib/marketFeed');
+const { createLanes, createMutex } = require('./lib/lanes');
+const { createStore } = require('./lib/store');
+const { multicall } = require('./lib/multicall');
 const routerCoins = require('./lib/routerCoins');
 const { legacyTakeProfitPct } = require('./lib/launchParams');
 const v4 = require('./lib/v4');
@@ -118,14 +121,58 @@ class StuckTxError extends Error {
 }
 const isStuck = (e) => !!(e && e.stuck);
 
-async function waitOrTimeout(txResp, label) {
-  let timer;
-  const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new StuckTxError(label, txResp.hash, config.WAIT_TIMEOUT_MS)), config.WAIT_TIMEOUT_MS); });
-  try { return await Promise.race([txResp.wait(), timeout]); }
-  finally { clearTimeout(timer); }
+/**
+ * The receipt of a transaction that has been sent, whatever the node does meanwhile: a read that
+ * fails is read again, and only a receipt ends it. Past the timeout it is unknown: stuck.
+ */
+async function receiptOf(prov, hash, label, ms = config.WAIT_TIMEOUT_MS) {
+  const until = Date.now() + ms;
+  for (let wait = 250; ; wait = Math.min(1_500, wait * 2)) {
+    let rc = null;
+    try { rc = await prov.getTransactionReceipt(hash); } catch { /* not now */ }
+    if (rc && rc.blockNumber != null) return rc;
+    if (Date.now() + wait > until) throw new StuckTxError(label, hash, ms);
+    await sleep(wait);
+  }
 }
 
-async function send(wallet, tx, label) {
+// Tokens work side by side, but a wallet has one sequence of nonces: its transactions go one after
+// the other, each mined before the next is numbered.
+const oneAtATime = createMutex();
+const send = (wallet, tx, label, onSigned) => oneAtATime(wallet.address.toLowerCase(), () => sendNow(wallet, tx, label, onSigned));
+/** a wallet held this long is waiting for a transaction that may not come: whoever can, does without */
+const walletStuck = (wallet) => oneAtATime.heldFor(wallet.address.toLowerCase()) > 10_000;
+
+/**
+ * The node's own words for a transaction it will not take: anything else is no answer at all.
+ * "Nonce too low" is not among them: it is also what a second copy of a transaction already mined
+ * is told, and a node a block behind would not know the first.
+ */
+const REFUSALS = /insufficient funds|max fee per gas less than block base fee|fee cap less than|intrinsic gas too low|exceeds block gas limit|nonce too high|replacement transaction underpriced|transaction underpriced|invalid (sender|signature|chain id)|transaction type not supported|execution reverted|gas required exceeds/i;
+function refusedByNode(e) {
+  if (['INSUFFICIENT_FUNDS', 'REPLACEMENT_UNDERPRICED'].includes(e.code)) return true;
+  for (const x of [e, e.error, e.error && e.error.error]) {
+    if (!x) continue;
+    let body = null;
+    try { body = JSON.parse(x.body); } catch { /* not JSON */ }
+    if (body && body.error && REFUSALS.test(String(body.error.message))) return true;
+  }
+  return false;
+}
+
+/** hands a signed transaction to the node; an answer that never comes is not waited for long */
+async function broadcast(prov, raw) {
+  let timer;
+  const late = new Promise((_, no) => { timer = setTimeout(() => no(new Error('no answer to the broadcast')), config.BROADCAST_TIMEOUT_MS); });
+  try { await Promise.race([prov.sendTransaction(raw), late]); } finally { clearTimeout(timer); }
+}
+
+/**
+ * Signs, records, sends, and waits. `onSigned({ raw, hash, nonce })` runs before anything leaves:
+ * whoever moves money writes it down there (see `moving`). Throws StuckTxError when the outcome is
+ * not known; any other error means the transaction did not and cannot happen, or was reverted.
+ */
+async function sendNow(wallet, tx, label, onSigned) {
   // Su Arbitrum Orbit il costo di posting L1 e' addebitato come UNITA' di gas
   // extra: i limiti fissi (21000 in testa) sono insufficienti. Stima reale con
   // margine 30%; se la stima fallisce (hiccup RPC) si ripiega sul limite fornito.
@@ -135,10 +182,77 @@ async function send(wallet, tx, label) {
   const { gasLimit: fallbackLimit, ...estTx } = tx;
   let gasLimit = fallbackLimit;
   try { gasLimit = (await wallet.estimateGas(estTx)).mul(13).div(10); } catch { /* fallback al limite fornito */ }
-  const r = await wallet.sendTransaction({ gasPrice: await cappedGasPrice(), type: 0, ...tx, gasLimit });
-  const rc = await waitOrTimeout(r, label);
-  if (rc.status !== 1) throw new Error(label + ' revertata: ' + r.hash);
+  const req = await wallet.populateTransaction({ gasPrice: await cappedGasPrice(), type: 0, ...tx, gasLimit });
+  const raw = await wallet.signTransaction(req), hash = ethers.utils.keccak256(raw);
+  if (onSigned) onSigned({ raw, hash, nonce: Number(req.nonce) });
+  let usedNonce = false;
+  try { await broadcast(wallet.provider, raw); }
+  catch (e) {
+    // a gateway may have retried it, and a refusal may be of the second copy: the chain is asked first
+    let seen = true;
+    try { seen = !!(await wallet.provider.getTransaction(hash)); } catch { /* unknown: as if it were in */ }
+    if (!seen && refusedByNode(e)) throw e;
+    usedNonce = e.code === 'NONCE_EXPIRED' || /nonce too low/i.test(`${e.message} ${e.body}`);
+  }
+  const rc = await receiptOf(wallet.provider, hash, label, usedNonce ? Math.min(20_000, config.WAIT_TIMEOUT_MS) : config.WAIT_TIMEOUT_MS);
+  if (rc.status !== 1) throw new Error(label + ' revertata: ' + hash);
   return rc;
+}
+
+// ── money on its way ────────────────────────────────────────────────────────
+// A transfer out of a token's wallet is in its state from before it leaves until it is known: the
+// bucket it was taken from, and the signed transaction itself. Meanwhile nothing else leaves that
+// wallet and nothing in it is taken for something else. After a crash or a node that does not
+// answer, the SAME transaction is sent again: by its nonce it can happen once, whoever repeats it.
+
+/** takes `raw` out of `bucket` and sends it; throws like send(), with the books already right */
+async function moving({ st, checkpoint, wallet, bucket, raw, tx, label, onDone, extra }) {
+  st.txOut = { bucket, amountRaw: raw.toString(), label, ...(extra ? { extra } : {}) };
+  st[bucket] = BN(st[bucket] || '0').sub(raw).toString(); checkpoint();
+  let rc;
+  try { rc = await send(wallet, tx, label, (signed) => { Object.assign(st.txOut, signed, { at: Date.now() }); checkpoint(); }); }
+  catch (e) {
+    if (!isStuck(e)) { giveBack(st); checkpoint(); }
+    throw e;
+  }
+  if (onDone) onDone(rc);
+  st.txOut = null; checkpoint();
+  return rc;
+}
+function giveBack(st) {
+  const t = st.txOut;
+  st[t.bucket] = BN(st[t.bucket] || '0').add(t.amountRaw).toString();
+  if (t.extra && t.extra.perpDepositAt != null) st.perpDepositAt = t.extra.perpDepositAt;
+  st.txOut = null;
+}
+
+/** what came of the transfer in flight; false while it is not known */
+async function settleTxOut({ coin, st, checkpoint, wallet }) {
+  const t = st.txOut;
+  if (!t) return true;
+  const done = (msg) => { checkpoint(); console.log(`  [${coin.symbol}] ${t.label}: ${msg}`); return true; };
+  if (!t.hash) { giveBack(st); return done('never left, given back'); }
+  const prov = wallet.provider;
+  const rc = await prov.getTransactionReceipt(t.hash);
+  if (rc && rc.blockNumber != null) {
+    if (rc.status !== 1) { giveBack(st); return done('reverted, given back'); }
+    if (t.extra && t.extra.depositedUsd) st.perpDepositedUsd = Number(st.perpDepositedUsd || 0) + t.extra.depositedUsd;
+    st.txOut = null;
+    return done(`confirmed ${t.hash}`);
+  }
+  if (await prov.getTransactionCount(wallet.address, 'latest') > t.nonce) {
+    // the nonce is used and not by it. Two looks a minute apart: nodes do not all see the same head
+    if (!t.usedAt) { t.usedAt = Date.now(); checkpoint(); return false; }
+    if (Date.now() - t.usedAt < 60_000) return false;
+    giveBack(st);
+    return done('another transaction took its place, given back');
+  }
+  try { await broadcast(prov, t.raw); } catch { /* it has it already, or will have it next time */ }
+  if (Date.now() - t.at > config.TX_GIVE_UP_MS) {
+    // a price nobody takes any more: its nonce is used for nothing, and then it is known
+    try { await wallet.sendTransaction({ to: wallet.address, value: 0, nonce: t.nonce, gasPrice: (await cappedGasPrice()), gasLimit: 100_000, type: 0 }); } catch { /* one of the two goes in */ }
+  }
+  return false;
 }
 
 // il sub-wallet paga gas per burn/payout/swap: il keeper lo tiene rifornito.
@@ -148,6 +262,7 @@ async function ensureGas(keeper, subAddr) {
   const floor = gp.mul(config.GAS_TICK_UNITS);
   const bal = await provider.getBalance(subAddr);
   if (bal.gte(floor)) return;
+  if (walletStuck(keeper)) throw new Error('the keeper wallet is waiting for a transaction: no gas top-up now');
   const topup = floor.mul(config.GAS_TOPUP_MULT);
   console.log(`  gas top-up ${subAddr} (+${ethers.utils.formatEther(topup)} ETH)`);
   await send(keeper, { to: subAddr, value: topup, gasLimit: 21000 }, 'gas top-up');
@@ -523,6 +638,7 @@ async function claimV4(keeper, coin, st, checkpoint, sub, unitUsd) {
     }
   }
 
+  if (walletStuck(keeper)) return; // the fees wait in the sink, the rest of the token does not
   const hf = await v4.hookFees(provider, coin.poolId).catch(() => null);
   if (hf && (hf.beneficiaryFees0.gt(0) || hf.beneficiaryFees1.gt(0))) {
     await send(keeper, { to: config.REHYPE, data: v4.REHYPE_IFACE.encodeFunctionData('collectFees', [coin.token]), gasLimit: 300000 }, 'rehype collectFees');
@@ -580,6 +696,17 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   // visibili nel sink e nessuna posizione viene mai aperta (niente da servire)
   if (coin.engineError) {
     logOnce(st, 'engineErrorLogged', checkpoint, `  [${coin.symbol}] motore non configurabile (${coin.engineError}): coin non servita`);
+    return;
+  }
+
+  // money already on its way out of this wallet comes first: until it is known nothing else leaves
+  // it and nothing in it is counted. The position does not wait for it.
+  if (!await settleTxOut({ coin, st, checkpoint, wallet: sub })) {
+    if (lighter.enabled) {
+      try { await perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urgent: true }); }
+      catch (e) { console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
+    }
+    st.lastTickTs = Date.now();
     return;
   }
 
@@ -680,18 +807,8 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
     if (!dest) { if (bucket === 'treasuryOwedRaw') console.log(`  [${coin.symbol}] PERPSPAD_TREASURY non settata: accumulo`); continue; }
     if (usdOf(owed, coin.pairDecimals, unitUsd) < config.CREATOR_MIN_PAYOUT_USD) continue;
     await ensureGas(keeper, sub.address);
-    st[bucket] = '0'; checkpoint(); // decremento PRIMA dell'invio: un crash → under-pay, mai double-pay
-    try {
-      await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [dest, owed]), gasLimit: 100000 }, label);
-      console.log(`  [${coin.symbol}] payout ${label}: ${ethers.utils.formatUnits(owed, coin.pairDecimals)} ${coin.pairSymbol} → ${dest}`);
-    } catch (e) {
-      // Ripristina SOLO se la tx e' morta davvero (revert/errore d'invio). Se e'
-      // solo "stuck" puo' ancora minare: ripristinare qui significherebbe ri-pagare
-      // al tick dopo → double-pay. Meglio un bucket a 0 (under-pay riconciliabile).
-      if (!isStuck(e)) { st[bucket] = owed.toString(); checkpoint(); }
-      else console.log(`  [${coin.symbol}] payout ${label} STUCK (${e.hash}): bucket NON ripristinato, verifica la tx prima di ri-accreditare`);
-      throw e;
-    }
+    await moving({ st, checkpoint, wallet: sub, bucket, raw: owed, label: `payout ${label}`, tx: { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [dest, owed]), gasLimit: 100000 } });
+    console.log(`  [${coin.symbol}] payout ${label}: ${ethers.utils.formatUnits(owed, coin.pairDecimals)} ${coin.pairSymbol} → ${dest}`);
   }
 
   // ── 5. BUYBACK & BURN (floor $25, max $25/tick, slippage reale) ────────────
@@ -706,21 +823,20 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
       : await buybackPlanV3(sub, coin, quote, quoteIs0, spendRaw);
     const minOut = plan.minOut;
     const before = await coinC.balanceOf(sub.address);
-    st.buybackReserveRaw = BN(st.buybackReserveRaw).sub(spendRaw).toString(); checkpoint(); // decremento prima dell'invio
     // Il try copre SOLO lo swap: se fallisce lui, gli USDG non sono usciti e la
     // riserva si puo' ripristinare. Misura e burn stanno fuori — un loro errore
     // dopo uno swap riuscito non deve MAI ri-accreditare USDG gia' spesi (il
     // saldo coin resta nel sub-wallet e lo brucia lo step 3 al tick dopo).
     let swapped = false;
     try {
-      await send(sub, { to: plan.to, data: plan.data, gasLimit: plan.gasLimit }, 'buyback swap');
+      await moving({ st, checkpoint, wallet: sub, bucket: 'buybackReserveRaw', raw: spendRaw, label: 'buyback swap', tx: { to: plan.to, data: plan.data, gasLimit: plan.gasLimit } });
       swapped = true;
     } catch (e) {
       if (!isStuck(e)) {
-        st.buybackReserveRaw = BN(st.buybackReserveRaw).add(spendRaw).toString(); checkpoint();
         console.log(`  [${coin.symbol}] buyback fallito (slippage?), riprovo al tick dopo: ${e.message.slice(0, 80)}`);
       } else {
-        console.log(`  [${coin.symbol}] buyback STUCK (${e.hash}): riserva NON ripristinata, la tx puo' ancora minare`);
+        console.log(`  [${coin.symbol}] buyback in viaggio (${e.hash}): l'esito al prossimo giro`);
+        return; // nothing else leaves this wallet until it is known
       }
     }
     if (swapped) {
@@ -950,7 +1066,7 @@ async function withdrawProceeds({ coin, st, checkpoint, accountIndex, apiPrivKey
   } catch (e) {
     if (e && e.definitive) {
       // es. importo sotto il minimo di Lighter: non e' partito nulla
-      undoWithdrawal(st); st.perpWithdrawRetryAt = Date.now() + 30 * 60 * 1000; checkpoint();
+      undoWithdrawal(st); st.perpWithdrawRetryAt = Date.now() + (e.retry ? 60_000 : 30 * 60 * 1000); checkpoint();
       console.log(`  [${coin.symbol}] withdraw rifiutato da Lighter ($${amount.toFixed(2)}): riaccreditato, si ritenta piu' avanti (${e.message.slice(0, 80)})`);
       return false;
     } else console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} con esito ignoto (${e.message.slice(0, 80)}): lo dira' il saldo`);
@@ -1129,6 +1245,7 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
     } catch (e) {
       if (!(e && e.definitive)) throw e; // unknown: the order stays on record and is settled on its trades
       st.perpOrder = null;
+      if (e.retry) { checkpoint(); say(`closing ${label}: ${e.message.slice(0, 100)}, again next tick`); continue; }
       sw.split = split >= 5 ? 0 : split + 1;
       say(`closing ${label} refused (${e.message.slice(0, 100)}), trying again with other sizes`);
       noteSmall(coin, st, sw, note); checkpoint();
@@ -1186,7 +1303,7 @@ async function retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
       await lighter.close({ accountIndex, marketIndex: o.marketIndex, baseAmount: ask, isAsk: side === 'long', maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
     } catch (e) {
       if (!(e && e.definitive)) throw e;
-      st.perpOrder = null; st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
+      st.perpOrder = null; if (!e.retry) st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
       if (split === 0) console.log(`  [${coin.symbol}] retired: closing ${o.label} refused (${e.message.slice(0, 100)})`);
       return;
     }
@@ -1200,7 +1317,7 @@ async function retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   await withdrawProceeds({ ...ctx, floor: 0.01 });
 }
 
-async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
+async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urgent = false } = {}) {
   if (coin.pair.toLowerCase() !== config.USDG.toLowerCase()) {
     if (!st.perpGateLogged) { console.log(`  [${coin.symbol}] perp saltato: quote non USDG (il collaterale Lighter e' USDG)`); st.perpGateLogged = true; checkpoint(); }
     return;
@@ -1242,7 +1359,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
 
   // 1) DEPOSITO: manda la riserva accumulata all'intent-address (tx reale su 4663)
   const perpUsd = usdOf(BN(st.perpReserveRaw), coin.pairDecimals, unitUsd);
-  if (depositDue({ coin, st, usd: perpUsd })) try { // a deposit that fails holds nothing else
+  // (a take-profit called by a live mark does not stop for it: the round will)
+  if (!urgent && !st.txOut && depositDue({ coin, st, usd: perpUsd })) try { // a deposit that fails holds nothing else
     const depositBefore = Number(st.perpDepositAt || 0);
     const depositRaw = BN(st.perpReserveRaw);
     const { intentAddress } = await lighter.intentAddress({ chainId: '4663', fromAddr: sub.address, amount: depositRaw.toString() });
@@ -1250,16 +1368,16 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
       console.log(`  [${coin.symbol}] ${tag}perp deposit: depositerei $${perpUsd.toFixed(2)} USDG → Lighter (intent ${intentAddress})`);
     } else {
       await ensureGas(keeper, sub.address);
-      st.perpReserveRaw = '0'; st.perpDepositAt = Date.now(); checkpoint(); // decremento prima dell'invio (crash → under-deposit, riconciliabile)
+      st.perpDepositAt = Date.now();
       try {
-        await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [intentAddress, depositRaw]), gasLimit: 100000 }, 'perp deposit');
-        st.perpDepositedUsd += perpUsd; checkpoint();
+        await moving({
+          st, checkpoint, wallet: sub, bucket: 'perpReserveRaw', raw: depositRaw, label: 'perp deposit',
+          tx: { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [intentAddress, depositRaw]), gasLimit: 100000 },
+          extra: { depositedUsd: perpUsd, perpDepositAt: depositBefore }, onDone: () => { st.perpDepositedUsd = Number(st.perpDepositedUsd || 0) + perpUsd; },
+        });
         console.log(`  [${coin.symbol}] perp deposit: $${perpUsd.toFixed(2)} USDG → Lighter (intent ${intentAddress})`);
       } catch (e) {
-        // Come per il payout: ripristina la riserva SOLO se la tx e' morta. Se e'
-        // stuck puo' ancora minare e un ripristino porterebbe a depositare due volte.
-        if (!isStuck(e)) { st.perpReserveRaw = depositRaw.toString(); st.perpDepositAt = depositBefore; checkpoint(); }
-        else console.log(`  [${coin.symbol}] perp deposit STUCK (${e.hash}): riserva NON ripristinata, la tx puo' ancora minare`);
+        if (isStuck(e)) console.log(`  [${coin.symbol}] perp deposit in viaggio (${e.hash}): l'esito al prossimo giro`);
         throw e;
       }
     }
@@ -1322,8 +1440,9 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
         st.lighterLeverage = coin.leverage; st.lighterLeverageRejected = null; checkpoint();
         console.log(`  [${coin.symbol}] leverage ${prev != null ? `${prev}x → ` : ''}${coin.leverage}x ${marginMode} set on ${coin.market}`);
       } catch (e) {
-        // ambiguous (timeout, crash): as before, the tick stops here and the next one retries
-        if (!(e && e.definitive)) throw e;
+        // ambiguous (timeout, crash), or a venue too busy to judge it: the tick stops here and the
+        // next one retries. Nothing is opened at a leverage that may not be the one asked for.
+        if (!(e && e.definitive) || e.retry) throw e;
         // refused by Lighter: nothing changed on the venue. Keep trading at the leverage it
         // has (if any); the refusal is logged once per target, not every tick.
         if (st.lighterLeverageRejected !== coin.leverage) {
@@ -1436,7 +1555,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
             await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
           } catch (e) {
             if (!(e && e.definitive)) throw e; // unknown: settled on its trades, next tick
-            st.perpOrder = null; st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
+            st.perpOrder = null; if (!e.retry) st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
+            if (e.retry) { e.again = true; throw e; }
             if (split === 0) console.log(`  [${coin.symbol}] TAKE-PROFIT rifiutato (${e.message.slice(0, 100)}): riprovo con size minori`);
           }
           if (st.perpOrder) {
@@ -1491,7 +1611,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
         o.ask = Number(r.baseAmount) || null;
       } catch (e) {
         if (!(e && e.definitive)) throw e;
-        st.perpOrder = null; st.perpOpenSplit = openSplit >= 6 ? 0 : openSplit + 1; checkpoint();
+        st.perpOrder = null; if (!e.retry) st.perpOpenSplit = openSplit >= 6 ? 0 : openSplit + 1; checkpoint();
         if (st.perpOpenRefused !== e.message) console.log(`  [${coin.symbol}] perp open rifiutato: ${e.message.slice(0, 120)}`);
         st.perpOpenRefused = e.message;
         return;
@@ -1533,8 +1653,70 @@ function hasMature(coin, st, mark) {
   return tranches.length > 0 && matureTranches(tranches, mark, coin.side, st.lighterLeverage ?? coin.leverage, coinTrigger(coin)).ready.length > 0;
 }
 
+/**
+ * What a round needs to know of every token before going to it, in one read: what waits in its
+ * sink and on the hook, and what its wallet holds. null for a token that could not be read.
+ */
+const PENDING_IFACE = new ethers.utils.Interface(SINK_ABI);
+const BALANCE_IFACE = new ethers.utils.Interface(['function balanceOf(address) view returns (uint256)']);
+async function readBriefs(coins) {
+  const calls = [];
+  const at = coins.map((coin) => {
+    const sub = deriveSubWallet(coin.token, provider).address, first = calls.length;
+    calls.push({ target: coin.pair, iface: BALANCE_IFACE, fn: 'balanceOf', args: [sub] }, { target: coin.token, iface: BALANCE_IFACE, fn: 'balanceOf', args: [sub] });
+    if (coin.venue === 'v4' && coin.sink) calls.push({ target: coin.sink, iface: PENDING_IFACE, fn: 'pending' }, { target: config.REHYPE, iface: v4.REHYPE_IFACE, fn: 'getHookFees', args: [coin.poolId] });
+    return { first, v4: coin.venue === 'v4' && !!coin.sink };
+  });
+  const rows = await multicall(provider, calls);
+  const out = new Map();
+  coins.forEach((coin, i) => {
+    const [quote, held, pending, hook] = rows.slice(at[i].first, at[i].first + (at[i].v4 ? 4 : 2));
+    const bad = !quote || !held || (at[i].v4 && (!pending || !hook));
+    out.set(coin.token.toLowerCase(), bad ? null : {
+      quoteRaw: BN(quote[0]), coinRaw: BN(held[0]),
+      sinkRaw: pending ? BN(pending[0]) : BN(0), sinkCoinRaw: pending ? BN(pending[1]) : BN(0),
+      hookRaw: hook ? BN(hook.beneficiaryFees0).add(hook.beneficiaryFees1) : BN(0),
+    });
+  });
+  return out;
+}
+
+/**
+ * Why a round must go to this token, or null when it has nothing to do. Anything unknown is a
+ * reason: going to a token for nothing costs a read, missing one that needed it costs money. And
+ * every token is looked at again after a while whatever this says.
+ */
+function reasonToTick({ coin, st, brief, feedLive, now = Date.now() }) {
+  const idle = now - Number(st.perpLookAt || 0) >= config.PERP_LOOK_MS ? 'look' : null;
+  const usd = (raw) => usdOf(BN(raw || '0'), coin.pairDecimals, 1);
+  if (st.perpOrder || st.txOut || Number(st.perpWithdrawIntentUsd || 0) > 0) return 'in flight';
+  if (!brief) return 'unread';
+  if (brief.sinkCoinRaw.gt(0) || usd(brief.sinkRaw) >= config.CLAIM_MIN_USD) return 'fees';
+  if (config.RETIRED.has(coin.token.toLowerCase())) return usd(brief.quoteRaw) >= config.CLAIM_MIN_USD || st.perpOpen ? 'retired' : idle;
+  if (coin.engineError) return idle;
+  if (coin.venue !== 'v4' || !coin.sink || !coin.sinkAdopted) return 'setup';
+  if (brief.hookRaw.gt(0)) return 'hook';
+  if (brief.coinRaw.gt(0)) return 'burn';
+  if (Number(st.perpWithdrawPendingUsd || 0) > 0) return 'arrival';
+  if (usd(st.buybackReserveRaw) >= config.BUYBACK_FLOOR_USD) return 'buyback';
+  if (usd(st.treasuryOwedRaw) >= config.CREATOR_MIN_PAYOUT_USD || usd(st.creatorOwedRaw) >= config.CREATOR_MIN_PAYOUT_USD) return 'payout';
+  const accounted = BN(st.buybackReserveRaw || '0').add(st.creatorOwedRaw || '0').add(st.treasuryOwedRaw || '0').add(st.perpReserveRaw || '0');
+  if (brief.quoteRaw.gt(accounted) && usd(brief.quoteRaw.sub(accounted)) >= config.CLAIM_MIN_USD) return 'surplus';
+  if (st.lighterAccountIndex == null) return Number(st.perpDepositedUsd || 0) > 0 || depositDue({ coin, st, usd: usd(st.perpReserveRaw), now }) ? 'account' : idle;
+  if (depositDue({ coin, st, usd: usd(st.perpReserveRaw), now })) return 'deposit';
+  if (Number(st.perpDepositAt || 0) > Number(st.perpTrancheAt || 0) && now - Number(st.perpDepositAt) < 30 * 60 * 1000) return 'deposit on its way';
+  if (st.perpSwitch || st.perpCarry || (coin.managed && st.perpEngine && (st.perpEngine.market !== coin.market || st.perpEngine.side !== coin.side))) return 'switch';
+  if (filling(st, now) || Number(st.perpOpenSplit || 0) > 0 || Number(st.perpTpSplit || 0) > 0) return 'unfinished';
+  if (outOfEngine(st) >= config.PERP_WITHDRAW_FLOOR_USD && now >= Number(st.perpWithdrawRetryAt || 0)) return 'withdrawal';
+  if (!st.engineBlocked && st.lighterLeverage !== coin.leverage && st.lighterLeverageRejected !== coin.leverage) return 'leverage';
+  // without the live marks the round is the only one that sees a target touched
+  if (!feedLive && Array.isArray(st.perpTranches) && st.perpTranches.length) return 'no marks';
+  return idle;
+}
+
 /** the tokens with an open position, by the venue's market id, for the live marks to look at */
 async function urgentEntries(reg, coins) {
+  try { await lighter.markets(); } catch { return null; }
   const out = [];
   for (const coin of coins) {
     const st = reg.state[coin.token.toLowerCase()];
@@ -1550,10 +1732,13 @@ async function urgentTick(keeper, entry, checkpoint) {
   const { coin, st } = entry;
   const size = () => (st.perpTranches || []).reduce((a, t) => a + t.base, 0);
   const before = size();
-  try { await perpTick(keeper, coin, st, checkpoint, deriveSubWallet(coin.token, provider), priceUsd(coin.pair, coin.pairSymbol), erc20(coin.pair)); }
-  catch (e) { console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
+  let again = false;
+  try {
+    await perpTick(keeper, coin, st, checkpoint, deriveSubWallet(coin.token, provider), priceUsd(coin.pair, coin.pairSymbol), erc20(coin.pair), { urgent: true });
+  }
+  catch (e) { again = !!e.again; console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
   checkpoint();
-  return size() !== before || !!st.perpOrder;
+  return { acted: size() !== before || !!st.perpOrder, again };
 }
 
 // lockfile single-instance: creazione ATOMICA (flag wx) — due keeper avviati
@@ -1642,66 +1827,99 @@ async function main() {
   console.log(`keeper ${keeper.address} | locker ${config.LOCKER} | tick ${config.TICK_MS}ms | lighter:${lighter.mode}${only ? ' | solo ' + only : ''}`);
   warnIfNotProduction();
 
-  // live marks: a token at its target goes before the others, whatever the round is doing
-  const watching = lighter.enabled && !lighter.simulate && !flag('once') && !!config.LIGHTER_WS_URL;
+  // One registry for the life of the process: a token left behind by a round goes on working on it.
+  const store = createStore(registry.load());
+  const { reg } = store;
+  const lanes = createLanes();
+  const keyOf = (coin) => coin.token.toLowerCase();
+  const trading = lighter.enabled && !lighter.simulate;
+
+  // live marks: a token at its target goes at once, in a lane of its own, whatever the round is doing
+  const watching = trading && !flag('once') && !!config.LIGHTER_WS_URL;
   const urgent = createUrgent({ isDue: (e, mark) => hasMature(e.coin, e.st, mark) });
   const feed = watching ? createFeed({ url: config.LIGHTER_WS_URL, onMark: (id, mark) => urgent.onMark(id, mark) }) : null;
-  /** whoever is waiting in front; a few at a time, so the round goes on whatever the market does */
-  const serveUrgent = async (checkpoint, most = 5) => {
-    for (let i = 0; i < most; i++) {
+  let marketOf = new Map(); // token → the market its position is on
+  const urgentLane = async () => {
+    for (;;) {
+      await urgent.wait(60_000);
       const e = urgent.take();
-      if (!e) return;
-      urgent.served(e.key, await urgentTick(keeper, e, checkpoint));
+      if (!e) continue;
+      try {
+        let acted = false, again = false;
+        const went = await lanes.run(e.key, () => lighter.urgently(async () => { ({ acted, again } = await urgentTick(keeper, e, () => store.commit(e.key))); }));
+        urgent.served(e.key, { acted, went: went && !again }); // at work already: asked again in a moment
+      } catch (err) { urgent.served(e.key, { acted: false, went: true }); console.log(`  [${e.coin.symbol}] urgent: ${String(err.message).slice(0, 140)}`); }
     }
   };
+  if (feed) for (let n = 0; n < config.URGENT_PARALLEL; n++) urgentLane();
 
   do {
-    const reg = registry.load();
-    const checkpoint = () => registry.save(reg);
     // coin nuove dal router (eventi MultiplyLaunch + metadata IPFS + sink): entrano da sole
-    try {
-      if (await routerCoins.syncRouterCoins(provider, reg) > 0) registry.save(reg);
-      else if (reg.routerScanBlock) registry.save(reg); // persiste comunque il cursore di scansione
-    } catch (e) { console.log(`  sync router: ${e.message.slice(0, 120)}`); }
-    const coins = reg.coins.filter((c) => !only || c.token.toLowerCase() === only.toLowerCase());
+    try { await routerCoins.syncRouterCoins(provider, reg, { isBusy: lanes.isBusy }); store.commitCoins(lanes.isBusy); }
+    catch (e) { console.log(`  sync router: ${e.message.slice(0, 120)}`); }
+    const coins = reg.coins.filter((c) => !only || keyOf(c) === only.toLowerCase());
     if (!coins.length) console.log(ts() + ' nessuna coin nel registry');
-    const listen = async () => {
-      if (!feed) return;
+    if (feed) {
       const entries = await urgentEntries(reg, coins);
-      urgent.load(entries);
-      feed.watch(new Set(entries.map((e) => e.marketId)));
-    };
-    await listen();
-    for (const coin of coins) {
-      if (feed) await serveUrgent(checkpoint);
-      const st = reg.state[coin.token.toLowerCase()];
-      if (!st) { console.log(`  [${coin.symbol}] stato mancante nel registry, salto`); continue; }
-      try { await tickCoin(keeper, locker, coin, st, checkpoint); }
-      catch (e) { console.log(`  [${coin.symbol}] ERRORE tick: ${e.message.slice(0, 140)}`); }
-      registry.save(reg);
+      if (entries) { // the list could not be read: the alarms of the round before stay
+        urgent.load(entries);
+        marketOf = new Map(entries.map((e) => [e.key, e.marketId]));
+        feed.watch(new Set([...marketOf.values(), config.LIGHTER_HEARTBEAT_MARKET]));
+      }
     }
+    let briefs = null;
+    if (trading) try { briefs = await readBriefs(coins); } catch (e) { console.log(`  briefs: ${e.message.slice(0, 100)} (only what is known from the books this round)`); }
+    // reasons that are only "go and see": with many tokens they would be the whole round
+    const ROUTINE = new Set(['look', 'unread', 'no marks']);
+    const inFlight = (c) => (reg.state[keyOf(c)].perpOrder || reg.state[keyOf(c)].txOut || Number(reg.state[keyOf(c)].perpWithdrawIntentUsd || 0) > 0 ? 1 : 0);
+    const heard = (c) => !!feed && feed.fresh(marketOf.get(keyOf(c)));
+    const looks = [];
+    const due = coins.filter((coin) => {
+      const st = reg.state[keyOf(coin)];
+      if (!st) { console.log(`  [${coin.symbol}] stato mancante nel registry, salto`); return false; }
+      if (!trading || flag('once')) return true;
+      const why = reasonToTick({ coin, st, brief: briefs && briefs.get(keyOf(coin)), feedLive: heard(coin) });
+      if (!why) st.lastTickTs = Date.now();
+      else if (ROUTINE.has(why)) looks.push(coin);
+      return !!why && !ROUTINE.has(why);
+    });
+    due.sort((a, b) => inFlight(b) - inFlight(a)); // what is already under way comes first
+    // the routine looks come last, a few per round, the longest unseen first: they all cost a read
+    looks.sort((a, b) => Number(reg.state[keyOf(a)].perpLookAt || 0) - Number(reg.state[keyOf(b)].perpLookAt || 0));
+    // without the live marks they are the only ones that see a target: all the reads there are go to them
+    const most = feed && feed.live() ? config.LOOKS_PER_ROUND : Math.max(config.LOOKS_PER_ROUND, lighter.spareReads() - 5);
+    due.push(...looks.slice(0, most));
+    await lanes.round(due, {
+      key: keyOf, parallel: config.TICK_PARALLEL, patienceMs: config.TICK_PATIENCE_MS,
+      work: async (coin) => {
+        const commit = () => store.commit(keyOf(coin));
+        try { await tickCoin(keeper, locker, coin, reg.state[keyOf(coin)], commit); }
+        catch (e) { console.log(`  [${coin.symbol}] ERRORE tick: ${e.message.slice(0, 140)}`); }
+        // seen, whatever came of it: one that always fails must not keep its place in front
+        reg.state[keyOf(coin)].perpLookAt = Date.now();
+        commit();
+      },
+    });
     if (!only && !lighter.simulate) {
-      try {
-        await flywheelTick({
-          reg, checkpoint, provider, wallet: keeper.address, isStuck,
-          send: (tx, label) => send(keeper, tx, label),
-          plan: (coin, raw) => buybackPlanV4(keeper, coin, erc20(coin.pair), raw),
-          quote: (coin, raw) => v4.quoteExactInV4(provider, { asset: coin.token, numeraire: coin.pair, tokenIn: coin.pair, amountIn: raw }),
-        });
-      } catch (e) { console.log(`  [flywheel] ${e.message.slice(0, 140)}`); }
-      registry.save(reg);
+      await lanes.round(['flywheel'], {
+        key: (k) => k, parallel: 1, patienceMs: config.TICK_PATIENCE_MS,
+        work: async () => {
+          try {
+            await flywheelTick({
+              reg, checkpoint: store.commitRest, provider, wallet: keeper.address, isStuck,
+              send: (tx, label, onSigned) => send(keeper, tx, label, onSigned),
+              plan: (coin, raw) => buybackPlanV4(keeper, coin, erc20(coin.pair), raw),
+              quote: (coin, raw) => v4.quoteExactInV4(provider, { asset: coin.token, numeraire: coin.pair, tokenIn: coin.pair, amountIn: raw }),
+            });
+          } catch (e) { console.log(`  [flywheel] ${e.message.slice(0, 140)}`); }
+          store.commitRest();
+        },
+      });
     }
     // estratto pubblico per il sito (senza chiavi API ne' stato interno):
     // in produzione il frontend gira su un host remoto e non vede il file locale
-    publish.writeSnapshot(reg);
-    if (flag('once')) break;
-    await listen(); // what this round opened and closed
-    const until = Date.now() + config.TICK_MS;
-    for (let left = config.TICK_MS; left > 0; left = until - Date.now()) {
-      if (!feed) { await sleep(left); break; }
-      await urgent.wait(left);
-      if (urgent.size()) { await serveUrgent(checkpoint); publish.writeSnapshot(reg); }
-    }
+    publish.writeSnapshot(store.committed());
+    if (!flag('once')) await sleep(config.TICK_MS);
   } while (!flag('once'));
 }
 
@@ -1710,4 +1928,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { hasMature, strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { refusedByNode, sendNow, receiptOf, moving, settleTxOut, StuckTxError, readBriefs, reasonToTick, hasMature, strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

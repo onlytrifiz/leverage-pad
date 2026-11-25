@@ -12,28 +12,34 @@ const t = (a) => ethers.utils.hexZeroPad(a, 32).toLowerCase();
 Object.assign(config, { FLYWHEEL_TOKEN: TOKEN, TREASURY: W, FLYWHEEL_FROM_BLOCK: 0 });
 
 function world({ impact = 0, hookFee = 20000, wallet = 1_000e6 } = {}) {
-  const w = { block: 1000, logs: [], sends: [], now: 1_800_000_000_000, usdg: wallet, reg: { coins: [{ token: TOKEN, symbol: 'MULTIPLY', pair: config.USDG, venue: 'v4', sink: SINK, subWallet: SUB }], state: {} }, disk: null, log: [] };
+  const w = { block: 1000, logs: [], sends: [], now: 1_800_000_000_000, nonce: 0, mined: new Map(), repeated: [], usdg: wallet, reg: { coins: [{ token: TOKEN, symbol: 'MULTIPLY', pair: config.USDG, venue: 'v4', sink: SINK, subWallet: SUB }], state: {} }, disk: null, log: [] };
   const put = (token, from, to, value, hash) => w.logs.push({ address: token, blockNumber: w.block, transactionHash: hash, topics: [TRANSFER, t(from), t(to)], data: ethers.utils.hexZeroPad(BN(value).toHexString(), 32) });
   w.pay = (from, value) => { w.block += 1; put(config.USDG, from, W, value, '0xpay' + w.logs.length); w.block += 50; };
   const has = (x, v) => x == null || (Array.isArray(x) ? x.includes(v) : x === v);
   w.provider = {
     getBlockNumber: async () => w.block,
     getLogs: async (f) => w.logs.filter((l) => l.address.toLowerCase() === f.address.toLowerCase() && l.blockNumber >= f.fromBlock && (f.toBlock === 'latest' || l.blockNumber <= f.toBlock) && f.topics.every((x, i) => has(x, l.topics[i]))),
-    getTransactionReceipt: async (h) => ({ transactionHash: h, logs: w.logs.filter((l) => l.transactionHash === h) }),
+    getTransactionReceipt: async (h) => w.mined.get(h) ?? null,
+    getTransactionCount: async () => w.nonce,
+    sendTransaction: async (raw) => { w.repeated.push(raw); },
     call: async () => ethers.utils.hexZeroPad(BN(w.usdg).toHexString(), 32),
   };
+  w.sign = (tx, label) => ({ hash: '0x' + label.replace(' ', '') + w.nonce, nonce: w.nonce, raw: `raw:${w.nonce}` });
   w.mine = (tx, label) => {
     w.block += 1;
-    const hash = '0x' + label.replace(' ', '') + w.sends.length;
+    const { hash } = w.sign(tx, label);
+    w.nonce++;
     if (label === 'flywheel buy') { put(config.USDG, W, PM, tx.data, hash); put(TOKEN, PM, W, BN(tx.data).mul(1e12), hash); w.usdg -= Number(tx.data); }
     else put(TOKEN, W, ZERO, '0x' + tx.data.slice(10), hash);
     w.sends.push(label);
-    return { status: 1, transactionHash: hash, logs: w.logs.filter((l) => l.transactionHash === hash) };
+    const rc = { status: 1, blockNumber: w.block, transactionHash: hash, logs: w.logs.filter((l) => l.transactionHash === hash) };
+    w.mined.set(hash, rc);
+    return rc;
   };
-  w.send = async (tx, label) => w.mine(tx, label);
+  w.send = async (tx, label, onSigned) => { onSigned(w.sign(tx, label)); return w.mine(tx, label); };
   w.run = () => flywheelTick({
     reg: w.reg, checkpoint: () => { w.disk = JSON.parse(JSON.stringify(w.reg)); }, provider: w.provider, wallet: W, now: w.now, log: (m) => w.log.push(m),
-    send: (tx, label) => w.send(tx, label), isStuck: (e) => !!e.stuck,
+    send: (tx, label, onSigned) => w.send(tx, label, onSigned), isStuck: (e) => !!e.stuck,
     plan: async (_, raw) => ({ to: PM, data: raw.toHexString(), gasLimit: 1 }),
     quote: async (_, a) => ({ hookFee, out: BN(a).mul(1e12).mul(1_000_000 - Math.floor(impact * a.toNumber() / 1e6)).div(1_000_000) }),
   });
@@ -82,17 +88,51 @@ test('a buy never moves the price more than allowed, nor runs into the launch fe
   const poor = world({ wallet: 8e6 }); await poor.run(); poor.pay(SINK, 100e6); await poor.later(); assert.equal(poor.reg.flywheel.spentRaw, '8000000');
 });
 
-test('killed around the buy or the burn: spent once, burned once', async () => {
-  for (const [label, mined] of [['flywheel buy', true], ['flywheel buy', false], ['flywheel burn', true], ['flywheel burn', false]]) {
+test('killed, or left without an answer, around the buy or the burn: spent once, burned once', async () => {
+  for (const label of ['flywheel buy', 'flywheel burn']) for (const when of ['before signing', 'mined', 'late', 'never']) {
     const w = world();
     await w.run(); w.pay(SINK, 100e6);
-    w.send = async (tx, l) => { if (l !== label) return w.mine(tx, l); if (mined) w.mine(tx, l); const e = new Error('killed'); e.stuck = true; throw e; };
+    let parked = null;
+    w.send = async (tx, l, onSigned) => {
+      if (l !== label) { onSigned(w.sign(tx, l)); return w.mine(tx, l); }
+      if (when !== 'before signing') onSigned(w.sign(tx, l));
+      if (when === 'mined') w.mine(tx, l); else parked = [tx, l];
+      const e = new Error('no answer'); e.stuck = true; throw e;
+    };
     await w.later().catch(() => {}); w.reborn();
-    w.send = async (tx, l) => w.mine(tx, l);
-    await w.later(1); await w.later(11); await w.later();
-    assert.deepEqual(w.sends, ['flywheel buy', 'flywheel burn'], `${label} ${mined}`);
-    assert.deepEqual([w.reg.flywheel.spentRaw, w.reg.flywheel.owedRaw, w.reg.flywheel.burnedRaw], ['70000000', '0', BN(70e6).mul(1e12).toString()]);
+    w.send = async (tx, l, onSigned) => { onSigned(w.sign(tx, l)); return w.mine(tx, l); };
+    await w.later(1);
+    if (when === 'late') { assert.equal(w.sends.filter((x) => x === label).length, 0, 'nothing new while it is not known'); assert.ok(w.repeated.length, 'the same one is sent again'); w.mine(...parked); }
+    if (when === 'never') { w.nonce++; await w.later(1); await w.later(1); } // something else used its nonce
+    await w.later(1); await w.later(30); await w.later(30);
+    assert.deepEqual(w.sends, ['flywheel buy', 'flywheel burn'], `${label} ${when}`);
+    assert.deepEqual([w.reg.flywheel.spentRaw, w.reg.flywheel.owedRaw, w.reg.flywheel.burnedRaw], ['70000000', '0', BN(70e6).mul(1e12).toString()], `${label} ${when}`);
   }
+});
+
+test('a long silence is read in the windows the node takes, and an unreadable one is where it starts again', async () => {
+  const w = world();
+  await w.run();
+  const asked = [], real = w.provider.getLogs;
+  w.provider.getLogs = async (f) => { if (f.topics[1]?.length > 1) { asked.push([f.fromBlock, f.toBlock]); if (asked.length === 3) throw new Error('503'); } return real(f); };
+  w.pay(SINK, 10e6); w.block += 85_000; w.pay(SINK, 20e6); w.block += 100_000; w.pay(SINK, 40e6); w.block += 50;
+  await assert.rejects(w.later());
+  assert.equal(w.disk.flywheel.revenueRaw, '30000000');
+  assert.ok(asked.every(([a, b]) => b - a < 100_000));
+  await w.later(1); await w.later(30);
+  assert.equal(w.reg.flywheel.revenueRaw, '70000000');
+});
+
+test('hundreds of tokens: the senders are asked a few at a time', async () => {
+  const w = world();
+  for (let i = 1; i < 700; i++) w.reg.coins.push({ token: ethers.utils.hexZeroPad(ethers.utils.hexlify(i), 20), pair: config.USDG, venue: 'v4', sink: ethers.utils.hexZeroPad(ethers.utils.hexlify(10_000 + i), 20), subWallet: ethers.utils.hexZeroPad(ethers.utils.hexlify(20_000 + i), 20) });
+  await w.run();
+  const sizes = [], real = w.provider.getLogs;
+  w.provider.getLogs = async (f) => { if (Array.isArray(f.topics[1])) sizes.push(f.topics[1].length); return real(f); };
+  w.pay(w.reg.coins[650].sink, 9e6);
+  await w.later();
+  assert.ok(Math.max(...sizes) <= 400); assert.equal(sizes.reduce((a, b) => a + b, 0), 1400);
+  assert.equal(w.reg.flywheel.revenueRaw, '9000000');
 });
 
 test('a reverted buy gives the money back to the next', async () => {

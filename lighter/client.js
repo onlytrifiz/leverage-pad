@@ -1,11 +1,15 @@
 const path = require('path');
 const { execFile } = require('child_process');
 const config = require('../config');
+const rest = require('./rest');
+const { createSemaphore } = require('../lib/lanes');
 
 /**
  * lighter/client.js — RPC sottile Node → sidecar.py (Lighter, profilo ROBINHOOD).
  *
- * Ogni metodo lancia `python sidecar.py <cmd> '<json>'` e restituisce il JSON.
+ * Le LETTURE passano da rest.js (nessun Python). Cio' che si firma, e il bridge, lancia
+ * `python sidecar.py <cmd> '<json>'` e restituisce il JSON, uno per processo: cosi' una chiave
+ * non vive mai accanto a un'altra.
  * I segreti (chiave API Lighter della coin, chiave eth del sub-wallet per la
  * registrazione) passano via ENV al figlio, MAI in argv. La policy (quando
  * depositare/aprire/take-profit, dimensionamento) sta nel keeper, non qui.
@@ -24,7 +28,22 @@ const simulate = MODE === 'simulate';
 const PYTHON = config.LIGHTER_PYTHON;
 const SIDECAR = path.resolve(__dirname, 'sidecar.py');
 
-function call(cmd, params = {}, env = {}) {
+const signing = createSemaphore(config.LIGHTER_SIGNERS, { reserved: 1 });
+/**
+ * `staleMs`: what is being signed was decided on an account read before this, and goes at the price
+ * of the moment it leaves. One that waited longer than that for its turn is not sent: nothing
+ * happened, and it is decided again.
+ */
+const call = (cmd, params = {}, env = {}, { staleMs = Infinity } = {}) => {
+  const asked = Date.now();
+  return signing(() => {
+    if (Date.now() - asked <= staleMs) { rest.charge(3); return spawn(cmd, params, env); }
+    const e = new Error(`lighter:${cmd}: waited too long for its turn`);
+    e.definitive = true; e.retry = true;
+    throw e;
+  }, { front: rest.isUrgent() });
+};
+function spawn(cmd, params, env) {
   return new Promise((resolve, reject) => {
     execFile(PYTHON, [SIDECAR, cmd, JSON.stringify(params)],
       { env: { ...process.env, LIGHTER_PROFILE: config.LIGHTER_PROFILE, ...env }, timeout: 60000, maxBuffer: 4 * 1024 * 1024 },
@@ -37,6 +56,7 @@ function call(cmd, params = {}, env = {}) {
           // caller may restore its state) or came from the send itself, whose outcome is unknown.
           const e = new Error('lighter:' + cmd + ': ' + parsed.error);
           e.definitive = parsed.definitive === true;
+          e.retry = parsed.retry === true; // the venue was busy, it did not judge the request
           return reject(e);
         }
         // nessun JSON: timeout, processo ucciso, crash → esito AMBIGUO, la
@@ -51,10 +71,15 @@ function call(cmd, params = {}, env = {}) {
 let _markets = null;
 let _marketsAt = 0;
 const MARKETS_TTL_MS = 10 * 60 * 1000;
+let _marketsRead = null;
 async function markets() {
   if (!_markets || Date.now() - _marketsAt > MARKETS_TTL_MS) {
-    _markets = (await call('markets')).markets;
-    _marketsAt = Date.now();
+    // whoever asks while the list is being read shares that read
+    _marketsRead ??= rest.markets().then((r) => { _markets = r.markets; _marketsAt = Date.now(); }).finally(() => { _marketsRead = null; });
+    // an old list is served while the new one comes: it changes a few times a month, and a venue
+    // that does not answer for it must not stop what it answers for
+    if (_markets) { _marketsRead.catch(() => {}); _marketsAt = Math.max(_marketsAt, Date.now() - MARKETS_TTL_MS + 30_000); }
+    else await _marketsRead;
   }
   return _markets;
 }
@@ -93,8 +118,8 @@ async function marketById(id) {
 }
 
 const selftest = () => call('selftest');
-const resolveAccount = (address) => call('resolve-account', { address });
-const account = (accountIndex) => call('account', { accountIndex });
+const resolveAccount = (address) => rest.resolveAccount({ address });
+const account = (accountIndex) => rest.account({ accountIndex });
 const intentAddress = ({ chainId, fromAddr, amount }) => call('intent-address', { chainId, fromAddr, amount });
 const depositLatest = (address) => call('deposit-latest', { address });
 const registerKey = ({ accountIndex, apiKeyIndex, ethPrivKey }) =>
@@ -103,11 +128,11 @@ const setLeverage = ({ accountIndex, marketIndex, leverage, isolated = true, api
   call('set-leverage', { accountIndex, marketIndex, leverage, isolated, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
 // open: dimensiona da notionalUsd (il sidecar legge il mark). close: baseAmount esplicito.
 const open = ({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
-  call('open', { accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
+  call('open', { accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
 const close = ({ accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
-  call('close', { accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
+  call('close', { accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
 /** what the order with this client index traded: { size, price }, price null when nothing is seen yet */
-const fills = ({ accountIndex, marketIndex, clientOrderIndex, since = 0 }) => call('fills', { accountIndex, marketIndex, clientOrderIndex, since });
+const fills = ({ accountIndex, marketIndex, clientOrderIndex, since = 0 }) => rest.fills({ accountIndex, marketIndex, clientOrderIndex, since });
 const addMargin = ({ accountIndex, marketIndex, usdcAmount, apiPrivKey, apiKeyIndex = 4 }) =>
   call('add-margin', { accountIndex, marketIndex, usdcAmount, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
 // withdraw normale del collaterale/profitto verso il sub-wallet su 4663 (no fee/limite)
@@ -115,7 +140,7 @@ const withdraw = ({ accountIndex, amount, apiPrivKey, apiKeyIndex = 4 }) =>
   call('withdraw', { accountIndex, amount, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
 
 module.exports = {
-  enabled, simulate, mode: MODE,
+  enabled, simulate, mode: MODE, urgently: rest.urgently, spareReads: rest.spareReads,
   selftest, markets, market, marketById, parseMarket, maxLeverageFromImf, resolveAccount, account,
   intentAddress, depositLatest, registerKey, setLeverage, open, close, fills, addMargin, withdraw,
 };

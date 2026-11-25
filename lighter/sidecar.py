@@ -351,7 +351,11 @@ async def main():
     try:
         out(await COMMANDS[sys.argv[1]](params))
     except Exception as e:
-        out({"ok": False, "error": f"{type(e).__name__}: {e}"})
+        # too many requests, or a venue that is down, before anything was sent: not a judgement on
+        # what was asked, it can be asked again as it is
+        status = getattr(e, "status", None)
+        busy = not SENDING["tx"] and isinstance(status, int) and (status == 429 or status >= 500)
+        out({"ok": False, "error": f"{type(e).__name__}: {e}", "retry": busy})
 
 
 if __name__ == "__main__":

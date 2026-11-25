@@ -68,6 +68,19 @@ test('feed: a lost line comes back by itself with everything it was listening to
   assert.equal(Socket.all.length, 2, 'stopped for good');
 });
 
+test('feed: a market that does not speak is not being watched, whatever the others say', () => {
+  let t = 0;
+  const { feed } = make({ now: () => t });
+  feed.watch([1, 15]); const s = Socket.all[0]; s.open();
+  assert.equal(feed.fresh(1), false, 'not a word yet');
+  s.mark(1, 5); s.mark(15, 5);
+  t = 59_000; s.mark(1, 6);
+  t = 61_000;
+  assert.deepEqual([feed.fresh(1), feed.fresh(15), feed.fresh(undefined)], [true, false, false]);
+  s.close(); assert.equal(feed.fresh(1), false);
+  feed.stop();
+});
+
 test('feed: no url or no WebSocket is no feed, not an error', () => {
   for (const over of [{ url: '' }, { WebSocketImpl: undefined, url: '' }]) { const { feed } = make(over); feed.watch([1]); assert.equal(feed.live(), false); feed.stop(); }
 });
@@ -83,14 +96,22 @@ test('urgent: first come first served, once each', () => {
   assert.deepEqual([u.take().key, u.take().key, u.take()], ['b', 'a', null]);
 });
 
-test('urgent: nothing to do waits longer each time, acting does not', () => {
+test('urgent: nothing to do waits longer each time, acting a moment, and a bad spell is forgotten', () => {
   const { c, u } = urgentAt();
   u.load([entry('a')]);
   const times = [];
-  for (let i = 0; i < 400; i++) { c.t += 1_000; u.onMark(1, 200); if (u.take()) { times.push(c.t / 1000); u.served('a', false); } }
+  for (let i = 0; i < 400; i++) { c.t += 1_000; u.onMark(1, 200); if (u.take()) { times.push(c.t / 1000); u.served('a', { acted: false, went: true }); } }
   assert.deepEqual(times.slice(0, 5), [1, 6, 16, 36, 76]);
   assert.ok(times.at(-1) - times.at(-2) <= 121);
-  u.served('a', true); u.onMark(1, 200); assert.equal(u.size(), 1);
+  u.served('a', { acted: true, went: true }); u.onMark(1, 200);
+  assert.equal(u.size(), 0, 'the venue\'s reads may still be the ones from before');
+  c.t += 2_000; u.onMark(1, 200); assert.equal(u.size(), 1); u.take();
+  u.served('a', { acted: false, went: true }); c.t += 5_000; u.onMark(1, 200); assert.equal(u.size(), 1, 'the spell before acting does not count'); u.take();
+  // somebody else was on it: asked again in a moment, and it does not count as nothing to do
+  for (let i = 0; i < 6; i++) { u.served('a', { acted: false, went: false }); c.t += 2_000; u.onMark(1, 200); assert.ok(u.take(), String(i)); }
+  for (let i = 0; i < 6; i++) u.served('a', { acted: false, went: true });
+  c.t += 24 * 3_600_000; u.onMark(1, 200); u.take(); u.served('a', { acted: false, went: true });
+  c.t += 5_000; u.onMark(1, 200); assert.equal(u.size(), 1, 'a day later it starts from the beginning');
 });
 
 test('urgent: a new round replaces the state, and forgets who is gone', () => {
@@ -99,6 +120,16 @@ test('urgent: a new round replaces the state, and forgets who is gone', () => {
   const fresh = entry('a');
   u.load([fresh]);
   assert.equal(u.size(), 1); assert.equal(u.take(), fresh);
+});
+
+test('urgent: several lanes wait, each arrival wakes one', async () => {
+  const { u } = urgentAt();
+  u.load([entry('a'), entry('b')]);
+  const woke = [];
+  const lanes = [1, 2, 3].map((n) => u.wait(60).then(() => { const e = u.take(); if (e) woke.push(e.key); }));
+  u.onMark(1, 200);
+  await Promise.all(lanes);
+  assert.deepEqual(woke.sort(), ['a', 'b']);
 });
 
 test('urgent: wait wakes at once, or times out', async () => {

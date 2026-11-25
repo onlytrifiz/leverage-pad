@@ -21,7 +21,7 @@ RUN npm ci --omit=dev
 
 COPY config.js keeper.js ./
 COPY lib ./lib
-COPY lighter/client.js lighter/sidecar.py lighter/requirements.txt ./lighter/
+COPY lighter/client.js lighter/rest.js lighter/sidecar.py lighter/requirements.txt ./lighter/
 
 ENV NODE_ENV=production \
     PERPSPAD_LIGHTER_PYTHON=/opt/lighter/bin/python \
