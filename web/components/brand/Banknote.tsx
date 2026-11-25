@@ -219,7 +219,7 @@ export function Banknote({ symbol, name, market, side, leverage, serial, image, 
         <span className="num absolute right-[5.2%] bottom-[5.2%] text-[1.35cqw] tracking-[0.08em] text-down/85">{short}</span>
 
         {managed && (
-          <span className="absolute bottom-[12.5%] left-[43%] -rotate-6 rounded-[0.7cqw] border-[0.35cqw] border-down bg-[#eef6f0]/60 px-[1.5cqw] py-[0.6cqw] font-display text-[2.5cqw] leading-none font-bold tracking-[0.16em] text-down uppercase shadow-[inset_0_0_0_0.35cqw_#eef6f0,inset_0_0_0_0.5cqw_rgba(179,38,30,0.75)]">
+          <span className="absolute bottom-[15.5%] left-[43%] -rotate-6 rounded-[0.7cqw] border-[0.35cqw] border-down bg-[#eef6f0]/60 px-[1.5cqw] py-[0.6cqw] font-display text-[2.5cqw] leading-none font-bold tracking-[0.16em] text-down uppercase shadow-[inset_0_0_0_0.35cqw_#eef6f0,inset_0_0_0_0.5cqw_rgba(179,38,30,0.75)]">
             Managed
           </span>
         )}

@@ -160,11 +160,12 @@ const MULTICALL_IFACE = new ethers.utils.Interface(["function getEthBalance(addr
 const LAUNCH_GAS_RESERVE = ethers.utils.parseEther("0.0006");
 
 /** USDG has 6 decimals: anything finer would make parseUnits throw and silently drop the first buy. */
-const clampUsdgInput = (v: string) => {
+const clampDecimals = (v: string, max: number) => {
   const cleaned = v.replace(/[^0-9.]/g, "");
   const [i, d] = cleaned.split(".");
-  return d === undefined ? i : `${i}.${d.slice(0, 6)}`;
+  return d === undefined ? i : `${i}.${d.slice(0, max)}`;
 };
+const clampUsdgInput = (v: string) => clampDecimals(v, 6);
 
 export default function LaunchForm({
   initialMarket = "NVDA",
@@ -202,6 +203,8 @@ export default function LaunchForm({
   const [name, setName] = useState("");
   const [symbol, setSymbol] = useState("");
   const [firstBuy, setFirstBuy] = useState("");
+  /** what the first buy is paid in; null until chosen, then the wallet's own money decides */
+  const [buyMoneyPick, setBuyMoney] = useState<"ETH" | "USDG" | null>(null);
   const [buyRows, setBuyRows] = useState<BuyRow[]>([]);
   const [description, setDescription] = useState("");
   const [links, setLinks] = useState({ website: "", x: "", telegram: "" });
@@ -255,14 +258,54 @@ export default function LaunchForm({
     () => ({ market, side, leverage: lev, takeProfitPct: tp, managed }),
     [market, side, lev, tp, managed]
   );
+  /*
+   * The first buy in ETH: what it is worth in USDG now, less 1%, is what the launch spends. The swap
+   * that brings it runs inside the launch, after everything else has been checked and signed, and it
+   * cannot return less than that (0.5% on the quote, 0.5% on its execution).
+   */
+  // a wallet with ETH and no USDG starts on ETH
+  const buyMoney = buyMoneyPick ?? (acct && acct.usdg.lt(1_000_000) && acct.eth.gt(LAUNCH_GAS_RESERVE) ? "ETH" : "USDG");
+  const ethIn = useMemo(() => {
+    if (buyMoney !== "ETH" || !(Number(firstBuy) > 0)) return null;
+    try {
+      return ethers.utils.parseEther(firstBuy);
+    } catch {
+      return null;
+    }
+  }, [buyMoney, firstBuy]);
+  const ethKey = ethIn?.toString() ?? "";
+  const [ethQuote, setEthQuote] = useState<{ key: string; out: ethers.BigNumber } | null>(null);
+  useEffect(() => {
+    if (!ethKey) return;
+    const stop = new AbortController();
+    const load = async () => {
+      try {
+        const q = await quoteRoute(NATIVE, USDG, ethers.BigNumber.from(ethKey), stop.signal);
+        const out = ethers.BigNumber.from(q.routeSummary.amountOut);
+        // a breath of the price is not a new amount to simulate everything for
+        setEthQuote((was) => (was && was.key === ethKey && was.out.sub(out).abs().mul(1000).lt(out.mul(3)) ? was : { key: ethKey, out }));
+      } catch {
+        if (!stop.signal.aborted) setEthQuote((was) => (was?.key === ethKey ? was : null));
+      }
+    };
+    const t = setTimeout(load, 350);
+    const again = setInterval(() => !document.hidden && void load(), 15_000);
+    return () => {
+      stop.abort();
+      clearTimeout(t);
+      clearInterval(again);
+    };
+  }, [ethKey]);
+  const ethOut = ethIn && ethQuote?.key === ethKey ? ethQuote.out : null;
   const firstBuyIn = useMemo(() => {
+    if (buyMoney === "ETH") return ethOut ? ethOut.mul(99).div(100) : ethers.constants.Zero;
     if (!firstBuy || Number(firstBuy) <= 0) return ethers.constants.Zero;
     try {
       return ethers.utils.parseUnits(firstBuy, 6);
     } catch {
       return ethers.constants.Zero;
     }
-  }, [firstBuy]);
+  }, [firstBuy, buyMoney, ethOut]);
   /** null while a row of the wallet list still needs fixing */
   const orders = useMemo(() => toOrders(buyRows, address), [buyRows, address]);
   /** everything the launch spends: the launcher's own buy plus every other wallet's */
@@ -368,7 +411,7 @@ export default function LaunchForm({
     let live = true;
     const t = setTimeout(async () => {
       try {
-        const approved = !withBuy || (acct?.allowance.gte(buyIn) ?? false);
+        const approved = !withBuy || (acct != null && acct.allowance.gte(buyIn) && acct.usdg.gte(buyIn));
         // the router dry-run is exact; before the USDG approval the launch buy cannot pull
         // funds in eth_call, so the Bundler simulator (payer = 0) stands in with the same params
         const sim = approved
@@ -399,13 +442,17 @@ export default function LaunchForm({
     };
   }, [address, params, routerInput, orders, withBuy, buyIn, acct]);
 
-  const insufficient = !!(withBuy && acct && buyIn.gt(acct.usdg));
+  /** what must already be in USDG: in ETH mode the first buy's share is swapped along the way */
+  const usdgNeeded = ethOut ? buyIn.sub(firstBuyIn) : buyIn;
+  const ethShort = !!(ethIn && acct && ethIn.add(LAUNCH_GAS_RESERVE).gt(acct.eth));
+  const ethPending = buyMoney === "ETH" && Number(firstBuy) > 0 && !ethOut;
+  const insufficient = !!(withBuy && acct && usdgNeeded.gt(acct.usdg));
   /*
    * Most wallets hold ETH and no USDG. What the launch buy misses is swapped first, as a step of its
    * own with its own signature: the launch that follows is the same one, and nothing is spent on it
    * if the swap is refused.
    */
-  const missing = insufficient && acct ? buyIn.sub(acct.usdg) : null;
+  const missing = insufficient && acct ? usdgNeeded.sub(acct.usdg) : null;
   const missingKey = missing?.toString() ?? "";
   const [ethFor, setEthFor] = useState<{ key: string; eth: ethers.BigNumber; out: ethers.BigNumber } | null>(null);
   useEffect(() => {
@@ -429,7 +476,7 @@ export default function LaunchForm({
       clearTimeout(t);
     };
   }, [missingKey]);
-  const topUp = missing && ethFor && ethFor.key === missingKey && ethFor.out.gte(missing) && acct && acct.eth.gt(ethFor.eth.add(LAUNCH_GAS_RESERVE)) ? ethFor : null;
+  const topUp = missing && ethFor && ethFor.key === missingKey && ethFor.out.gte(missing) && acct && acct.eth.gt(ethFor.eth.add(ethIn ?? 0).add(LAUNCH_GAS_RESERVE)) ? ethFor : null;
 
   async function getUsdg() {
     if (!topUp || !address || !provider) return;
@@ -450,16 +497,6 @@ export default function LaunchForm({
     if (!routerInput || !address || !provider || !orders) return;
     setError(null);
     try {
-      if (withBuy && needsApproval) {
-        setBusy("Approving USDG");
-        const h = await sendGuardedTx(provider, {
-          from: address,
-          to: USDG,
-          data: ERC20_IFACE.encodeFunctionData("approve", [LAUNCH_ROUTER, buyIn]),
-        });
-        const rc = await waitForReceipt(h);
-        if (rc.status !== "success") throw new Error("The approval reverted.");
-      }
       setBusy("Sign to pin metadata");
       const { tokenURI, metadataUrl } = await pinMetadata(
         provider,
@@ -474,6 +511,24 @@ export default function LaunchForm({
           logo,
         }
       );
+      if (ethIn && ethOut) {
+        setBusy("Swapping ETH for USDG");
+        await swapRoute({ provider, read: readProvider, account: address, tokenIn: NATIVE, tokenOut: USDG, amountIn: ethIn, shownOut: ethOut, slippageBps: 50, onStep: () => {} });
+        // from here the money is USDG: a launch refused now is retried without swapping again
+        setBuyMoney("USDG");
+        setFirstBuy(ethers.utils.formatUnits(firstBuyIn, 6));
+        refresh(address).catch(() => {});
+      }
+      if (withBuy && needsApproval) {
+        setBusy("Approving USDG");
+        const h = await sendGuardedTx(provider, {
+          from: address,
+          to: USDG,
+          data: ERC20_IFACE.encodeFunctionData("approve", [LAUNCH_ROUTER, buyIn]),
+        });
+        const rc = await waitForReceipt(h);
+        if (rc.status !== "success") throw new Error("The approval reverted.");
+      }
       // the floor comes from the quote on screen, so a price that moved since then fails the dry-run
       const minOut = withBuy && predicted?.buyOut ? withLaunchSlippage(predicted.buyOut) : ethers.constants.Zero;
       const finalInput: RouterInput = { ...routerInput, tokenURI, minOut };
@@ -507,7 +562,7 @@ export default function LaunchForm({
           {busy === "Swapping ETH for USDG" ? busy : `Swap ${Number(ethers.utils.formatEther(topUp.eth)).toPrecision(3)} ETH for the ${usd2(missing)} USDG it needs`}
         </Button>
       )}
-      <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !orders || !predicted || !!busy || insufficient || !marketOk || !levOk}>
+      <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !orders || !predicted || !!busy || insufficient || ethShort || ethPending || !marketOk || !levOk}>
         {busy && <Spinner data-icon="inline-start" />}
         {busy ??
           (!ready
@@ -518,8 +573,14 @@ export default function LaunchForm({
               ? `${market} allows up to ${maxLev}x`
               : !orders
               ? "Fix the wallet list"
+              : ethShort
+              ? "Not enough ETH for the first buy"
+              : ethPending
+              ? "Pricing the first buy"
               : insufficient
               ? "Not enough USDG for the launch buy"
+              : ethIn
+                ? `Swap ${Number(firstBuy)} ETH and launch $${symbol}`
               : needsApproval
                 ? `Approve USDG and launch $${symbol}`
                 : withBuy
@@ -800,9 +861,9 @@ export default function LaunchForm({
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
               {(
                 [
-                  { key: "website", label: "Website", placeholder: "yourcoin.xyz" },
-                  { key: "x", label: "X", placeholder: "@yourcoin" },
-                  { key: "telegram", label: "Telegram", placeholder: "@yourcoin" },
+                  { key: "website", label: "Website", placeholder: "yourtoken.xyz" },
+                  { key: "x", label: "X", placeholder: "@yourtoken" },
+                  { key: "telegram", label: "Telegram", placeholder: "@yourtoken" },
                 ] as const
               ).map((f) => {
                 const raw = links[f.key];
@@ -831,36 +892,71 @@ export default function LaunchForm({
                 <span className="text-sm font-semibold text-ink">First buy, optional</span>
                 {acct && (
                   <span className="text-xs text-ink-3">
-                    Balance <span className="num">{fmtUsdg(acct.usdg)}</span> USDG
+                    Balance <span className="num">{buyMoney === "ETH" ? Number(ethers.utils.formatEther(acct.eth)).toFixed(4) : fmtUsdg(acct.usdg)}</span> {buyMoney}
                   </span>
                 )}
               </div>
               <div className="mt-2 flex items-baseline gap-2">
                 <input
                   value={firstBuy}
-                  onChange={(e) => setFirstBuy(clampUsdgInput(e.target.value))}
+                  onChange={(e) => setFirstBuy(buyMoney === "ETH" ? clampDecimals(e.target.value, 18) : clampUsdgInput(e.target.value))}
                   placeholder="0.00"
                   inputMode="decimal"
-                  aria-label="First buy in USDG"
+                  aria-label={`First buy in ${buyMoney}`}
                   className="num w-full min-w-0 bg-transparent text-3xl text-ink placeholder:text-ink-3 focus:outline-none"
                 />
-                <span className="shrink-0 text-sm text-ink-2">USDG</span>
+                <span role="radiogroup" aria-label="Pay the first buy in" className="flex shrink-0 rounded-md bg-panel-2 p-0.5">
+                  {(["ETH", "USDG"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={buyMoney === m}
+                      onClick={() => {
+                        if (m === buyMoney) return;
+                        setBuyMoney(m);
+                        setFirstBuy(""); // an amount of ETH is not an amount of USDG
+                      }}
+                      className={`rounded px-2.5 py-1.5 text-xs font-semibold transition-colors ${buyMoney === m ? "bg-panel text-brand shadow-sm" : "text-ink-3 hover:text-ink"}`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </span>
               </div>
+              {ethIn && (
+                <p className="mt-1 text-xs text-ink-3">
+                  {ethOut ? (
+                    <>
+                      Buys with <span className="num text-ink">{fmtUsdg(firstBuyIn)} USDG</span>, swapped in the launch. Up to 1% more stays in your
+                      wallet.
+                    </>
+                  ) : (
+                    "Pricing…"
+                  )}
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap gap-2">
-                {["10", "50", "100"].map((v) => (
+                {(buyMoney === "ETH" ? ["0.01", "0.05", "0.1"] : ["10", "50", "100"]).map((v) => (
                   <button
                     key={v}
                     type="button"
                     onClick={() => setFirstBuy(v)}
                     className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${firstBuy === v ? "border-brand bg-brand-soft text-brand" : "border-line text-ink-2 hover:border-line-2"}`}
                   >
-                    ${v}
+                    {buyMoney === "ETH" ? `${v} ETH` : `$${v}`}
                   </button>
                 ))}
                 {acct && (
                   <button
                     type="button"
-                    onClick={() => setFirstBuy(ethers.utils.formatUnits(acct.usdg, 6))}
+                    onClick={() =>
+                      setFirstBuy(
+                        buyMoney === "ETH"
+                          ? ethers.utils.formatEther(acct.eth.gt(LAUNCH_GAS_RESERVE) ? acct.eth.sub(LAUNCH_GAS_RESERVE) : 0)
+                          : ethers.utils.formatUnits(acct.usdg, 6)
+                      )
+                    }
                     className="rounded-full border border-line px-3 py-1 text-xs font-medium text-ink-2 transition-colors hover:border-line-2"
                   >
                     Max
@@ -1225,8 +1321,8 @@ function LaunchPanel({
       )}
 
       <p className="mt-4 text-xs leading-relaxed text-ink-3">
-        You sign twice: once to pin the logo and metadata to IPFS (no gas), once for the launch. One transaction through the
-        multiply router{" "}
+        You sign to pin the logo and metadata to IPFS (no gas) and for the launch; a first buy adds its USDG approval, and in ETH
+        its swap. One transaction through the multiply router{" "}
         <a className="num underline underline-offset-2" href={explorerAddr(LAUNCH_ROUTER)} target="_blank" rel="noreferrer">
           {short(LAUNCH_ROUTER)}
         </a>{" "}
