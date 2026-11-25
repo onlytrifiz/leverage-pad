@@ -58,7 +58,7 @@ export default async function TokenPage({
         (`contents`) so the trade panel can sit right after the chart; on
         desktop it is a sticky column beside the long read.
       */}
-      <Container width="landing" className="mt-8 grid [--chart-h:640px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
+      <Container width="landing" className="mt-8 grid [--chart-h:520px] grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="flex min-w-0 flex-col gap-6 max-lg:contents">
           <div className="min-w-0 max-lg:order-1">
             <CoinChart

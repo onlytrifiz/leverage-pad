@@ -10,6 +10,7 @@ import {
   useTransform,
 } from "motion/react";
 import { cn } from "cn";
+import AssetIcon from "@/components/AssetIcon";
 import { EngravedArt } from "./EngravedArt";
 import { Guilloche } from "./Guilloche";
 
@@ -19,7 +20,10 @@ import { Guilloche } from "./Guilloche";
  * Every element is one a real note carries, and each is bound to the coin
  * rather than decorating it:
  *
- *   vignette     the bull (a short's note gets the bear)
+ *   vignette     the token's own logo, as a note carries its sovereign; the animal
+ *                stands under the denomination, the bull for a long, the bear for a
+ *                short. Without a logo the animal takes the vignette.
+ *   engine       the asset's mark and a struck tablet, up and green or down and red
  *   denomination the leverage, struck in hatched type inside a rosette
  *   serials      the token address, top left and bottom right, in red as on
  *                the paper money everyone has held
@@ -39,6 +43,8 @@ type Props = {
   side: "long" | "short";
   leverage: number;
   serial: string;
+  /** the token's logo; absent, the animal takes its place */
+  image?: string;
   /** a managed coin's note carries a stamp: its engine can be retuned by the creator */
   managed?: boolean;
   /** tilt, foil and glare follow the pointer */
@@ -79,7 +85,7 @@ function rosettePath(R: number, teeth: number) {
 const W = 1000;
 const H = 470;
 
-export function Banknote({ symbol, name, market, side, leverage, serial, managed = false, interactive = true, className }: Props) {
+export function Banknote({ symbol, name, market, side, leverage, serial, image, managed = false, interactive = true, className }: Props) {
   const reduced = useReducedMotion();
   const px = useMotionValue(0.5);
   const py = useMotionValue(0.5);
@@ -99,6 +105,9 @@ export function Banknote({ symbol, name, market, side, leverage, serial, managed
 
   const short = shortAddr(serial);
   const art = side === "short" ? "bear" : "bull";
+  const isShort = side === "short";
+  // the ticker is set to its length: a note never prints half a name
+  const tickerSize = Math.max(2.6, Math.min(7.4, 31 / ((symbol.length + 1) * 0.6)));
 
   const onMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!interactive || reduced || e.pointerType !== "mouse") return;
@@ -133,24 +142,48 @@ export function Banknote({ symbol, name, market, side, leverage, serial, managed
           </g>
         </svg>
 
-        {/* vignette: the bull (or the bear) in an engraved oval with a sunburst */}
+        {/* vignette: the token's logo in an engraved oval with a sunburst */}
         <div className="absolute top-[13%] left-[6.5%] flex h-[74%] w-[33%] items-center justify-center overflow-hidden rounded-[50%] border-[0.2cqw] border-current/45">
           <div aria-hidden className="note-sunburst absolute inset-0" />
-          <EngravedArt name={art} className="relative w-[96%] text-ink" />
+          {image ? (
+            // the creator's file on the project's gateway, any size and any format: nothing for the optimiser
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={image}
+              alt=""
+              className="relative aspect-square w-[66%] rounded-full object-cover shadow-[0_0_0_0.5cqw_#eef6f0,0_0_0_0.7cqw_rgba(12,52,32,0.55)]"
+            />
+          ) : (
+            <EngravedArt name={art} className="relative w-[96%] text-ink" />
+          )}
         </div>
 
         {/* issue */}
         <div className="absolute top-[13%] left-[42%] w-[30%]">
           <div className="text-[1.25cqw] font-semibold tracking-[0.3em] text-ink-2 uppercase">multiply.cash</div>
-          <div className="mt-[1.4cqw] truncate font-display text-[7.4cqw] leading-[0.95] font-bold tracking-[-0.03em]">
+          <div className="mt-[1.4cqw] flex h-[7cqw] items-center font-display leading-none font-bold tracking-[-0.03em] whitespace-nowrap" style={{ fontSize: `${tickerSize}cqw` }}>
             ${symbol}
           </div>
-          <div className="mt-[0.8cqw] truncate text-[1.7cqw] text-ink-2">{name}</div>
-          <div className="mt-[2.6cqw] text-[1.25cqw] tracking-[0.18em] text-ink-3 uppercase">Its fees trade</div>
-          <div className="mt-[0.4cqw] font-display text-[2.6cqw] leading-tight font-semibold">
-            {market} {leverage}x {side}
+          <div className="mt-[0.5cqw] truncate text-[1.7cqw] text-ink-2">{name}</div>
+          <div className="mt-[2.1cqw] text-[1.25cqw] tracking-[0.18em] text-ink-3 uppercase">Its fees trade</div>
+          <div className="mt-[0.9cqw] flex items-center gap-[1cqw]">
+            <span className="flex size-[4.6cqw] shrink-0 [&>*]:!h-full [&>*]:!w-full [&>*]:!text-[2cqw]">
+              <AssetIcon symbol={market} size={64} />
+            </span>
+            <span className="min-w-0 truncate font-display text-[3cqw] leading-none font-bold">{market}</span>
+            <span
+              className={cn(
+                "flex shrink-0 items-center gap-[0.5cqw] rounded-[0.6cqw] px-[1.1cqw] py-[0.65cqw] font-display text-[2.9cqw] leading-none font-bold text-white uppercase",
+                isShort ? "bg-[#b3261e]" : "bg-[#0f6b3f]"
+              )}
+            >
+              <svg viewBox="0 0 12 14" className="h-[2.2cqw] w-[1.9cqw]" aria-hidden>
+                <path d="M6 0l6 7H8v7H4V7H0z" fill="currentColor" transform={isShort ? "rotate(180 6 7)" : undefined} />
+              </svg>
+              {side}
+            </span>
           </div>
-          <div className="note-microprint mt-[2.4cqw] overflow-hidden text-[0.85cqw] leading-none tracking-[0.12em] whitespace-nowrap text-ink-3 uppercase">
+          <div className="note-microprint mt-[2cqw] overflow-hidden text-[0.85cqw] leading-none tracking-[0.12em] whitespace-nowrap text-ink-3 uppercase">
             tokens fueled by perps tokens fueled by perps tokens fueled by perps tokens fueled by perps
           </div>
         </div>
@@ -175,17 +208,18 @@ export function Banknote({ symbol, name, market, side, leverage, serial, managed
             {leverage}x
           </span>
         </div>
-        <div className="absolute right-[5%] bottom-[16%] text-right">
-          <div className="text-[1.1cqw] tracking-[0.2em] text-ink-3 uppercase">{side === "short" ? "Short" : "Long"} engine</div>
-          <div className="font-display text-[3.4cqw] leading-none font-bold">{market}</div>
-        </div>
+        {image && (
+          <div aria-hidden className="absolute right-[4.6%] bottom-[12.5%] flex h-[32%] w-[15.5%] items-end justify-center text-ink">
+            <EngravedArt name={art} className="w-full" />
+          </div>
+        )}
 
         {/* serials, in red as on real paper money */}
         <span className="num absolute top-[5.4%] left-[5.2%] text-[1.35cqw] tracking-[0.08em] text-down/85">{short}</span>
         <span className="num absolute right-[5.2%] bottom-[5.2%] text-[1.35cqw] tracking-[0.08em] text-down/85">{short}</span>
 
         {managed && (
-          <span className="absolute bottom-[14%] left-[42%] -rotate-6 rounded-[0.5cqw] border-[0.25cqw] border-double border-down/80 px-[1cqw] py-[0.3cqw] text-[1.3cqw] font-bold tracking-[0.3em] text-down/85 uppercase">
+          <span className="absolute bottom-[12.5%] left-[42%] -rotate-6 rounded-[0.5cqw] border-[0.25cqw] border-double border-down/80 px-[1cqw] py-[0.3cqw] text-[1.3cqw] font-bold tracking-[0.3em] text-down/85 uppercase">
             Managed
           </span>
         )}

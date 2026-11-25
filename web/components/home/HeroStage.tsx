@@ -154,6 +154,7 @@ export default function HeroStage({
               side={coin?.side ?? "long"}
               leverage={coin?.leverage ?? 10}
               managed={coin?.managed}
+              image={coin?.image}
               serial={coin?.token ?? "0x0000000000000000000000000000000000000000"}
             />
           </motion.div>

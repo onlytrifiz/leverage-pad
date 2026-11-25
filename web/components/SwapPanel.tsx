@@ -3,17 +3,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import type { CoinDetail } from "@/lib/types";
-import { PUBLIC_RPC, USDG, NATIVE, MULTICALL3, DOPPLER, UNIVERSAL_ROUTER, PERMIT2, V4_POOL_MANAGER, explorerTx } from "@/lib/clientConfig";
+import { PUBLIC_RPC, USDG, NATIVE, MULTICALL3, DOPPLER, UNIVERSAL_ROUTER, PERMIT2, explorerTx } from "@/lib/clientConfig";
 import { NoRoute, quoteRoute, swapRoute } from "@/lib/swap";
 import { TICK_SPACING, DYNAMIC_FEE_FLAG } from "@/lib/doppler";
 import { multicall } from "@/lib/multicall";
 import { sendGuardedTx, waitForReceipt, txErrorMessage } from "@/lib/tx";
-import { fmtUsd } from "@/lib/format";
 import { useWallet, ChainGate } from "@/components/wallet";
 import { Button } from "@/components/ui/button";
-import { Panel, PanelHeader, PanelTitle, PanelMeta } from "@/components/ui/panel";
+import { Panel } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
-import { ArrowUpDown } from "@/components/animate-ui/icons/arrow-up-down";
 import { AnimatePresence, motion } from "motion/react";
 
 /**
@@ -300,15 +298,6 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
 
   return (
     <Panel>
-      <PanelHeader>
-        <PanelTitle className="flex items-center gap-2">
-          <ArrowUpDown key={dir} aria-hidden size={16} animate className="text-brand" />
-          Trade
-        </PanelTitle>
-        <PanelMeta>
-          {viaEth ? "KyberSwap" : "Uniswap v4"} · fee {coin.fee / 10000}%
-        </PanelMeta>
-      </PanelHeader>
       <div className="flex flex-col gap-3 p-4">
         <div role="radiogroup" aria-label="Trade direction" className="relative grid grid-cols-2 gap-1 rounded-lg bg-void p-1">
           {(["buy", "sell"] as const).map((d) => (
@@ -411,12 +400,6 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
             {error}
           </p>
         )}
-
-        <p className="text-xs leading-relaxed text-ink-3">
-          Every trade pays {coin.fee / 10000}% into the engine, collected in USDG. {fmtUsd(detail.stats.feesCollectedUsd)} so far.
-          Pool <span className="num">{coin.poolId.slice(0, 10)}…</span> on the v4 PoolManager{" "}
-          <span className="num">{V4_POOL_MANAGER.slice(0, 6)}…</span>.
-        </p>
       </div>
     </Panel>
   );

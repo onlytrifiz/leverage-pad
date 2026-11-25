@@ -77,6 +77,7 @@ export default function TokenHero({ detail, poolHref }: { detail: CoinDetail; po
               side={coin.side}
               leverage={coin.leverage}
               managed={coin.managed}
+              image={coin.image}
               serial={coin.token}
             />
           </motion.div>

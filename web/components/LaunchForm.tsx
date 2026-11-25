@@ -570,6 +570,7 @@ export default function LaunchForm({
               side={side}
               leverage={lev}
               managed={managed}
+              image={logo?.dataUrl}
               serial={predicted?.asset ?? launched?.asset ?? "0x0000000000000000000000000000000000000000"}
             />
             <AnimatePresence>
