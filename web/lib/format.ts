@@ -65,3 +65,6 @@ export function fmtSignedUsd(v: number | null | undefined): string {
   if (v == null || !isFinite(v)) return "—";
   return (v >= 0 ? "+" : "−") + fmtUsd(Math.abs(v));
 }
+
+/** the size of a price move: "0.8%", "12%" */
+export const fmtMove = (pct: number) => `${pct.toFixed(pct < 10 ? 1 : 0)}%`;

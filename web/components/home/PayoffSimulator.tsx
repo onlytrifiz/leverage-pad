@@ -5,8 +5,8 @@ import { motion, useReducedMotion } from "motion/react";
 import { cn } from "cn";
 import { useMarkets } from "@/components/markets-provider";
 import AssetIcon from "@/components/AssetIcon";
-import { fmtChange, fmtMark, fmtSignedUsd, fmtUsd } from "@/lib/format";
-import { FEE_PRESETS, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
+import { fmtChange, fmtMark, fmtSignedUsd, fmtUsd, fmtMove } from "@/lib/format";
+import { FEE_PRESETS, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, liqDistancePct } from "@/lib/doppler";
 
 /**
  * The asymmetry, as an instrument you can push.
@@ -16,7 +16,7 @@ import { FEE_PRESETS, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
  * is also the control: drag across it. Two curves answer the only question that
  * matters, "what reaches the coin":
  *
- *   position P&L  = collateral × leverage × move, floored at −collateral
+ *   position P&L  = collateral × leverage × move, and −collateral from the liquidation on
  *                   (isolated margin: a liquidation loses the posted fees, never more)
  *   buyback       = PROFIT_SPLIT_PCT.buyback of a positive P&L, zero otherwise
  *
@@ -110,14 +110,17 @@ export default function PayoffSimulator() {
   const notional = collateral * lev;
   const dir = side === "long" ? 1 : -1;
 
-  const pnlAt = (m: number) => Math.max(-collateral, notional * dir * (m / 100));
+  const live = markets.find((m) => m.symbol === asset);
+  /** where Lighter closes the position; until the list has loaded, where the collateral would end */
+  const liqAway = liqDistancePct(lev, live?.maintenancePct ?? 0);
+  // past the liquidation there is no position any more: the fees it held are gone
+  const pnlAt = (m: number) => (dir * m <= -liqAway ? -collateral : notional * dir * (m / 100));
   const buybackAt = (m: number) => Math.max(0, pnlAt(m)) * BUYBACK_SHARE;
 
   const pnl = pnlAt(move);
   const buyback = buybackAt(move);
   const liquidated = pnl <= -collateral + 1e-9 && collateral > 0;
 
-  const live = markets.find((m) => m.symbol === asset);
   const today = live?.change24h ?? null;
   const maxLev = live?.maxLeverage ?? null;
 
@@ -139,7 +142,7 @@ export default function PayoffSimulator() {
     };
     // the curves depend on every input that shapes x/y
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collateral, notional, dir, W]);
+  }, [collateral, notional, dir, W, liqAway]);
 
   const setFromPointer = (clientX: number) => {
     const svg = svgRef.current;
@@ -376,8 +379,8 @@ export default function PayoffSimulator() {
         </div>
         <p className="mt-3 text-xs leading-relaxed text-ink-3">
           {liquidated
-            ? "At this move the position is liquidated: the fees it held are gone, the token and its pool are not touched. The next fees open a fresh position."
-            : "Illustration of one take-profit at the chosen move. Funding, trading costs and the take-profit schedule are left out."}
+            ? `Past ${fmtMove(liqAway)} against it the ${lev}x position is liquidated: the fees it held are gone, the token and its pool are not touched, and the next fees open a fresh one. Less leverage moves that point further away.`
+            : "Illustration of one take-profit at the chosen move, with the liquidation where Lighter would place it. Funding, trading costs and the take-profit schedule are left out."}
         </p>
       </div>
     </div>

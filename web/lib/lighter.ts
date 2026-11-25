@@ -94,6 +94,8 @@ export type MarketRow = {
    * every tick.
    */
   maxLeverage: number | null;
+  /** margin the venue closes the position at, percent of its size (1.2 on BTC, 6 on ANT) */
+  maintenancePct: number | null;
 };
 
 /** tutti i mercati PERP di Lighter con mark, variazione e volume 24h */
@@ -129,6 +131,7 @@ export async function allMarkets(): Promise<MarketRow[]> {
           Number(o.min_initial_margin_fraction) > 0
             ? Math.floor(10_000 / Number(o.min_initial_margin_fraction) + 1e-9)
             : null,
+        maintenancePct: Number(o.maintenance_margin_fraction) > 0 ? Number(o.maintenance_margin_fraction) / 100 : null,
       };
     });
   return rows.sort((a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0));

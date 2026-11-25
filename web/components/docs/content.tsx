@@ -336,6 +336,15 @@ function LifecycleBody() {
         where it entered.
       </p>
       <p>
+        <K>Where liquidation is.</K> Not at 100 ÷ leverage. Lighter closes a position while some
+        margin is left, so that closing it cannot cost more than was posted: that maintenance margin is set per
+        market (<N>1.2%</N> of the position on BTC, <N>3%</N> on NVDA, <N>6%</N> on ANT today). The distance is{" "}
+        <N>100 ÷ leverage − maintenance margin</N>: BTC at 50x is liquidated <N>0.8%</N> away, at 25x <N>2.8%</N>, at
+        10x <N>8.8%</N>. Near a market&apos;s maximum leverage most of the room is gone, and a small step down gives
+        back a lot of it. Lighter also charges up to 1% on a liquidation, so little of the margin left comes back.
+        The launch form shows the number for every leverage.
+      </p>
+      <p>
         <K>Liquidation.</K> If the venue liquidates the position, the posted
         collateral is gone and the tranche book zeroes out. That is the whole blast
         radius: the pool, the locked liquidity and holder balances are untouched,

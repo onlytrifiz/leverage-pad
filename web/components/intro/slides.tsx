@@ -624,8 +624,8 @@ function Pump(props: SlideProps) {
  */
 const DUMP_N = 24;
 const DUMP_LINE = walk(DUMP_N, -0.0055, 0.008, 29);
-/* isolated margin at 20x gives out a few percent below the entry */
-const DUMP_LIQ = Math.max(3, DUMP_LINE.findIndex((v) => v <= 97));
+/* NVDA at 20x is liquidated 2% below the entry: 5% of collateral, less the venue's 3% maintenance */
+const DUMP_LIQ = Math.max(3, DUMP_LINE.findIndex((v) => v <= 98));
 const DUMP_CANDLES = (() => {
   let seed = 13;
   const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647) * 2 - 1;

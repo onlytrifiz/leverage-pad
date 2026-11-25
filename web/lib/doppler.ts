@@ -107,6 +107,12 @@ export const TP_MAX_PCT = 500;
 export const TP_MOVE_MAX_PCT = 20;
 export const maxTakeProfitPct = (leverage: number) =>
   Math.min(TP_MAX_PCT, Math.max(TP_MIN_PCT, Math.floor(leverage * TP_MOVE_MAX_PCT)));
+/**
+ * How far the asset has to move against a position, in percent, before Lighter liquidates it. The
+ * collateral covers 100 / leverage of the position; the venue closes when only the market's
+ * maintenance margin is left of it, not when it is gone. Funding is not in it.
+ */
+export const liqDistancePct = (leverage: number, maintenancePct: number) => Math.max(0, 100 / leverage - maintenancePct);
 /** shortcuts on the take-profit slider: the three profiles every coin used to pick from */
 export const TP_PRESETS = [
   { pct: 20, label: "safe" },

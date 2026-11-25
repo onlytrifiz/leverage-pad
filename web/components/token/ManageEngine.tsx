@@ -10,8 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { LAUNCH_ROUTER } from "@/lib/clientConfig";
 import { sendGuardedTx, waitForReceipt, txErrorMessage } from "@/lib/tx";
-import { ROUTER_IFACE, ROUTER_LEVERAGES, TP_MIN_PCT, TP_PRESETS, PROFIT_SPLIT_PCT, fmtNotice, maxTakeProfitPct } from "@/lib/doppler";
+import { ROUTER_IFACE, ROUTER_LEVERAGES, TP_MIN_PCT, TP_PRESETS, PROFIT_SPLIT_PCT, fmtNotice, liqDistancePct, maxTakeProfitPct } from "@/lib/doppler";
 import { engineDiff } from "@/lib/engine";
+import { fmtMove } from "@/lib/format";
 import AssetIcon from "@/components/AssetIcon";
 import AssetPicker from "@/components/launch/AssetPicker";
 
@@ -35,7 +36,8 @@ export default function ManageEngine({ coin, delayS }: { coin: Coin; delayS: num
   const [picking, setPicking] = useState(false);
   // the market it already runs on stays choosable even when new launches are sent elsewhere
   const choices = useMemo(() => markets.filter((m) => m.launchable || m.symbol === coin.market), [markets, coin.market]);
-  const cap = markets.find((m) => m.symbol === market)?.maxLeverage ?? null;
+  const row = markets.find((m) => m.symbol === market);
+  const cap = row?.maxLeverage ?? null;
   const listed = markets.some((m) => m.symbol === market);
   const levOk = cap == null || lev <= cap;
   const tpMax = maxTakeProfitPct(lev);
@@ -147,6 +149,12 @@ export default function ManageEngine({ coin, delayS }: { coin: Coin; delayS: num
             );
           })}
         </div>
+        {row?.maintenancePct != null && levOk && (
+          <p className="mt-2 text-xs text-ink-3">
+            Liquidation <span className="num text-ink">{fmtMove(liqDistancePct(lev, row.maintenancePct))}</span> away. Less leverage moves it
+            further: Lighter keeps <span className="num">{fmtMove(row.maintenancePct)}</span> of the position as margin.
+          </p>
+        )}
       </div>
 
       <div className="mt-5">

@@ -14,7 +14,7 @@ import { OptionCard, OptionGroup } from "@/components/ui/option-card";
 import { CoinSeal } from "@/components/brand/CoinSeal";
 import { Banknote } from "@/components/brand/Banknote";
 import { EngravedArt } from "@/components/brand/EngravedArt";
-import { fmtChange } from "@/lib/format";
+import { fmtChange, fmtMove } from "@/lib/format";
 import { USDG, LAUNCH_FEE_HUB, LAUNCH_ROUTER, explorerTx, explorerToken, explorerAddr } from "@/lib/clientConfig";
 import { multicall } from "@/lib/multicall";
 import { sendGuardedTx, waitForReceipt, txErrorMessage } from "@/lib/tx";
@@ -22,6 +22,7 @@ import {
   FEE_PRESETS,
   SNIPE,
   fmtSeconds,
+  liqDistancePct,
   withLaunchSlippage,
   type Snipe,
   firstBuyDopplerCostPct,
@@ -58,6 +59,7 @@ import {
 } from "@/lib/doppler";
 import { AnimatedNumber } from "@/components/motion";
 import AssetPicker from "@/components/launch/AssetPicker";
+import LiquidationNote from "@/components/launch/LiquidationNote";
 import ProtectionPicker from "@/components/launch/ProtectionPicker";
 import BuyWallets, { toOrders, type BuyRow } from "@/components/launch/BuyWallets";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -628,7 +630,25 @@ export default function LaunchForm({
           </Step>
 
           <Step n={4} title="When it takes profit" meta="Per deposit">
-            <TakeProfitSlider value={tp} max={tpMax} onChange={setTp} market={market} leverage={lev} up={up} />
+            <TakeProfitSlider
+              value={tp}
+              max={tpMax}
+              onChange={setTp}
+              market={market}
+              leverage={lev}
+              up={up}
+              maintenancePct={selected?.maintenancePct ?? null}
+            />
+            {selected?.maintenancePct != null && levOk && (
+              <LiquidationNote
+                market={market}
+                leverage={lev}
+                leverages={LEVERAGES.filter((l) => maxLev == null || l <= maxLev)}
+                maintenancePct={selected.maintenancePct}
+                up={up}
+                takeProfitPct={tp}
+              />
+            )}
           </Step>
 
           <Step n={5} title="The trading fee" meta="Fixed forever at launch">
@@ -1158,8 +1178,6 @@ function LaunchPanel({
   );
 }
 
-const fmtMove = (pct: number) => `${pct.toFixed(pct < 10 ? 1 : 0)}%`;
-
 /**
  * The take-profit as a slider from +10% up to what the leverage allows (20× the leverage,
  * +500% at most), with the old profiles as shortcuts and two numbers underneath: how far the
@@ -1172,6 +1190,7 @@ function TakeProfitSlider({
   market,
   leverage,
   up,
+  maintenancePct,
 }: {
   value: number;
   max: number;
@@ -1179,10 +1198,12 @@ function TakeProfitSlider({
   market: string;
   leverage: number;
   up: boolean;
+  /** the venue's maintenance margin on this market; null until the list has loaded */
+  maintenancePct: number | null;
 }) {
   const pct = max > TP_MIN_PCT ? ((value - TP_MIN_PCT) / (max - TP_MIN_PCT)) * 100 : 100;
   const need = value / leverage;
-  const liqAway = 100 / leverage;
+  const liqAway = maintenancePct == null ? null : liqDistancePct(leverage, maintenancePct);
   const tone = value > 150 ? "text-down" : value <= 30 ? "text-up" : "text-brand";
   const band = value <= 30 ? "safe" : value <= 75 ? "balanced" : value <= 150 ? "degen" : "moon";
   return (
@@ -1256,7 +1277,7 @@ function TakeProfitSlider({
           <Readout
             tone="down"
             label={`Fees lost if ${market} moves`}
-            value={`~${fmtMove(liqAway)} ${up ? "down" : "up"}`}
+            value={liqAway == null ? "…" : `${fmtMove(liqAway)} ${up ? "down" : "up"}`}
             note="liquidation: the fees, nothing more"
           />
         </div>
