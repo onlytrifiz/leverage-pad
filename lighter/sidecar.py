@@ -32,6 +32,7 @@ Comandi:
   set-leverage {accountIndex,marketIndex,leverage,isolated,apiKeyIndex}
   open  {accountIndex,marketIndex,baseAmount,isAsk,maxSlippage,clientOrderIndex,apiKeyIndex}
   close {accountIndex,marketIndex,baseAmount,isAsk,maxSlippage,clientOrderIndex,apiKeyIndex}  (reduce_only)
+  fills {accountIndex,marketIndex,clientOrderIndex}   size and average price one order traded
   add-margin {accountIndex,marketIndex,usdcAmount,apiKeyIndex}
 """
 import sys, os, json, asyncio
@@ -288,6 +289,30 @@ async def cmd_close(p):
     return await _market_order(p, reduce_only=True)
 
 
+async def cmd_fills(p):
+    # what one of our orders actually traded, found by its client order index
+    c = api_client()
+    try:
+        me, cid, since = int(p["accountIndex"]), int(p["clientOrderIndex"]), int(p.get("since", 0))
+        size = quote = 0.0
+        cursor = None
+        for _ in range(10):
+            r = await lighter.OrderApi(c).trades(
+                sort_by="timestamp", limit=100, account_index=me, market_id=int(p["marketIndex"]),
+                **({"cursor": cursor} if cursor else {}))
+            for t in r.trades:
+                if (t.ask_account_id == me and t.ask_client_id == cid) or (t.bid_account_id == me and t.bid_client_id == cid):
+                    size += float(t.size)
+                    quote += float(t.size) * float(t.price)
+            cursor = r.next_cursor
+            # newest first: past the moment the order was sent there is nothing of it
+            if not cursor or not r.trades or int(r.trades[-1].timestamp) < since - 60000:
+                break
+        return {"ok": True, "size": size, "price": quote / size if size > 0 else None}
+    finally:
+        await c.close()
+
+
 async def cmd_add_margin(p):
     client = signer(p["accountIndex"], p.get("apiKeyIndex", 4))
     try:
@@ -315,7 +340,7 @@ COMMANDS = {
     "selftest": cmd_selftest, "markets": cmd_markets, "resolve-account": cmd_resolve_account,
     "account": cmd_account, "intent-address": cmd_intent_address, "deposit-latest": cmd_deposit_latest,
     "register-key": cmd_register_key, "set-leverage": cmd_set_leverage,
-    "open": cmd_open, "close": cmd_close, "add-margin": cmd_add_margin, "withdraw": cmd_withdraw,
+    "open": cmd_open, "close": cmd_close, "fills": cmd_fills, "add-margin": cmd_add_margin, "withdraw": cmd_withdraw,
 }
 
 

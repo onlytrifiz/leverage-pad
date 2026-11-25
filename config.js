@@ -55,9 +55,9 @@ module.exports = {
 
   // ── economia keeper ─────────────────────────────────────────────────────────
   // Split multiply.cash: 100% perp — full degen. TUTTE le fee (lato quote)
-  // diventano collaterale della posizione. Dal profitto perp che rientra il
-  // protocollo prende il 30% (TP_MASTER_SHARE_BPS); il restante 70% fa
-  // buyback&burn, piu' il burn del lato coin delle fee a ogni tick.
+  // diventano collaterale della posizione. Al take-profit la tranche esce INTERA:
+  // tutto il suo capitale e il 70% del guadagno fanno buyback&burn, il 30% del solo
+  // guadagno va al protocollo (TP_MASTER_SHARE_BPS), piu' il burn del lato coin delle fee a ogni tick.
   // Ogni bucket resta override via env (bps, somma DEVE fare 10000).
   SPLIT_BPS: {
     perp: Number(process.env.PERPSPAD_SPLIT_PERP ?? 10000),
@@ -65,8 +65,12 @@ module.exports = {
     treasury: Number(process.env.PERPSPAD_SPLIT_TREASURY ?? 0),
     buyback: Number(process.env.PERPSPAD_SPLIT_BUYBACK ?? 0),
   },
-  OPEN_GATE_USD: Number(process.env.PERPSPAD_OPEN_GATE_USD || 20),   // apre il perp quando la riserva arriva qui
-  TOPUP_STEP_USD: Number(process.env.PERPSPAD_TOPUP_STEP_USD || 20), // ogni +N$ di riserva → top-up collaterale
+  OPEN_GATE_USD: Number(process.env.PERPSPAD_OPEN_GATE_USD || 25),   // apre il perp quando la riserva arriva qui
+  TOPUP_STEP_USD: Number(process.env.PERPSPAD_TOPUP_STEP_USD || 25), // ogni +N$ di riserva → top-up collaterale
+  // The first position waits this long from the launch, so the fees of the opening minutes go in
+  // together; after it, one tranche per interval. A closed position reopens as soon as the gate is met.
+  FIRST_OPEN_DELAY_MS: Number(process.env.PERPSPAD_FIRST_OPEN_DELAY_MS ?? 10 * 60 * 1000),
+  TRANCHE_INTERVAL_MS: Number(process.env.PERPSPAD_TRANCHE_INTERVAL_MS ?? 60 * 60 * 1000),
 
   // ── take-profit (per coin, chosen at launch and stored on the router) ───────
   // The TP is PER TRANCHE: every deposit/top-up is a tranche with its own entry, and when its
@@ -92,16 +96,19 @@ module.exports = {
     degen: { triggerPct: 1.00 },
   },
   DEFAULT_RISK: 'balanced',
-  // Preleva il profitto realizzato da Lighter sopra questa soglia. Lighter rifiuta
+  // Preleva da Lighter quanto e' uscito dal motore (capitale + guadagno) sopra questa soglia. Lighter rifiuta
   // i prelievi piccoli ("withdrawal amount is too small", misurato: $0.07 no) —
   // tenere il floor ben sopra quel minimo evita cicli di rifiuto inutili.
-  PERP_WITHDRAW_FLOOR_USD: Number(process.env.PERPSPAD_PERP_WITHDRAW_FLOOR_USD || 25),
-  TP_MASTER_SHARE_BPS: Number(process.env.PERPSPAD_TP_MASTER_SHARE_BPS || 3000),       // del profitto rientrato: 30% treasury, 70% buyback
-  BUYBACK_FLOOR_USD: Number(process.env.PERPSPAD_BUYBACK_FLOOR_USD || 25),        // sotto questa soglia il buyback aspetta
+  PERP_WITHDRAW_FLOOR_USD: Number(process.env.PERPSPAD_PERP_WITHDRAW_FLOOR_USD || 20),
+  TP_MASTER_SHARE_BPS: Number(process.env.PERPSPAD_TP_MASTER_SHARE_BPS || 3000),       // del solo guadagno: 30% treasury, 70% buyback; il capitale va tutto in buyback
+  BUYBACK_FLOOR_USD: Number(process.env.PERPSPAD_BUYBACK_FLOOR_USD || 20),        // sotto questa soglia il buyback aspetta
   BUYBACK_MAX_PER_TICK_USD: Number(process.env.PERPSPAD_BUYBACK_MAX_USD || 25),   // un tick spende al massimo questo (niente ordini block-moving)
   BUYBACK_MAX_SLIPPAGE_BPS: Number(process.env.PERPSPAD_BUYBACK_SLIPPAGE_BPS || 300), // 3%: minOut dal prezzo spot
   CREATOR_MIN_PAYOUT_USD: 1,      // payout creator sotto $1 restano in accumulo
   CLAIM_MIN_USD: 0.5,             // non chiama collect() per briciole
+
+  // tokens out of service: position closed, funds to the treasury, nothing opened again (retireTick)
+  RETIRED: new Set((process.env.PERPSPAD_RETIRED || '').toLowerCase().split(/[\s,]+/).filter((a) => /^0x[0-9a-f]{40}$/.test(a))),
 
   TICK_MS: Number(process.env.PERPSPAD_TICK_MS || 15000),
 
@@ -123,6 +130,10 @@ module.exports = {
   LIGHTER_PYTHON: process.env.PERPSPAD_LIGHTER_PYTHON || 'python3', // interprete col lighter-sdk installato
   LIGHTER_API_KEY_INDEX: Number(process.env.PERPSPAD_LIGHTER_API_KEY_INDEX || 4), // 0-3 riservati a desktop/mobile
   LIGHTER_MAX_SLIPPAGE: Number(process.env.PERPSPAD_LIGHTER_MAX_SLIPPAGE || 0.02),  // 2% sugli ordini market
+  LIGHTER_FILL_TRIES: 4,          // reads of an order's trades in the tick that sent it; then one per tick
+  LIGHTER_FILL_RETRY_MS: 1000,    // between one read and the next: trades show up after the position does
+  LIGHTER_ORDER_SETTLE_MS: 20000, // an IOC that traded less than asked (or nothing) is believed after this
+  LIGHTER_ORDER_EXPIRY_MS: 10 * 60 * 1000, // past a transaction's own expiry: what has not happened will not
   // Quota del collaterale libero effettivamente impiegata all'apertura. Lighter
   // calcola il margine richiesto sul prezzo di ESECUZIONE: impiegando il 100% del
   // saldo, basta un tick di prezzo sfavorevole tra la lettura del mark e il fill

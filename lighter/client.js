@@ -106,6 +106,8 @@ const open = ({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clie
   call('open', { accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
 const close = ({ accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
   call('close', { accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
+/** what the order with this client index traded: { size, price }, price null when nothing is seen yet */
+const fills = ({ accountIndex, marketIndex, clientOrderIndex, since = 0 }) => call('fills', { accountIndex, marketIndex, clientOrderIndex, since });
 const addMargin = ({ accountIndex, marketIndex, usdcAmount, apiPrivKey, apiKeyIndex = 4 }) =>
   call('add-margin', { accountIndex, marketIndex, usdcAmount, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
 // withdraw normale del collaterale/profitto verso il sub-wallet su 4663 (no fee/limite)
@@ -115,5 +117,5 @@ const withdraw = ({ accountIndex, amount, apiPrivKey, apiKeyIndex = 4 }) =>
 module.exports = {
   enabled, simulate, mode: MODE,
   selftest, markets, market, marketById, parseMarket, maxLeverageFromImf, resolveAccount, account,
-  intentAddress, depositLatest, registerKey, setLeverage, open, close, addMargin, withdraw,
+  intentAddress, depositLatest, registerKey, setLeverage, open, close, fills, addMargin, withdraw,
 };

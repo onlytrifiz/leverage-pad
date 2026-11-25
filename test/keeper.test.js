@@ -343,9 +343,9 @@ test('fundingDelta: applica solo la differenza, e non inventa crediti', async (t
   // numeri veri: coin 0x3cb1… su NVDA, total_funding_paid_out -0.211445 cumulato
   const pos = (mid, cum) => ({ market_id: mid, total_funding_paid_out: cum });
 
-  await t.test('prima lettura: il cumulato e tutto delta', () => {
+  await t.test('prima lettura: da li si comincia a contare', () => {
     const r = fundingDelta({}, [pos(15, -0.211445)]);
-    near(r.delta, -0.211445);
+    near(r.delta, 0);
     assert.deepEqual(r.seen, { 15: -0.211445 });
   });
 
@@ -364,8 +364,17 @@ test('fundingDelta: applica solo la differenza, e non inventa crediti', async (t
     const closed = { market_id: 15, size: '0.0000', total_funding_paid_out: null };
     const r = fundingDelta({ 15: -8 }, [closed]);
     near(r.delta, 0);
-    assert.deepEqual(r.seen, {}, 'a new position starts from zero');
-    near(fundingDelta(r.seen, [{ market_id: 15, size: '1', total_funding_paid_out: -0.5 }]).delta, -0.5);
+    assert.deepEqual(r.seen, {});
+  });
+  // live, account 56399, 25 Nov 2026: BTC short closed by its take-profit and reopened 44s later
+  await t.test('closed and reopened: a counter that carries on is not paid twice, one that restarts is not refunded', () => {
+    const closed = [{ market_id: 1, size: '0.00000', total_funding_paid_out: null }];
+    for (const again of [0.005598, 0]) {
+      const gone = fundingDelta({ 1: 0.005598 }, closed);
+      const back = fundingDelta(gone.seen, [{ market_id: 1, size: '0.00689', total_funding_paid_out: again }]);
+      near(back.delta, 0);
+      near(fundingDelta(back.seen, [{ market_id: 1, size: '0.00689', total_funding_paid_out: again - 0.01 }]).delta, -0.01);
+    }
   });
   await t.test('posizione aperta senza il campo: la baseline resta', () => {
     const r = fundingDelta({ 15: -8 }, [{ market_id: 15, size: '1', total_funding_paid_out: null }]);
@@ -397,7 +406,7 @@ test('fundingDelta: applica solo la differenza, e non inventa crediti', async (t
   });
 
   await t.test('piu mercati: i delta si sommano', () => {
-    const r = fundingDelta({ 15: -0.2 }, [pos(15, -0.3), pos(2, -0.05)]);
+    const r = fundingDelta({ 15: -0.2, 2: 0 }, [pos(15, -0.3), pos(2, -0.05)]);
     near(r.delta, -0.15);
   });
 });

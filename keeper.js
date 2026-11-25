@@ -304,27 +304,6 @@ function strayPositions(positions, marketIndex, side) {
   });
 }
 
-/**
- * The result of closing (part of) a position because the engine moved, in USD, signed.
- *
- * `bookPnl` is what the tranches say at the mark (the same bookkeeping take-profits use, so
- * nothing is banked twice), capped at what the venue says the same size made. A close at market
- * costs slippage the mark does not show, and at high leverage it is most of a thin profit: it is
- * measured on the account itself (equity, unrealized included, before and after) and taken off.
- * When it cannot be measured (no equity, or a deposit may have landed in between) the worst the
- * order accepted is taken off instead.
- */
-function switchPnl({ bookPnl, venuePnl, equityBefore, equityAfter, notional, maxSlippage, depositPending }) {
-  let pnl = Number(bookPnl || 0);
-  // the book enters at the mark an order was sized at, the venue at the price it filled: what the
-  // opening cost is in its number and not in ours
-  if (Number.isFinite(venuePnl)) pnl = Math.min(pnl, venuePnl);
-  // closing turns the unrealized into cash: with no slippage the equity does not move
-  const measured = Number.isFinite(equityBefore) && Number.isFinite(equityAfter) ? equityBefore - equityAfter : NaN;
-  const blind = !Number.isFinite(measured) || (measured < 0 && depositPending);
-  return pnl - (blind ? notional * maxSlippage : Math.max(0, measured));
-}
-
 /** a leftover the venue refused to close for being too small, and not grown since */
 const isDust = (st, p) => st.perpDust != null && Math.abs(Number(p.size)) <= Number(st.perpDust[p.market_id] ?? -1);
 
@@ -348,9 +327,8 @@ function fundingDelta(seen, positions) {
   let delta = 0;
   for (const p of positions || []) {
     const mid = String(p.market_id);
-    // A slot the venue keeps for a closed position (size 0, no cumulative). Its baseline goes: a
-    // position opened there later starts from zero. Reading it as "0 paid" would hand back as
-    // profit all the funding the closed one had paid.
+    // A slot the venue keeps for a closed position (size 0, no cumulative). Its baseline goes:
+    // reading it as "0 paid" would hand back as profit all the funding the closed one had paid.
     if (p.size != null && Number(p.size) === 0) continue;
     const cum = p.total_funding_paid_out == null ? NaN : Number(p.total_funding_paid_out);
     // campo assente (API vecchia o mercato senza funding): la baseline si conserva
@@ -359,7 +337,10 @@ function fundingDelta(seen, positions) {
       if (prev[mid] !== undefined) next[mid] = prev[mid];
       continue;
     }
-    delta += cum - Number(prev[mid] || 0);
+    // The first reading of a position is where counting starts, whatever it says: after a close
+    // the venue's counter restarts from zero or carries on with what is already in the books
+    // (seen live: BTC short closed and reopened, the same +0.005598 read again and paid twice).
+    if (prev[mid] !== undefined) delta += cum - Number(prev[mid]);
     next[mid] = cum;
   }
   return { delta, seen: next };
@@ -585,6 +566,12 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   const quote = erc20(coin.pair);
   const coinC = erc20(token);
 
+  if (config.RETIRED.has(token.toLowerCase())) {
+    await retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote);
+    st.lastTickTs = Date.now();
+    return;
+  }
+
   // una coin lanciata con metadata non validi non ha un motore: le sue fee restano
   // visibili nel sink e nessuna posizione viene mai aperta (niente da servire)
   if (coin.engineError) {
@@ -597,10 +584,10 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   // morto (o il sidecar e' andato in timeout) DOPO l'invio ma prima della conferma.
   // Trattarlo come inviato e' la scelta sicura: se il withdraw non e' mai partito,
   // il pending resta li' senza credito (0a accredita solo USDG arrivati davvero).
-  if (Number(st.perpWithdrawIntentUsd) > 0) {
+  // An intent that knows the cash it was sent from is settled on it, in perpTick.
+  if (Number(st.perpWithdrawIntentUsd) > 0 && st.perpWithdrawCashUsd == null) {
     const amt = Number(st.perpWithdrawIntentUsd);
-    st.perpWithdrawPendingUsd = Number(st.perpWithdrawPendingUsd || 0) + amt;
-    st.perpWithdrawIntentUsd = 0;
+    intentToPending(st);
     if (!st.perpWithdrawBlock) { st.perpWithdrawBlock = await provider.getBlockNumber(); st.perpWithdrawScanBlock = st.perpWithdrawBlock - 1; }
     checkpoint();
     console.log(`  [${coin.symbol}] withdraw con esito ambiguo ($${amt.toFixed(2)}): trattato come inviato — verra' accreditato solo all'arrivo reale`);
@@ -611,6 +598,7 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   // qualunque altro inflow durante la finestra del withdraw e' il settlement.
   // Cosi' fee incassate da collect() esterne o fondi orfani non vengono piu'
   // scambiati per profitto, e il profitto vero non resta orfano.
+  let seenTo = null; // the last block whose arrivals have been credited
   if (Number(st.perpWithdrawPendingUsd) > 0) {
     if (!st.perpWithdrawBlock) { st.perpWithdrawBlock = await provider.getBlockNumber(); st.perpWithdrawScanBlock = st.perpWithdrawBlock - 1; checkpoint(); }
     const latest = await provider.getBlockNumber();
@@ -629,14 +617,16 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
       const pendingRaw = rawFromUsd(Number(st.perpWithdrawPendingUsd), coin.pairDecimals, unitUsd);
       const creditRaw = bridgedRaw.lt(pendingRaw) ? bridgedRaw : pendingRaw;
       st.perpWithdrawScanBlock = latest;
+      seenTo = latest;
       if (creditRaw.gt(0) && usdOf(creditRaw, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD) {
-        const toTreasury = creditRaw.mul(config.TP_MASTER_SHARE_BPS).div(10000);
-        const toBuyback = creditRaw.sub(toTreasury);
+        const pendingUsd = Number(st.perpWithdrawPendingUsd), pendingProfitUsd = Number(st.perpWithdrawPendingProfitUsd || 0);
+        const { toTreasury, toBuyback } = splitArrival(creditRaw, pendingUsd, pendingProfitUsd);
         st.buybackReserveRaw = BN(st.buybackReserveRaw).add(toBuyback).toString();
         st.treasuryOwedRaw = BN(st.treasuryOwedRaw).add(toTreasury).toString();
-        st.perpWithdrawPendingUsd = Math.max(0, Number(st.perpWithdrawPendingUsd) - usdOf(creditRaw, coin.pairDecimals, unitUsd));
-        if (st.perpWithdrawPendingUsd < 0.01) { st.perpWithdrawPendingUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
-        console.log(`  [${coin.symbol}] profitto perp rientrato dal bridge: $${usdOf(creditRaw, coin.pairDecimals, unitUsd).toFixed(2)} → ${(10000 - config.TP_MASTER_SHARE_BPS) / 100}% buyback / ${config.TP_MASTER_SHARE_BPS / 100}% treasury`);
+        st.perpWithdrawPendingUsd = Math.max(0, pendingUsd - usdOf(creditRaw, coin.pairDecimals, unitUsd));
+        st.perpWithdrawPendingProfitUsd = pendingProfitUsd * (st.perpWithdrawPendingUsd / pendingUsd);
+        if (st.perpWithdrawPendingUsd < 0.01) { st.perpWithdrawPendingUsd = 0; st.perpWithdrawPendingProfitUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
+        console.log(`  [${coin.symbol}] rientrato dal bridge: $${usdOf(creditRaw, coin.pairDecimals, unitUsd).toFixed(2)} → $${usdOf(toBuyback, coin.pairDecimals, unitUsd).toFixed(2)} buyback / $${usdOf(toTreasury, coin.pairDecimals, unitUsd).toFixed(2)} treasury`);
       }
       checkpoint(); // persiste comunque lo scanBlock (mai ricontare gli stessi log)
     }
@@ -646,9 +636,11 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   // Qualunque USDG del sub-wallet oltre i bucket noti (fee incassate da collect()
   // esterne, fondi rimasti orfani da un crash, invii di terzi) torna a lavorare
   // nel motore. Con lo split 100% perp e' anche la destinazione naturale.
-  {
+  if (!(Number(st.perpWithdrawIntentUsd) > 0) && (seenTo != null || !(Number(st.perpWithdrawPendingUsd) > 0))) {
     const accounted = BN(st.buybackReserveRaw).add(st.creatorOwedRaw).add(st.treasuryOwedRaw).add(st.perpReserveRaw);
-    const real = await quote.balanceOf(sub.address);
+    // while a withdrawal is on its way the balance is read where its arrivals were looked for:
+    // one that landed since would be swept now and credited again at the next tick
+    const real = await quote.balanceOf(sub.address, ...(seenTo != null ? [{ blockTag: seenTo }] : []));
     const surplus = real.gt(accounted) ? real.sub(accounted) : ethers.constants.Zero;
     if (usdOf(surplus, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD) {
       st.perpReserveRaw = BN(st.perpReserveRaw).add(surplus).toString();
@@ -748,56 +740,305 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   st.lastTickTs = Date.now();
 }
 
-// ── gamba perp su Lighter (profilo ROBINHOOD) ───────────────────────────────
-// Collaterale USDG che entra da Robinhood Chain (4663) via intent-address; ogni
-// sub-wallet e' il proprio account Lighter. Contabilita' conservativa: la riserva
-// perp si decrementa SOLO quando gli USDG lasciano davvero il sub-wallet verso
-// l'intent-address; il profitto realizzato resta su Lighter (serve un withdraw
-// per bruciarlo) e NON viene accreditato al buyback finche' non torna on-chain.
-// quanta size e' USCITA davvero dalla posizione dopo un close (fill reale).
-// Rilegge la posizione e confronta con la size attesa prima dell'ordine; su
-// errore di lettura resta conservativo (0 = nessun credito, si ritenta al tick dopo).
-async function closedBaseAfter(accountIndex, marketIndex, side, sizeDec, baseBefore, requested) {
-  try {
-    const acc = await lighter.account(accountIndex);
-    const p = (acc.positions || []).find((x) => Number(x.market_id) === Number(marketIndex));
-    const after = p && p.size != null ? Math.round(Math.abs(Number(p.size)) * 10 ** sizeDec) : 0;
-    return Math.max(0, Math.min(requested, baseBefore - after));
-  } catch (e) {
-    console.log(`  fill non verificabile (${e.message.slice(0, 60)}): nessun credito, ritento al tick dopo`);
-    return 0;
-  }
+/** a client order index no other order of the account has: its trades are found by it */
+let lastOrderId = 0;
+const orderId = () => (lastOrderId = Math.max(Date.now(), lastOrderId + 1));
+
+const pause = () => new Promise((r) => setTimeout(r, config.LIGHTER_FILL_RETRY_MS));
+const isolatedCash = (acc) => Number(acc.collateral ?? acc.available_balance ?? 0);
+
+/**
+ * What a close took out of the engine, in USD, as the venue pays it: the margin of the part closed
+ * and its result against the position's AVERAGE entry. A tranche decides when and how much to close
+ * by its own entry, but Lighter holds one netted position and that is the cash it releases; the
+ * difference stays in the position and comes out with the tranches that are left.
+ */
+function closeProceeds({ filled, base, price, avgEntry, margin, side, sizeDec }) {
+  const pnl = (side === 'short' ? avgEntry - price : price - avgEntry) * filled / 10 ** sizeDec;
+  return { pnl, profit: Math.max(0, pnl), capital: Math.max(0, margin * filled / base + Math.min(0, pnl)) };
 }
 
-// speculare per l'open: quanta size e' ENTRATA davvero (fill reale dell'IOC).
-async function openedBaseAfter(accountIndex, marketIndex, side, sizeDec, baseBefore, requested) {
-  try {
-    const acc = await lighter.account(accountIndex);
-    // a leftover on the other side is not what we opened
-    const p = (acc.positions || []).find((x) => Number(x.market_id) === Number(marketIndex) && !strayPositions([x], marketIndex, side).length);
-    const after = p && p.size != null ? Math.round(Math.abs(Number(p.size)) * 10 ** sizeDec) : 0;
-    return Math.max(0, Math.min(requested, after - baseBefore));
-  } catch (e) {
-    console.log(`  fill open non verificabile (${e.message.slice(0, 60)}): nessuna tranche registrata, la riconciliazione sistemera' al tick dopo`);
-    return 0;
-  }
+/** the order in flight, on disk before it is sent: a crash or a timeout loses nothing of it */
+function recordOrder(st, checkpoint, o) {
+  st.perpOrder = { id: orderId(), at: Date.now(), sent: false, ...o };
+  checkpoint();
+  return st.perpOrder;
 }
 
-/** funding since the last read, into the realized (see step 5b) */
+/**
+ * Settles the order in flight on what it TRADED, found by its index: the only answer that is the
+ * same before and after a crash, a timeout or a stale read. Until it is known nothing else touches
+ * the account. An IOC is over in seconds: short of what was asked it is believed after a while, and
+ * one whose sending is unknown after its own expiry. Returns false while still unknown.
+ */
+async function settleOrder({ coin, st, checkpoint, accountIndex, tries = 1 }) {
+  const o = st.perpOrder;
+  if (!o) return true;
+  for (let i = 0; i < tries; i++) {
+    if (i) await pause();
+    let f = null, acc;
+    try { f = await lighter.fills({ accountIndex, marketIndex: o.marketIndex, clientOrderIndex: o.id, since: o.at }); } catch { /* unknown */ }
+    try { acc = await lighter.account(accountIndex); } catch { continue; }
+    const age = Date.now() - o.at;
+    const late = age >= 2 * config.LIGHTER_ORDER_EXPIRY_MS;
+    if (!f && !late) continue;
+    const price = f ? Number(f.price) : NaN;
+    const traded = price > 0 ? Math.min(Math.round(Number(f.size) * 10 ** o.sizeDec), o.ask ?? Infinity) : 0;
+    const p = (acc.positions || []).find((x) => Number(x.market_id) === Number(o.marketIndex));
+    const here = p && (Number(p.sign) === -1 ? 'short' : 'long') === o.side ? Math.round(Math.abs(Number(p.size)) * 10 ** o.sizeDec) : 0;
+    const moved = Math.min(o.ask ?? Infinity, Math.max(0, o.kind === 'open' ? here - o.base : o.base - here));
+    const whole = o.ask != null && traded >= o.ask;
+    // counted from when the venue said yes; without its answer, from past the call's own timeout
+    const quiet = Date.now() - (o.sent ? Number(o.sentAt || o.at) : o.at + 60_000);
+    const over = whole || (traded >= moved && (age >= config.LIGHTER_ORDER_EXPIRY_MS || ((o.sent || traded > 0) && quiet >= config.LIGHTER_ORDER_SETTLE_MS)));
+    if (!over && !late) continue;
+    st.perpOrder = null;
+    if (over) bookOrder(coin, st, o, traded, price);
+    else {
+      // its trades never showed up: what the position and the cash did instead
+      const guess = priceFromAccount(o, moved, acc, p);
+      console.log(`  [${coin.symbol}] order ${o.kind} ${o.side}: no trades to read after ${Math.round(age / 60000)} min, booked from the account (${moved} @ ${guess})`);
+      bookOrder(coin, st, o, guess > 0 ? moved : 0, guess);
+    }
+    checkpoint();
+    return true;
+  }
+  if (tries > 1) console.log(`  [${coin.symbol}] order ${o.kind} ${o.side}: not settled yet, nothing else moves until it is`);
+  return false;
+}
+
+/**
+ * The price an order must have had for the account to be where it is: an opening from the average
+ * entry, a close from the cash it left, never better than the mark it was sent at (a deposit landed
+ * meanwhile is not a gain).
+ */
+function priceFromAccount(o, moved, acc, p) {
+  if (!(moved > 0)) return 0;
+  const units = moved / 10 ** o.sizeDec;
+  if (o.kind === 'open') {
+    const px = (Number(p.avg_entry_price) * (o.base + moved) - Number(o.avgEntry || 0) * o.base) / moved;
+    return px > 0 ? px : Number(p.avg_entry_price);
+  }
+  const dir = o.side === 'short' ? -1 : 1;
+  const got = isolatedCash(acc) - Number(o.cash || 0) - o.margin * moved / o.base;
+  const atMark = dir * (Number(o.mark || o.avgEntry) - o.avgEntry) * units;
+  return Math.max(1e-12, o.avgEntry + dir * Math.min(got, atMark) / units);
+}
+
+/** one settled order into the books: everything it changes, in the caller's one checkpoint */
+function bookOrder(coin, st, o, filled, price) {
+  if (!Array.isArray(st.perpTranches)) st.perpTranches = [];
+  const units = filled / 10 ** o.sizeDec;
+  if (o.kind === 'open') {
+    if (filled <= 0) {
+      console.log(`  [${coin.symbol}] perp open NON riempito (IOC senza controparte: book vuoto o mercato chiuso?): collaterale intatto, riprovo al tick dopo`);
+      return;
+    }
+    const { merged } = addTranche(st.perpTranches, { base: filled, entryMark: price, collateralUsd: units * price / o.leverage, sizeDec: o.sizeDec, ts: o.at, leverage: o.leverage }, o.minBaseUnits);
+    const topup = st.perpOpen;
+    st.perpOpen = true; st.perpCarry = false;
+    st.perpFilling = Number(o.split || 0) > 0 || (o.ask != null && filled < o.ask * 0.99);
+    st.perpOpenSplit = Math.max(0, Number(o.split || 0) - 1);
+    st.perpTrancheAt = Date.now();
+    console.log(`  [${coin.symbol}] perp ${topup ? 'topup' : 'open'}: notional $${(units * price).toFixed(2)} ${o.side} ${o.leverage}x (fill ${filled}/${o.ask ?? '?'} @ ${price})${merged ? ' — scheggia fusa nella tranche precedente' : ''}`);
+    return;
+  }
+  const out = filled > 0 ? closeProceeds({ filled, base: o.base, price, avgEntry: o.avgEntry, margin: o.margin, side: o.side, sizeDec: o.sizeDec }) : null;
+  if (o.kind === 'tp') {
+    if (!out) { console.log(`  [${coin.symbol}] TAKE-PROFIT: nessun fill (book vuoto o mercato chiuso?), riprovo al tick dopo`); return; }
+    st.perpTranches = removeClosedBase(o.ready, filled).concat(o.keep);
+    st.perpOpen = st.perpTranches.length > 0; st.perpTpSplit = 0;
+    st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + out.profit;
+    st.perpCapitalUsd = Number(st.perpCapitalUsd || 0) + out.capital;
+    console.log(`  [${coin.symbol}] TAKE-PROFIT (+${o.tpPct}%): chiusa base ${filled}/${o.ask} @ ${price}, fuori dal motore $${out.capital.toFixed(2)} di capitale + $${out.profit.toFixed(2)} di guadagno`);
+    return;
+  }
+  if (o.kind === 'retire') {
+    if (out) { st.perpTranches = []; st.perpOpen = filled < o.base; st.perpTpSplit = 0; }
+    console.log(`  [${coin.symbol}] retired: ${out ? `closed ${o.label} ${filled}/${o.base} @ ${price}, result $${out.pnl.toFixed(2)}` : `closing ${o.label} did not fill, trying again`}`);
+    return;
+  }
+  // a managed coin's switch: the capital stays for the new engine, a net gain is banked
+  const sw = st.perpSwitch || (st.perpSwitch = { from: st.perpEngine, to: { market: coin.market, side: coin.side }, since: o.at });
+  if (!out) {
+    sayOnce(coin, sw, `closing ${o.label} did not fill (empty book or market closed), trying again every tick`);
+    noteSmall(coin, st, sw, o);
+    return;
+  }
+  sw.split = Math.max(0, Number(sw.split || 0) - 1);
+  const left = o.base - filled;
+  if (o.own) {
+    if (st.perpTranches.length) {
+      sw.pnl = Number(sw.pnl || 0) + out.pnl;
+      st.perpTranches = reconcileTranches(reconcileTranches(st.perpTranches, o.base, price, o.sizeDec).tranches, left, price, o.sizeDec).tranches;
+    }
+    st.perpOpen = left > 0;
+  }
+  console.log(`  [${coin.symbol}] switch: closed ${o.label} ${filled}/${o.base} @ ${price}, result so far $${Number(sw.pnl || 0).toFixed(2)}`);
+  if (left === 0) bankSwitch(coin, st);
+}
+
+/** the same trouble every tick is one line, not one line every tick */
+function sayOnce(coin, sw, msg) {
+  if (sw.said === msg) return;
+  sw.said = msg; console.log(`  [${coin.symbol}] switch: ${msg}`);
+}
+
+/** a leftover below the venue's minimum, refused or not filled three times, is left alone */
+function noteSmall(coin, st, sw, { marketIndex, base, minAsk, label, size }) {
+  if (base >= minAsk) return;
+  sw.small = { ...(sw.small || {}), [marketIndex]: Number((sw.small || {})[marketIndex] || 0) + 1 };
+  if (sw.small[marketIndex] < 3) return;
+  if (!st.perpDust) st.perpDust = {};
+  st.perpDust[marketIndex] = size;
+  sayOnce(coin, sw, `${label} leftover of ${base} units is below the venue's minimum, left alone`);
+}
+
+/** what left the engine and is still in the Lighter account: gains (less funding owed) and capital */
+const outOfEngine = (st) => Math.max(0, Number(st.perpRealizedUsd || 0) + Number(st.perpCapitalUsd || 0));
+
+/**
+ * The next withdrawal: all that left the engine, never more than the cash there is. Closing some
+ * tranches of a netted position pays at its average entry, so the cash can come later than the
+ * book says; what is not there yet waits. `profit` is the part the protocol's share is taken on.
+ */
+function withdrawalOf(st, cash) {
+  const total = outOfEngine(st);
+  const amount = Math.min(total, Math.max(0, cash));
+  if (!(amount > 0)) return { amount: 0, profit: 0 };
+  return { amount, profit: Math.min(total, Math.max(0, Number(st.perpRealizedUsd || 0))) * (amount / total) };
+}
+
+/**
+ * Sends what left the engine home. On disk before it is sent, with the cash it is sent from: it is
+ * believed only when that cash is gone (settleWithdrawal), and nothing else moves until then.
+ * Returns true when one may have left: the tick ends there. A refusal (below the venue's minimum) is
+ * tried again later, and holds nothing else.
+ */
+async function withdrawProceeds({ coin, st, checkpoint, accountIndex, apiPrivKey, apiKeyIndex, sim, tag, floor = config.PERP_WITHDRAW_FLOOR_USD }) {
+  if (outOfEngine(st) < floor || Date.now() < Number(st.perpWithdrawRetryAt || 0)) return false;
+  const now = await lighter.account(accountIndex);
+  const cash = isolatedCash(now);
+  const { amount: exact, profit: exactProfit } = withdrawalOf(st, Math.min(cash, Number(now.available_balance ?? cash)));
+  const amount = Math.floor(exact * 1e6) / 1e6; // USDC's own decimals, never rounded over the balance
+  const profit = Math.min(amount, exactProfit);
+  if (amount < floor) return false; // the cash is not all there yet
+  if (sim) {
+    console.log(`  [${coin.symbol}] ${tag}preleverei $${amount.toFixed(2)} da Lighter → sub-wallet ($${profit.toFixed(2)} di guadagno)`);
+    return false;
+  }
+  // the block before the intent: an arrival seen before it would be nobody's
+  if (!st.perpWithdrawBlock) { st.perpWithdrawBlock = await provider.getBlockNumber(); st.perpWithdrawScanBlock = st.perpWithdrawBlock - 1; }
+  const was = { realized: Number(st.perpRealizedUsd || 0), capital: Number(st.perpCapitalUsd || 0) };
+  // the gain goes for its part, the capital for the rest; funding owed (a negative gain) has
+  // already been taken off the total
+  st.perpRealizedUsd = was.realized < 0 ? 0 : was.realized - profit;
+  st.perpCapitalUsd = Math.max(0, was.capital + Math.min(0, was.realized) - (amount - profit));
+  if (st.perpCapitalUsd < 1e-6) st.perpCapitalUsd = 0;
+  if (Math.abs(st.perpRealizedUsd) < 1e-6) st.perpRealizedUsd = 0;
+  st.perpWithdrawIntentUsd = amount; st.perpWithdrawIntentProfitUsd = profit;
+  st.perpWithdrawCashUsd = cash; st.perpWithdrawAt = Date.now(); st.perpWithdrawWas = was; st.perpWithdrawSent = false;
+  checkpoint();
+  try {
+    await lighter.withdraw({ accountIndex, amount, apiPrivKey, apiKeyIndex });
+    st.perpWithdrawSent = true; checkpoint();
+    console.log(`  [${coin.symbol}] withdraw: $${amount.toFixed(2)} da Lighter → sub-wallet, di cui $${profit.toFixed(2)} di guadagno`);
+  } catch (e) {
+    if (e && e.definitive) {
+      // es. importo sotto il minimo di Lighter: non e' partito nulla
+      undoWithdrawal(st); st.perpWithdrawRetryAt = Date.now() + 30 * 60 * 1000; checkpoint();
+      console.log(`  [${coin.symbol}] withdraw rifiutato da Lighter ($${amount.toFixed(2)}): riaccreditato, si ritenta piu' avanti (${e.message.slice(0, 80)})`);
+      return false;
+    } else console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} con esito ignoto (${e.message.slice(0, 80)}): lo dira' il saldo`);
+  }
+  return true;
+}
+
+function clearIntent(st) {
+  st.perpWithdrawIntentUsd = 0; st.perpWithdrawIntentProfitUsd = 0;
+  st.perpWithdrawCashUsd = null; st.perpWithdrawWas = null; st.perpWithdrawSent = false;
+}
+function undoWithdrawal(st) {
+  st.perpRealizedUsd = st.perpWithdrawWas.realized; st.perpCapitalUsd = st.perpWithdrawWas.capital;
+  clearIntent(st);
+  // an old window left open would take somebody's later transfer for this withdrawal
+  if (!(Number(st.perpWithdrawPendingUsd) > 0)) { st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
+}
+function intentToPending(st) {
+  st.perpWithdrawPendingUsd = Number(st.perpWithdrawPendingUsd || 0) + Number(st.perpWithdrawIntentUsd);
+  st.perpWithdrawPendingProfitUsd = Number(st.perpWithdrawPendingProfitUsd || 0) + Number(st.perpWithdrawIntentProfitUsd || 0);
+  clearIntent(st);
+}
+
+/** did the withdrawal in flight leave? Its cash says so; false while it does not say yet */
+async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
+  const amount = Number(st.perpWithdrawIntentUsd || 0);
+  if (!(amount > 0) || st.perpWithdrawCashUsd == null) return true;
+  const cash = isolatedCash(await lighter.account(accountIndex));
+  const age = Date.now() - Number(st.perpWithdrawAt || 0);
+  if (cash <= Number(st.perpWithdrawCashUsd) - amount / 2) {
+    intentToPending(st); checkpoint();
+    console.log(`  [${coin.symbol}] withdraw: $${amount.toFixed(2)} in arrivo`);
+    return true;
+  }
+  if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
+  // Never executed, or hidden by a deposit that landed meanwhile. Taken back only when the venue
+  // never said yes and the cash is to the cent what it was; otherwise it may have left: it is
+  // treated as sent, and credited only if it really arrives.
+  if (st.perpWithdrawSent || Math.abs(cash - Number(st.perpWithdrawCashUsd)) > 0.01) {
+    intentToPending(st);
+    console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} non verificabile: trattato come inviato`);
+  } else {
+    undoWithdrawal(st);
+    console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} mai eseguito: riaccreditato`);
+  }
+  checkpoint();
+  return true;
+}
+
+/**
+ * Whether the fees waiting may leave for Lighter now. The first position waits a little after the
+ * launch, an open one takes a tranche per interval, a closed one reopens at once; and never while
+ * the deposit before is still on its way, or the next would be left over for an interval.
+ */
+function depositDue({ coin, st, usd, now = Date.now() }) {
+  if (usd < (st.perpOpen ? config.TOPUP_STEP_USD : config.OPEN_GATE_USD)) return false;
+  if (Number(st.perpWithdrawIntentUsd || 0) > 0) return false; // its cash is being watched
+  if (st.perpOpen) return now - Math.max(Number(st.perpTrancheAt || 0), Number(st.perpDepositAt || 0)) >= config.TRANCHE_INTERVAL_MS;
+  if (!(Number(st.perpDepositedUsd) > 0)) {
+    const born = Date.parse(coin.createdAt);
+    if (Number.isFinite(born) && now - born < config.FIRST_OPEN_DELAY_MS) return false;
+  }
+  const inFlight = Number(st.perpDepositAt || 0) > Number(st.perpTrancheAt || 0) && now - Number(st.perpDepositAt) < 10 * 60 * 1000;
+  return !inFlight;
+}
+
+/** an opening filled in part a moment ago: the rest of it may go in without waiting */
+const filling = (st, now = Date.now()) => st.perpFilling === true && now - Number(st.perpTrancheAt || 0) < 10 * 60 * 1000;
+
+/** the least free collateral worth an order: a tranche's, unless it is finishing one or carrying on after a switch */
+function minDeploy(st) {
+  if (filling(st) || st.perpCarry) return config.MIN_DEPLOY_USD;
+  const step = st.perpOpen ? config.TOPUP_STEP_USD : config.OPEN_GATE_USD;
+  return Math.max(config.MIN_DEPLOY_USD, step * config.COLLATERAL_HEADROOM * 0.9);
+}
+
+/** an arrival from the bridge: the protocol's share of its gain, everything else buys back */
+function splitArrival(creditRaw, pendingUsd, pendingProfitUsd) {
+  const ppm = pendingUsd > 0 ? Math.round(Math.max(0, Math.min(1, pendingProfitUsd / pendingUsd)) * 1e6) : 0;
+  const toTreasury = creditRaw.mul(ppm).div(1e6).mul(config.TP_MASTER_SHARE_BPS).div(10000);
+  return { toTreasury, toBuyback: creditRaw.sub(toTreasury) };
+}
+
+/** funding since the last read, for the record (see step 5b) */
 function applyFunding(coin, st, positions, { sim, tag, checkpoint }) {
   const f = fundingDelta(st.perpFundingSeen, positions);
   st.perpFundingSeen = f.seen;
   if (Math.abs(f.delta) < 0.000001) return;
   st.perpFundingUsd = Number(st.perpFundingUsd || 0) + f.delta;
-  st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + f.delta;
   if (!sim) checkpoint();
-  console.log(`  [${coin.symbol}] ${tag}funding ${f.delta >= 0 ? '+' : ''}$${f.delta.toFixed(6)} (cumulato $${Number(st.perpFundingUsd).toFixed(6)}): realizzato ora $${Number(st.perpRealizedUsd).toFixed(2)}`);
+  console.log(`  [${coin.symbol}] ${tag}funding ${f.delta >= 0 ? '+' : ''}$${f.delta.toFixed(6)} (cumulato $${Number(st.perpFundingUsd).toFixed(6)})`);
 }
-
-const equityOf = (acc) => {
-  const v = acc && acc.raw ? acc.raw.total_asset_value : undefined;
-  return v == null ? NaN : Number(v);
-};
 
 /** the net result of a switch, once: a profit is realized, a loss has already left the collateral */
 function bankSwitch(coin, st) {
@@ -821,6 +1062,7 @@ function bankSwitch(coin, st) {
 async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIndex, apiPrivKey, apiKeyIndex, sim, tag }) {
   const now = { market: coin.market, side: coin.side };
   const same = (e) => e && e.market === now.market && e.side === now.side;
+  if (!await settleOrder({ coin, st, checkpoint, accountIndex })) return true;
   if (same(st.perpEngine) && !st.perpSwitch) return false;
 
   const acc = await lighter.account(accountIndex);
@@ -837,7 +1079,10 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
       console.log(`  [${coin.symbol}] ${tag}switch: the ${from.market} ${from.side} position is gone, its tranches are dropped`);
       st.perpTranches = []; st.perpOpen = false;
     }
-    if (st.perpSwitch) console.log(`  [${coin.symbol}] ${tag}switch done: now ${now.market} ${now.side}`);
+    if (st.perpSwitch) {
+      console.log(`  [${coin.symbol}] ${tag}switch done: now ${now.market} ${now.side}`);
+      st.perpCarry = !st.perpOpen; // the old engine's capital opens the new one, whatever is left of it
+    }
     bankSwitch(coin, st); // a change taken back half way: what was already closed
     st.perpEngine = now; st.perpSwitch = null;
     if (!sim) checkpoint();
@@ -852,10 +1097,7 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
   applyFunding(coin, st, acc.positions, { sim, tag, checkpoint });
 
   const sw = st.perpSwitch;
-  const say = (msg) => { // the same trouble every tick is one line, not one line every tick
-    if (sw.said === msg) return;
-    sw.said = msg; console.log(`  [${coin.symbol}] ${tag}switch: ${msg}`);
-  };
+  const say = (msg) => sayOnce(coin, sw, msg);
   for (const p of strays) {
     const m = await lighter.marketById(p.market_id);
     if (!m) { say(`market ${p.market_id} is not on the venue's list, waiting`); continue; }
@@ -874,56 +1116,84 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
     const split = Number(sw.split || 0);
     let ask = split > 0 ? Math.min(base, Math.max(minAsk, Math.floor(base / 2 ** split))) : base;
     if (base - ask < minAsk) ask = base; // never leave behind what could not be closed on its own
-    const smallTry = () => {
-      if (base >= minAsk) return;
-      sw.small = { ...(sw.small || {}), [p.market_id]: Number((sw.small || {})[p.market_id] || 0) + 1 };
-      if (sw.small[p.market_id] < 3) return;
-      st.perpDust[p.market_id] = Math.abs(Number(live.size));
-      say(`${label} leftover of ${base} units is below the venue's minimum, left alone`);
-    };
+    const own = m.symbol === from.market && side === from.side;
+    const note = { marketIndex: Number(p.market_id), base, minAsk, label, size: Math.abs(Number(live.size)) };
+    const margin = Number(live.allocated_margin) > 0 ? Number(live.allocated_margin) : 0;
+    const o = recordOrder(st, checkpoint, { kind: 'switch', side, sizeDec: m.sizeDec, ask, own, margin, mark, cash: isolatedCash(before), avgEntry: Number(live.avg_entry_price), ...note });
     try {
-      await lighter.close({ accountIndex, marketIndex: p.market_id, baseAmount: ask, isAsk: side === 'long', maxSlippage: config.LIGHTER_MAX_SLIPPAGE, apiPrivKey, apiKeyIndex });
+      await lighter.close({ accountIndex, marketIndex: p.market_id, baseAmount: ask, isAsk: side === 'long', maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
     } catch (e) {
-      if (!(e && e.definitive)) throw e;
+      if (!(e && e.definitive)) throw e; // unknown: the order stays on record and is settled on its trades
+      st.perpOrder = null;
       sw.split = split >= 5 ? 0 : split + 1;
       say(`closing ${label} refused (${e.message.slice(0, 100)}), trying again with other sizes`);
-      smallTry(); checkpoint();
+      noteSmall(coin, st, sw, note); checkpoint();
       continue;
     }
-    let after;
-    try { after = await lighter.account(accountIndex); }
-    catch (e) { console.log(`  [${coin.symbol}] switch: fill not readable (${e.message.slice(0, 60)}), no credit, next tick reads it again`); continue; }
-    const left = (after.positions || []).find((x) => Number(x.market_id) === Number(p.market_id));
-    const leftBase = left && Number(left.sign) === Number(p.sign) ? Math.round(Math.abs(Number(left.size)) * 10 ** m.sizeDec) : 0;
-    const filled = Math.max(0, Math.min(ask, base - leftBase));
-    if (filled <= 0) {
-      say(`closing ${label} did not fill (empty book or market closed), trying again every tick`);
-      smallTry(); checkpoint();
-      continue;
-    }
-    sw.split = Math.max(0, split - 1);
-    // the book of this position: the tranches, when they are the old engine's
-    if (m.symbol === from.market && side === from.side) {
-      if (st.perpTranches.length && mark != null) {
-        // Pro rata, not oldest first: every part closed carries the same mix of winners and losers.
-        const book = reconcileTranches(st.perpTranches, base, mark, m.sizeDec).tranches;
-        const frac = filled / base;
-        const pnl = switchPnl({
-          bookPnl: realizedFromTranches(book, mark, side, m.sizeDec) * frac, venuePnl: Number(live.unrealized_pnl) * frac,
-          equityBefore: equityOf(before), equityAfter: equityOf(after),
-          notional: mark * filled / 10 ** m.sizeDec, maxSlippage: config.LIGHTER_MAX_SLIPPAGE,
-          depositPending: Number(st.perpPendingDepositUsd || 0) > 0,
-        });
-        sw.pnl = Number(sw.pnl || 0) + pnl;
-        st.perpTranches = reconcileTranches(book, leftBase, mark, m.sizeDec).tranches;
-      }
-      st.perpOpen = leftBase > 0;
-    }
-    console.log(`  [${coin.symbol}] switch: closed ${label} ${filled}/${base}, result so far $${Number(sw.pnl || 0).toFixed(2)}`);
-    if (leftBase === 0) bankSwitch(coin, st);
-    checkpoint();
+    o.sent = true; o.sentAt = Date.now(); checkpoint();
+    if (!await settleOrder({ coin, st, checkpoint, accountIndex, tries: config.LIGHTER_FILL_TRIES })) return true;
+    if (!st.perpSwitch) return true;
   }
   return true;
+}
+
+/**
+ * A token taken out of service (PERPSPAD_RETIRED): its positions are closed, everything its account
+ * and its wallet hold goes to the treasury, and nothing is ever opened, bought back or deposited
+ * again. Fees that still reach it follow the same way.
+ */
+async function retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
+  if (coin.venue === 'v4') await claimV4(keeper, coin, st, checkpoint, sub, unitUsd);
+  const held = await quote.balanceOf(sub.address);
+  if (usdOf(held, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD && config.TREASURY) {
+    await ensureGas(keeper, sub.address);
+    await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [config.TREASURY, held]), gasLimit: 100000 }, 'retired sweep');
+    for (const b of ['perpReserveRaw', 'buybackReserveRaw', 'treasuryOwedRaw', 'creatorOwedRaw']) st[b] = '0';
+    st.perpWithdrawPendingUsd = 0; st.perpWithdrawPendingProfitUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null;
+    checkpoint();
+    console.log(`  [${coin.symbol}] retired: ${ethers.utils.formatUnits(held, coin.pairDecimals)} ${coin.pairSymbol} → ${config.TREASURY}`);
+  }
+  if (!lighter.enabled || lighter.simulate) return;
+  let accountIndex = st.lighterAccountIndex;
+  if (accountIndex == null) {
+    accountIndex = (await lighter.resolveAccount(sub.address)).accountIndex;
+    if (accountIndex == null) return;
+    st.lighterAccountIndex = accountIndex; checkpoint();
+  }
+  if (!st.lighterApiPrivKey) {
+    const r = await lighter.registerKey({ accountIndex, apiKeyIndex: config.LIGHTER_API_KEY_INDEX, ethPrivKey: sub.privateKey });
+    st.lighterApiPrivKey = encryptSecret(r.apiPrivKey); st.lighterApiKeyIndex = r.apiKeyIndex; checkpoint();
+  }
+  const apiPrivKey = decryptSecret(st.lighterApiPrivKey), apiKeyIndex = st.lighterApiKeyIndex;
+  const ctx = { coin, st, checkpoint, accountIndex, apiPrivKey, apiKeyIndex, sim: false, tag: '' };
+  if (!(await settleOrder(ctx) && await settleWithdrawal(ctx))) return;
+
+  const acc = await lighter.account(accountIndex);
+  const pos = (acc.positions || []).find((p) => Math.abs(Number(p.size)) > 0);
+  if (pos) {
+    const m = await lighter.marketById(pos.market_id);
+    if (!m) return;
+    const side = Number(pos.sign) === -1 ? 'short' : 'long';
+    const base = Math.round(Math.abs(Number(pos.size)) * 10 ** m.sizeDec);
+    const split = Number(st.perpTpSplit || 0);
+    const ask = split > 0 ? Math.max(Math.min(base, m.minBaseUnits || 1), Math.floor(base / 2 ** split)) : base;
+    const o = recordOrder(st, checkpoint, { kind: 'retire', marketIndex: Number(pos.market_id), label: `${m.symbol} ${side}`, side, sizeDec: m.sizeDec, base, ask, avgEntry: Number(pos.avg_entry_price), margin: Number(pos.allocated_margin) || 0, mark: markFromPosition(pos, side), cash: isolatedCash(acc) });
+    try {
+      await lighter.close({ accountIndex, marketIndex: o.marketIndex, baseAmount: ask, isAsk: side === 'long', maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
+    } catch (e) {
+      if (!(e && e.definitive)) throw e;
+      st.perpOrder = null; st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
+      if (split === 0) console.log(`  [${coin.symbol}] retired: closing ${o.label} refused (${e.message.slice(0, 100)})`);
+      return;
+    }
+    o.sent = true; o.sentAt = Date.now(); checkpoint();
+    await settleOrder({ ...ctx, tries: config.LIGHTER_FILL_TRIES });
+    return;
+  }
+  // all the cash is out of the engine, and none of it is a gain anybody has a share of
+  st.perpRealizedUsd = 0; st.perpCapitalUsd = Math.min(isolatedCash(acc), Number(acc.available_balance ?? Infinity));
+  st.perpTranches = []; st.perpOpen = false;
+  await withdrawProceeds({ ...ctx, floor: 0.01 });
 }
 
 async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
@@ -937,6 +1207,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
     return;
   }
   const sim = lighter.simulate; // dry-run: letture ok, nessuna tx/ordine
+  const shortBefore = st.perpShortSeen === true;
+  st.perpShortSeen = false; // two reads in a row means two ticks in a row (step 7)
   const tag = sim ? 'SIMULATE ' : '';
   // mercato Lighter della coin (BTC, NVDA, NVDA/USDG, …)
   // A managed coin can be pointed at a symbol the venue does not list (the router only checks its
@@ -966,15 +1238,15 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
 
   // 1) DEPOSITO: manda la riserva accumulata all'intent-address (tx reale su 4663)
   const perpUsd = usdOf(BN(st.perpReserveRaw), coin.pairDecimals, unitUsd);
-  const gate = st.perpOpen ? config.TOPUP_STEP_USD : config.OPEN_GATE_USD;
-  if (perpUsd >= gate) {
+  if (depositDue({ coin, st, usd: perpUsd })) try { // a deposit that fails holds nothing else
+    const depositBefore = Number(st.perpDepositAt || 0);
     const depositRaw = BN(st.perpReserveRaw);
     const { intentAddress } = await lighter.intentAddress({ chainId: '4663', fromAddr: sub.address, amount: depositRaw.toString() });
     if (sim) {
       console.log(`  [${coin.symbol}] ${tag}perp deposit: depositerei $${perpUsd.toFixed(2)} USDG → Lighter (intent ${intentAddress})`);
     } else {
       await ensureGas(keeper, sub.address);
-      st.perpReserveRaw = '0'; st.perpPendingDepositUsd += perpUsd; checkpoint(); // decremento prima dell'invio (crash → under-deposit, riconciliabile)
+      st.perpReserveRaw = '0'; st.perpDepositAt = Date.now(); checkpoint(); // decremento prima dell'invio (crash → under-deposit, riconciliabile)
       try {
         await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [intentAddress, depositRaw]), gasLimit: 100000 }, 'perp deposit');
         st.perpDepositedUsd += perpUsd; checkpoint();
@@ -982,12 +1254,12 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
       } catch (e) {
         // Come per il payout: ripristina la riserva SOLO se la tx e' morta. Se e'
         // stuck puo' ancora minare e un ripristino porterebbe a depositare due volte.
-        if (!isStuck(e)) { st.perpReserveRaw = depositRaw.toString(); st.perpPendingDepositUsd = Math.max(0, st.perpPendingDepositUsd - perpUsd); checkpoint(); }
+        if (!isStuck(e)) { st.perpReserveRaw = depositRaw.toString(); st.perpDepositAt = depositBefore; checkpoint(); }
         else console.log(`  [${coin.symbol}] perp deposit STUCK (${e.hash}): riserva NON ripristinata, la tx puo' ancora minare`);
         throw e;
       }
     }
-  }
+  } catch (e) { console.log(`  [${coin.symbol}] perp deposit: ${e.message.slice(0, 140)}`); }
 
   // 2) account Lighter della coin (creato al primo deposito accreditato)
   let accountIndex = st.lighterAccountIndex;
@@ -1014,6 +1286,13 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
     console.log(`  [${coin.symbol}] chiave API migrata a storage cifrato`);
   }
   const apiPrivKey = decryptSecret(st.lighterApiPrivKey), apiKeyIndex = st.lighterApiKeyIndex;
+
+  // 3a) what was in flight comes first: an order or a withdrawal whose end is not known stops the
+  //     tick here. Then the withdrawal of what left the engine, before anything that may not let
+  //     the tick reach it (a closed market, a refused order, a market that is not listed).
+  const ctx = { coin, st, checkpoint, accountIndex, apiPrivKey, apiKeyIndex, sim, tag };
+  if (!sim && !(await settleOrder(ctx) && await settleWithdrawal(ctx))) return;
+  if (await withdrawProceeds(ctx)) return;
 
   // 3b) ENGINE SWITCH: nothing below runs while a position of the previous engine is open
   if (coin.managed && await settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIndex, apiPrivKey, apiKeyIndex, sim, tag })) return;
@@ -1069,78 +1348,17 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   }
   // dust on the other side of this market is not the engine's position
   if (coin.managed && pos && strayPositions([pos], marketIndex, coin.side).length) pos = undefined;
-  const freeCollateralUsd = Number(acc.available_balance ?? acc.collateral ?? 0);
-  let openedBaseThisTick = 0; // size aperta DOPO questa lettura di pos (vedi step 7)
+  //    And in isolated mode `available_balance` counts the open profit as free (seen live: a top-up
+  //    bought with it seconds before the take-profit), while `collateral` is the cash alone. The
+  //    lower of the two is what is there in either mode.
+  const freeCollateralUsd = Math.min(Number(acc.available_balance ?? acc.collateral ?? 0), Number(acc.collateral ?? Infinity));
 
-  // 5b) FUNDING. Il funding non passa dalle tranche (che misurano solo il prezzo)
-  //     ma e' gia' stato addebitato o accreditato sul collaterale: va portato nel
-  //     realizzato, altrimenti perpRealizedUsd e il conto divergono in silenzio e
-  //     il withdraw dello step 8 preleva margine invece di profitto.
-  //     Delta negativo = funding PAGATO: riduce il realizzato (fino a renderlo
-  //     negativo, cioe' un debito che il prossimo take-profit ripaga prima di
-  //     poter prelevare). Positivo = incassato: e' profitto del perp come un altro,
-  //     e segue la stessa strada verso il buyback&burn.
+  // 5b) FUNDING. Lighter settles it in the position's margin (read live: the margin moves with the
+  //     counter, the cash does not), so it comes out with the margin when a tranche closes. Here it
+  //     is only kept for the site: booked as a gain too, it would be counted twice.
   applyFunding(coin, st, acc.positions, { sim, tag, checkpoint });
 
-  // 6) OPEN / TOPUP: deploya il collaterale libero al leverage scelto.
-  //    Il profitto gia' REALIZZATO (perpRealizedUsd) resta fuori dal deployable:
-  //    e' in coda per il withdraw (step 8) e non va ri-lockato in posizione —
-  //    altrimenti dopo una chiusura totale (profilo safe) il withdraw fallirebbe.
-  //    Si impiega solo COLLATERAL_HEADROOM del libero: Lighter valuta il margine al
-  //    prezzo di esecuzione, quindi senza buffer l'ordine viene scartato in silenzio
-  //    appena il prezzo si muove tra la lettura del mark e il fill.
-  //    La riserva si clampa a zero: un realizzato NEGATIVO (funding pagato piu' del
-  //    profitto, step 5b) e' un debito, non collaterale in piu' da impiegare.
-  const usableUsd = Math.max(0, freeCollateralUsd - Math.max(0, Number(st.perpRealizedUsd || 0)));
-  const deployableUsd = usableUsd * config.COLLATERAL_HEADROOM;
-  const minNotional = Math.max(mkt.minQuoteUsd || 0, 0);
-  if (st.engineBlocked || venueLeverage == null) {
-    // no new exposure: the engine does not fit the venue, or Lighter has no leverage set for it
-  } else if (deployableUsd >= config.MIN_DEPLOY_USD && deployableUsd * venueLeverage < minNotional) {
-    if (!st.perpBelowMinLogged) {
-      console.log(`  [${coin.symbol}] collaterale insufficiente per il minimo d'ordine: $${(deployableUsd * venueLeverage).toFixed(2)} di notional < $${minNotional.toFixed(2)} richiesti da ${coin.market} — accumulo`);
-      st.perpBelowMinLogged = true; if (!sim) checkpoint();
-    }
-  } else if (deployableUsd >= config.MIN_DEPLOY_USD) {
-    st.perpBelowMinLogged = false;
-    const wasOpen = st.perpOpen;
-    const notionalUsd = deployableUsd * venueLeverage;
-    if (sim) {
-      console.log(`  [${coin.symbol}] ${tag}perp ${wasOpen ? 'topup' : 'open'}: aprirei notional $${notionalUsd.toFixed(2)} ${coin.side} ${venueLeverage}x (deployable $${deployableUsd.toFixed(2)}, riservato al withdraw $${Math.max(0, Number(st.perpRealizedUsd || 0)).toFixed(2)})`);
-    } else {
-      const baseBefore = pos && pos.size != null ? Math.round(Math.abs(Number(pos.size)) * 10 ** mkt.sizeDec) : 0;
-      const r = await lighter.open({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: Date.now() % 1000000, apiPrivKey, apiKeyIndex });
-      // IOC: "accettato" NON significa "riempito" — misurato live su NVDA in
-      // pre-market: ordine ok, fill zero. La tranche si registra SOLO per la
-      // size davvero entrata in posizione, e il collaterale contabilizzato e'
-      // proporzionale al fill; il resto resta deployable e si ritenta.
-      const filled = await openedBaseAfter(accountIndex, marketIndex, coin.side, mkt.sizeDec, baseBefore, Number(r.baseAmount) || 0);
-      if (filled > 0) {
-        const fillFrac = Math.min(1, filled / (Number(r.baseAmount) || filled));
-        const usedCollateralUsd = deployableUsd * fillFrac;
-        st.perpOpen = true;
-        st.perpCollateralUsd += usedCollateralUsd;
-        st.perpPendingDepositUsd = Math.max(0, st.perpPendingDepositUsd - usedCollateralUsd);
-        if (!Array.isArray(st.perpTranches)) st.perpTranches = [];
-        // entry = mark usato dal sidecar per dimensionare; se manca, niente append:
-        // la riconciliazione del tick dopo crea la sintetica.
-        let merged = false;
-        if (r.mark) {
-          ({ merged } = addTranche(st.perpTranches, { base: filled, entryMark: Number(r.mark), collateralUsd: usedCollateralUsd, sizeDec: mkt.sizeDec, ts: Date.now(), leverage: venueLeverage }, mkt.minBaseUnits));
-          // la `pos` letta allo step 5 e' PRECEDENTE a quest'ordine: senza tenerne
-          // conto la riconciliazione dello step 7 vedrebbe le tranche "in eccesso"
-          // e le riscalerebbe tutte (proprio la diluizione che le tranche evitano).
-          openedBaseThisTick += filled;
-        }
-        checkpoint();
-        console.log(`  [${coin.symbol}] perp ${wasOpen ? 'topup' : 'open'}: notional $${notionalUsd.toFixed(2)} ${coin.side} ${venueLeverage}x (fill ${filled}/${r.baseAmount} @ ${r.mark})${merged ? ' — scheggia fusa nella tranche precedente' : ''}`);
-      } else {
-        console.log(`  [${coin.symbol}] perp open NON riempito (IOC senza controparte: book vuoto o mercato chiuso?): collaterale intatto, riprovo al tick dopo`);
-      }
-    }
-  }
-
-  // 7) TAKE-PROFIT per tranche: riconcilia la contabilita' con la size on-chain,
+  // 6) TAKE-PROFIT per tranche: riconcilia la contabilita' con la size on-chain,
   //    poi chiude (reduce-only) le tranche il cui target e' stato raggiunto.
   //    Ogni tranche corre verso il SUO entry × (1 ± trigger/leva): i topup non
   //    diluiscono il progresso delle tranche vecchie.
@@ -1150,11 +1368,9 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   const tpLabel = `+${Math.round(triggerFrac * 100)}%`;
   if (!Array.isArray(st.perpTranches)) st.perpTranches = [];
   {
-    // size on-chain al netto di cio' che abbiamo aperto DOPO la lettura di pos.
     // pos assente = nessuna posizione (chiusa/liquidata): posBase 0, non skip —
     // altrimenti le tranche morte sopravviverebbero e inquinerebbero la prossima.
-    const posBaseRaw = pos && pos.size != null ? Math.round(Math.abs(Number(pos.size)) * 10 ** mkt.sizeDec) : 0;
-    const posBase = posBaseRaw + openedBaseThisTick;
+    const posBase = pos && pos.size != null ? Math.round(Math.abs(Number(pos.size)) * 10 ** mkt.sizeDec) : 0;
     const mark = pos ? markFromPosition(pos, coin.side) : null;
 
     if (posBase <= 0) {
@@ -1162,8 +1378,20 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
       const rec = reconcileTranches(st.perpTranches, 0, 0, mkt.sizeDec);
       if (rec.changed) {
         st.perpTranches = rec.tranches; st.perpOpen = false;
+        // funding the dead position owed died with its margin: it is not the next one's debt
+        if (Number(st.perpRealizedUsd) < 0) st.perpRealizedUsd = 0;
         if (!sim) checkpoint();
         console.log(`  [${coin.symbol}] ${tag}tranches: ${rec.note}`);
+      } else if (!Number(st.perpWithdrawIntentUsd || 0) && acc.collateral != null && outOfEngine(st) > Number(acc.collateral) + 0.01) {
+        // flat, and the cash is all the account has: what the book says left the engine beyond it
+        // went with a loss taken since (a netted average, a liquidation). Kept, it would claim new
+        // deposits as if they were proceeds. Only when two reads in a row agree.
+        if (!shortBefore) { st.perpShortSeen = true; if (!sim) checkpoint(); return; }
+        const over = outOfEngine(st) - Number(acc.collateral);
+        st.perpCapitalUsd = Number(st.perpCapitalUsd || 0) - over;
+        if (st.perpCapitalUsd < 0) { st.perpRealizedUsd = Math.max(0, Number(st.perpRealizedUsd || 0) + st.perpCapitalUsd); st.perpCapitalUsd = 0; }
+        if (!sim) checkpoint();
+        console.log(`  [${coin.symbol}] ${tag}$${over.toFixed(2)} booked out of the engine are not in the account: written off`);
       }
     } else if (mark != null) {
       const rec = reconcileTranches(st.perpTranches, posBase, mark, mkt.sizeDec);
@@ -1184,63 +1412,89 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
         console.log(`  [${coin.symbol}] ${tag}perpOpen riallineato al venue: posizione viva (base ${posBase})`);
       }
       const { ready, keep } = matureTranches(st.perpTranches, mark, coin.side, st.lighterLeverage ?? coin.leverage, triggerFrac);
-      const closeBase = Math.min(ready.reduce((a, t) => a + t.base, 0), posBase);
-      if (ready.length && closeBase >= (mkt.minBaseUnits || 1)) {
-        const wantRealized = realizedFromTranches(ready, mark, coin.side, mkt.sizeDec);
+      const mature = Math.min(ready.reduce((a, t) => a + t.base, 0), posBase);
+      // a book too thin for the whole size refuses the order outright: each refusal halves the next
+      const minAsk = Math.max(mkt.minBaseUnits || 1, Math.ceil((mkt.minQuoteUsd || 0) / mark * 10 ** mkt.sizeDec));
+      const split = Number(st.perpTpSplit || 0);
+      let closeBase = split > 0 ? Math.min(mature, Math.max(minAsk, Math.floor(mature / 2 ** split))) : mature;
+      if (mature - closeBase < minAsk) closeBase = mature;
+      if (ready.length && closeBase >= minAsk) {
         if (sim) {
-          console.log(`  [${coin.symbol}] ${tag}TAKE-PROFIT (${tpLabel}): chiuderei ${ready.length} tranche (base ${closeBase}), realizzerei ~$${wantRealized.toFixed(2)}`);
+          console.log(`  [${coin.symbol}] ${tag}TAKE-PROFIT (${tpLabel}): chiuderei ${ready.length} tranche (base ${closeBase}), realizzerei ~$${realizedFromTranches(ready, mark, coin.side, mkt.sizeDec).toFixed(2)}`);
         } else {
-          await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, apiPrivKey, apiKeyIndex });
-          // Il market order e' IOC: "accettato" NON significa "riempito". Rileggo la
-          // posizione e credito solo il fill REALE — altrimenti il withdraw dello
-          // step 8 preleverebbe margine invece di profitto.
-          const filledBase = await closedBaseAfter(accountIndex, marketIndex, coin.side, mkt.sizeDec, posBase, closeBase);
-          const fillFrac = closeBase > 0 ? Math.max(0, Math.min(1, filledBase / closeBase)) : 0;
-          const realized = wantRealized * fillFrac;
-          // tolgo dalle mature solo la size effettivamente chiusa (dalla piu' vecchia)
-          st.perpTranches = removeClosedBase([...ready].sort((a, b) => a.ts - b.ts), filledBase).concat(keep);
-          if (!st.perpTranches.length) st.perpOpen = false;
-          st.perpRealizedUsd += Math.max(0, realized); checkpoint();
-          const pct = Math.round(fillFrac * 100);
-          console.log(`  [${coin.symbol}] TAKE-PROFIT (${tpLabel}): chiusa base ${filledBase}/${closeBase} (fill ${pct}%), realizzato ~$${realized.toFixed(2)}`);
-          if (fillFrac < 0.99) console.log(`  [${coin.symbol}] fill parziale: le tranche residue restano in lista e ritentano al tick dopo`);
+          const avgEntry = Number(pos.avg_entry_price);
+          const o = recordOrder(st, checkpoint, {
+            kind: 'tp', marketIndex, side: coin.side, sizeDec: mkt.sizeDec, base: posBase, ask: closeBase, avgEntry, mark, cash: isolatedCash(acc), tpPct: Math.round(triggerFrac * 100),
+            margin: Number(pos.allocated_margin) > 0 ? Number(pos.allocated_margin) : avgEntry * posBase / 10 ** mkt.sizeDec / Number(st.lighterLeverage ?? coin.leverage),
+            ready: [...ready].sort((a, b) => a.ts - b.ts), keep,
+          });
+          try {
+            await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
+          } catch (e) {
+            if (!(e && e.definitive)) throw e; // unknown: settled on its trades, next tick
+            st.perpOrder = null; st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
+            if (split === 0) console.log(`  [${coin.symbol}] TAKE-PROFIT rifiutato (${e.message.slice(0, 100)}): riprovo con size minori`);
+          }
+          if (st.perpOrder) {
+            o.sent = true; o.sentAt = Date.now(); checkpoint();
+            await settleOrder({ ...ctx, tries: config.LIGHTER_FILL_TRIES });
+            return; // the account has just changed: opening waits for the next read of it
+          }
         }
       } else if (ready.length && !sim) {
-        // mature ma sotto il size-step minimo: restano in lista e si accumulano
-        console.log(`  [${coin.symbol}] ${ready.length} tranche mature sotto il min size (${closeBase} < ${mkt.minBaseUnits}): accumulo`);
+        // mature ma sotto il minimo d'ordine: restano in lista e si chiudono con le prossime
+        if (!st.perpSmallLogged) console.log(`  [${coin.symbol}] ${ready.length} tranche mature sotto il minimo d'ordine (${closeBase} < ${minAsk}): accumulo`);
+        st.perpSmallLogged = true;
       }
     }
   }
 
-  // 8) WITHDRAW del profitto realizzato → sub-wallet su 4663 (la riconciliazione
-  //    0a lo accredita SOLO all'arrivo reale, matchando il mittente del transfer).
-  //    Write-ahead: realized → intent PRIMA della chiamata; su esito ambiguo
-  //    (timeout sidecar, crash) lo step 0-pre promuove l'intent a pending senza
-  //    mai ritentare l'invio → nessun doppio withdraw possibile.
-  if (Number(st.perpRealizedUsd) >= config.PERP_WITHDRAW_FLOOR_USD) {
-    const amount = Number(st.perpRealizedUsd);
+  // 7) OPEN / TOPUP: deploya il collaterale libero al leverage scelto.
+  //    Cio' che e' uscito dal motore con un take-profit (guadagno E capitale) resta fuori
+  //    dal deployable: e' in coda per il withdraw (step 8) e va in buyback. Dopo un
+  //    take-profit si riapre solo con fee nuove.
+  //    Si impiega solo COLLATERAL_HEADROOM del libero: Lighter valuta il margine al
+  //    prezzo di esecuzione, quindi senza buffer l'ordine viene scartato in silenzio
+  //    appena il prezzo si muove tra la lettura del mark e il fill.
+  const usableUsd = Math.max(0, freeCollateralUsd - outOfEngine(st));
+  const deployableUsd = usableUsd * config.COLLATERAL_HEADROOM;
+  // one tranche per interval: only finishing one that filled in part does not wait
+  const tooSoon = st.perpOpen && !filling(st) && Date.now() - Number(st.perpTrancheAt || 0) < config.TRANCHE_INTERVAL_MS;
+  const least = minDeploy(st);
+  const minNotional = Math.max(mkt.minQuoteUsd || 0, 0);
+  if (st.engineBlocked || venueLeverage == null) {
+    // no new exposure: the engine does not fit the venue, or Lighter has no leverage set for it
+  } else if (tooSoon || deployableUsd < least) {
+    // accumulating
+  } else if (deployableUsd * venueLeverage < minNotional) {
+    if (!st.perpBelowMinLogged) {
+      console.log(`  [${coin.symbol}] collaterale insufficiente per il minimo d'ordine: $${(deployableUsd * venueLeverage).toFixed(2)} di notional < $${minNotional.toFixed(2)} richiesti da ${coin.market} — accumulo`);
+      st.perpBelowMinLogged = true; if (!sim) checkpoint();
+    }
+  } else {
+    st.perpBelowMinLogged = false;
+    const wasOpen = st.perpOpen;
+    // a book too thin refuses it whole: each refusal halves the next, down to the venue's minimum
+    const openSplit = Number(st.perpOpenSplit || 0);
+    const notionalUsd = Math.max(minNotional, deployableUsd * venueLeverage / 2 ** openSplit);
     if (sim) {
-      console.log(`  [${coin.symbol}] ${tag}preleverei $${amount.toFixed(2)} di profitto da Lighter → sub-wallet`);
+      console.log(`  [${coin.symbol}] ${tag}perp ${wasOpen ? 'topup' : 'open'}: aprirei notional $${notionalUsd.toFixed(2)} ${coin.side} ${venueLeverage}x (deployable $${deployableUsd.toFixed(2)}, riservato al withdraw $${outOfEngine(st).toFixed(2)})`);
     } else {
-      st.perpRealizedUsd = 0; st.perpWithdrawIntentUsd = amount; checkpoint(); // write-ahead
+      const base = pos && pos.size != null ? Math.round(Math.abs(Number(pos.size)) * 10 ** mkt.sizeDec) : 0;
+      const o = recordOrder(st, checkpoint, { kind: 'open', marketIndex, side: coin.side, sizeDec: mkt.sizeDec, base, avgEntry: pos ? Number(pos.avg_entry_price) : 0, ask: null, split: openSplit, leverage: venueLeverage, minBaseUnits: mkt.minBaseUnits });
       try {
-        await lighter.withdraw({ accountIndex, amount, apiPrivKey, apiKeyIndex });
+        const r = await lighter.open({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
+        o.ask = Number(r.baseAmount) || null;
       } catch (e) {
-        // Rifiuto DEFINITIVO dell'API (es. importo sotto il minimo di Lighter):
-        // sappiamo che non e' partito nulla → il profitto torna realizzato e si
-        // ritentera' quando sara' cresciuto. Su esito AMBIGUO (timeout/crash)
-        // l'intent resta e lo step 0-pre lo promuove a pending: mai un doppio prelievo.
-        if (e && e.definitive) {
-          st.perpWithdrawIntentUsd = 0; st.perpRealizedUsd = amount; checkpoint();
-          console.log(`  [${coin.symbol}] withdraw rifiutato da Lighter ($${amount.toFixed(2)}): profitto riaccreditato, si ritenta piu' avanti`);
-        }
-        throw e;
+        if (!(e && e.definitive)) throw e;
+        st.perpOrder = null; st.perpOpenSplit = openSplit >= 6 ? 0 : openSplit + 1; checkpoint();
+        if (st.perpOpenRefused !== e.message) console.log(`  [${coin.symbol}] perp open rifiutato: ${e.message.slice(0, 120)}`);
+        st.perpOpenRefused = e.message;
+        return;
       }
-      st.perpWithdrawIntentUsd = 0;
-      st.perpWithdrawPendingUsd = Number(st.perpWithdrawPendingUsd || 0) + amount;
-      if (!st.perpWithdrawBlock) { st.perpWithdrawBlock = await provider.getBlockNumber(); st.perpWithdrawScanBlock = st.perpWithdrawBlock - 1; }
-      checkpoint();
-      console.log(`  [${coin.symbol}] withdraw profitto: $${amount.toFixed(2)} da Lighter → sub-wallet (in arrivo)`);
+      st.perpOpenRefused = null;
+      o.sent = true; o.sentAt = Date.now(); checkpoint();
+      await settleOrder({ ...ctx, tries: config.LIGHTER_FILL_TRIES });
     }
   }
 }
@@ -1305,9 +1559,12 @@ function validateSplit() {
  * alta all'avvio, invece di lasciare la verifica alla memoria di qualcuno.
  */
 const PRODUCTION_DEFAULTS = {
-  OPEN_GATE_USD: 20,
-  TOPUP_STEP_USD: 20,
-  BUYBACK_FLOOR_USD: 25,
+  OPEN_GATE_USD: 25,
+  TOPUP_STEP_USD: 25,
+  FIRST_OPEN_DELAY_MS: 10 * 60 * 1000,
+  TRANCHE_INTERVAL_MS: 60 * 60 * 1000,
+  BUYBACK_FLOOR_USD: 20,
+  PERP_WITHDRAW_FLOOR_USD: 20,
   MIN_DEPLOY_USD: 2,
 };
 
@@ -1374,4 +1631,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { strayPositions, switchPnl, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
