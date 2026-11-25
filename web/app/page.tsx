@@ -88,7 +88,7 @@ export default async function Home() {
         <Container width="landing" className="pt-24 sm:pt-32">
           <RevealBlock className="max-w-[640px]">
             <h2 className="text-4xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-5xl">
-              One loop, every 15 seconds.
+              One loop, around the clock.
             </h2>
           </RevealBlock>
           <div className="mt-12">
