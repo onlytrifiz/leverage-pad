@@ -7,7 +7,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MultiplyLaunchRouter} from "../src/MultiplyLaunchRouter.sol";
 import {MultiplyFeeSink} from "../src/MultiplyFeeSink.sol";
 import {UpgradeRouterLaunch} from "../script/UpgradeRouterLaunch.s.sol";
-import {Swapper, PoolKey, IInitializerView, IRehypeView, IUUPS} from "./MultiplyLaunchRouter.t.sol";
+import {Swapper, PoolKey, IInitializerView, IRehypeView, IUUPS, ILegacyEngine} from "./MultiplyLaunchRouter.t.sol";
 
 interface IRehypePoolInfo {
     function getPoolInfo(bytes32 poolId) external view returns (address asset, address numeraire, address buybackDst);
@@ -565,7 +565,7 @@ contract MultiplyFeeSinkFork is Test {
         MultiplyLaunchRouter live = MultiplyLaunchRouter(LIVE_ROUTER);
         address oldCoin = 0x7ca877C2761814EF51ea3B34B27eE9A3c6125D06; // TEST14
         MultiplyFeeSink oldSink = MultiplyFeeSink(live.sinkOf(oldCoin));
-        bytes32 engineBefore = keccak256(abi.encode(live.engineOf(oldCoin)));
+        bytes32 engineBefore = keccak256(abi.encode(ILegacyEngine(LIVE_ROUTER).engineOf(oldCoin)));
         address dstBefore = oldSink.destination();
         assertEq(oldSink.treasuryBps(), 1500, "launched at 15%");
 
@@ -580,7 +580,7 @@ contract MultiplyFeeSinkFork is Test {
         live.acceptOwnership();
         script.upgrade(c);
 
-        assertEq(keccak256(abi.encode(live.engineOf(oldCoin))), engineBefore, "old engine intact");
+        assertEq(keccak256(abi.encode(ILegacyEngine(LIVE_ROUTER).engineOf(oldCoin))), engineBefore, "old engine intact");
         assertEq(live.sinkOf(oldCoin), address(oldSink));
         assertTrue(live.sinkConfig().implementation != oldSinkImpl, "new sink implementation");
         assertEq(oldSink.treasuryBps(), 1500, "old split intact");

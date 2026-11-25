@@ -292,6 +292,37 @@ function realizedFromTranches(tranches, mark, side, sizeDec) {
   }, 0);
 }
 
+// ── managed coins: the engine's market or side can change under an open position ─────
+
+/** Open positions the coin's current engine does not own: another market, or the other side. */
+function strayPositions(positions, marketIndex, side) {
+  const want = side === 'short' ? -1 : 1;
+  return (positions || []).filter((p) => {
+    if (!(Math.abs(Number(p.size)) > 0)) return false;
+    if (marketIndex == null || Number(p.market_id) !== Number(marketIndex)) return true;
+    return p.sign != null && Number(p.sign) !== want;
+  });
+}
+
+/**
+ * The profit to bank when a whole position is closed because the engine moved, in USD, never
+ * negative: a loss has already left the collateral, and what stays keeps working.
+ *
+ * `bookPnl` is what the tranches say at the mark (the same bookkeeping take-profits use, so
+ * nothing is banked twice). A close at market costs slippage the mark does not show, and at high
+ * leverage it is most of a thin profit: it is measured on the account itself (equity, unrealized
+ * included, before and after) and taken off. A deposit landing in between can
+ * only make the measure look better, and it never raises the result above the book.
+ */
+function switchCredit({ bookPnl, equityBefore, equityAfter }) {
+  // closing turns the unrealized into cash: with no slippage the equity does not move
+  const slippage = Number.isFinite(equityBefore) && Number.isFinite(equityAfter) ? Math.max(0, equityBefore - equityAfter) : 0;
+  return Math.max(0, Number(bookPnl || 0) - slippage);
+}
+
+/** a leftover the venue refused to close for being too small, and not grown since */
+const isDust = (st, p) => st.perpDust != null && Math.abs(Number(p.size)) <= Number(st.perpDust[p.market_id] ?? -1);
+
 // Delta di funding dall'ultimo tick, per mercato.
 //
 // Il perp paga (o incassa) funding a ogni round e quel flusso finisce direttamente
@@ -742,6 +773,126 @@ async function openedBaseAfter(accountIndex, marketIndex, sizeDec, baseBefore, r
   }
 }
 
+/** funding since the last read, into the realized (see step 5b) */
+function applyFunding(coin, st, positions, { sim, tag, checkpoint }) {
+  const f = fundingDelta(st.perpFundingSeen, positions);
+  st.perpFundingSeen = f.seen;
+  if (Math.abs(f.delta) < 0.000001) return;
+  st.perpFundingUsd = Number(st.perpFundingUsd || 0) + f.delta;
+  st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + f.delta;
+  if (!sim) checkpoint();
+  console.log(`  [${coin.symbol}] ${tag}funding ${f.delta >= 0 ? '+' : ''}$${f.delta.toFixed(6)} (cumulato $${Number(st.perpFundingUsd).toFixed(6)}): realizzato ora $${Number(st.perpRealizedUsd).toFixed(2)}`);
+}
+
+const equityOf = (acc) => {
+  const v = acc && acc.raw ? acc.raw.total_asset_value : undefined;
+  return v == null ? NaN : Number(v);
+};
+
+/**
+ * A managed coin's creator moved the engine to another market or side: close everything the new
+ * engine does not own, whole and reduce-only, before anything is opened. Returns true when this
+ * tick must stop here (something is still open, or was just closed and the account must be read
+ * again), false when the account holds only what the engine owns.
+ *
+ * The venue's positions are the truth, not our state: a position left by a crash, or found after
+ * the registry was rebuilt, is closed the same way. A closed market or an empty book is not an
+ * error: nothing opens until the close fills, and every tick tries again.
+ */
+async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIndex, apiPrivKey, apiKeyIndex, sim, tag }) {
+  const now = { market: coin.market, side: coin.side };
+  const same = (e) => e && e.market === now.market && e.side === now.side;
+  if (same(st.perpEngine) && !st.perpSwitch) return false;
+
+  const acc = await lighter.account(accountIndex);
+  if (!Array.isArray(st.perpTranches)) st.perpTranches = [];
+  if (!st.perpDust) st.perpDust = {};
+  const strays = strayPositions(acc.positions, marketIndex, coin.side).filter((p) => !isDust(st, p));
+  const from = st.perpEngine || now;
+
+  if (!strays.length) {
+    // nothing left of the old engine. Its tranches, if any, went with a position that closed
+    // without us seeing the fill (liquidated, or the read after the order failed): no credit,
+    // what it made stays in the account as collateral.
+    if (!same(st.perpEngine) && st.perpEngine && st.perpTranches.length) {
+      console.log(`  [${coin.symbol}] ${tag}switch: the ${from.market} ${from.side} position is gone, its tranches are dropped`);
+      st.perpTranches = []; st.perpOpen = false;
+    }
+    if (st.perpSwitch) console.log(`  [${coin.symbol}] ${tag}switch done: now ${now.market} ${now.side}`);
+    st.perpEngine = now; st.perpSwitch = null;
+    if (!sim) checkpoint();
+    return false;
+  }
+
+  if (!st.perpSwitch || st.perpSwitch.to.market !== now.market || st.perpSwitch.to.side !== now.side) {
+    st.perpSwitch = { from, to: now, since: st.perpSwitch ? st.perpSwitch.since : Date.now() };
+    if (!sim) checkpoint();
+    console.log(`  [${coin.symbol}] ${tag}switch ${from.market} ${from.side} → ${now.market} ${now.side}: closing ${strays.length} position(s) first`);
+  }
+  applyFunding(coin, st, acc.positions, { sim, tag, checkpoint });
+
+  for (const p of strays) {
+    const m = await lighter.marketById(p.market_id);
+    if (!m) { console.log(`  [${coin.symbol}] ${tag}switch: market ${p.market_id} is not on the venue's list, waiting`); continue; }
+    const side = Number(p.sign) === -1 ? 'short' : 'long';
+    const base = Math.round(Math.abs(Number(p.size)) * 10 ** m.sizeDec);
+    const minBase = m.minBaseUnits || 1;
+    // a book too thin for the whole size within the slippage limit refuses the order outright:
+    // each refusal halves the next attempt, each fill doubles it back
+    const split = Number(st.perpSwitch.split || 0);
+    const ask = split > 0 ? Math.min(base, Math.max(minBase, Math.floor(base / 2 ** split))) : base;
+    const label = `${m.symbol} ${side}`;
+    if (sim) { console.log(`  [${coin.symbol}] ${tag}switch: would close ${label} (base ${base})`); continue; }
+    // the book of this position: the tranches, when they are the old engine's
+    const ours = m.symbol === from.market && side === from.side;
+    const before = await lighter.account(accountIndex);
+    const live = (before.positions || []).find((x) => Number(x.market_id) === Number(p.market_id));
+    const mark = live ? markFromPosition(live, side) : null;
+    try {
+      await lighter.close({ accountIndex, marketIndex: p.market_id, baseAmount: ask, isAsk: side === 'long', maxSlippage: config.LIGHTER_MAX_SLIPPAGE, apiPrivKey, apiKeyIndex });
+    } catch (e) {
+      if (!(e && e.definitive)) throw e;
+      if (base < minBase) {
+        st.perpDust[p.market_id] = Math.abs(Number(p.size)); checkpoint();
+        console.log(`  [${coin.symbol}] switch: ${label} leftover of ${base} units is below the venue's minimum, left alone`);
+      } else {
+        st.perpSwitch.split = Math.min(6, split + 1); checkpoint();
+        console.log(`  [${coin.symbol}] switch: closing ${label} refused (${e.message.slice(0, 100)}), next attempt with less`);
+      }
+      continue;
+    }
+    let after;
+    try { after = await lighter.account(accountIndex); }
+    catch (e) { console.log(`  [${coin.symbol}] switch: fill not readable (${e.message.slice(0, 60)}), no credit, next tick reads it again`); continue; }
+    const left = (after.positions || []).find((x) => Number(x.market_id) === Number(p.market_id));
+    const leftBase = left && Number(left.sign) === Number(p.sign) ? Math.round(Math.abs(Number(left.size)) * 10 ** m.sizeDec) : 0;
+    const filled = Math.max(0, Math.min(ask, base - leftBase));
+    if (filled <= 0) {
+      if (!st.perpSwitch.waiting) {
+        st.perpSwitch.waiting = true; checkpoint();
+        console.log(`  [${coin.symbol}] switch: closing ${label} did not fill (empty book or market closed), trying again every tick`);
+      }
+      continue;
+    }
+    st.perpSwitch.waiting = false;
+    st.perpSwitch.split = Math.max(0, split - 1);
+    let credit = 0;
+    if (ours && st.perpTranches.length && mark != null) {
+      // oldest first, the same order a take-profit consumes them in
+      const book = [...reconcileTranches(st.perpTranches, base, mark, m.sizeDec).tranches].sort((a, b) => a.ts - b.ts);
+      const rest = removeClosedBase(book, filled);
+      const bookPnl = realizedFromTranches(book, mark, side, m.sizeDec) - realizedFromTranches(rest, mark, side, m.sizeDec);
+      credit = switchCredit({ bookPnl, equityBefore: equityOf(before), equityAfter: equityOf(after) });
+      st.perpTranches = rest;
+    }
+    st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + credit;
+    st.perpOpen = leftBase > 0;
+    checkpoint();
+    console.log(`  [${coin.symbol}] switch: closed ${label} ${filled}/${base}, banked $${credit.toFixed(2)}`);
+  }
+  return true;
+}
+
 async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   if (coin.pair.toLowerCase() !== config.USDG.toLowerCase()) {
     if (!st.perpGateLogged) { console.log(`  [${coin.symbol}] perp saltato: quote non USDG (il collaterale Lighter e' USDG)`); st.perpGateLogged = true; checkpoint(); }
@@ -750,8 +901,12 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   const sim = lighter.simulate; // dry-run: letture ok, nessuna tx/ordine
   const tag = sim ? 'SIMULATE ' : '';
   // mercato Lighter della coin (BTC, NVDA, NVDA/USDG, …)
-  const mkt = await lighter.market(coin.market);
-  const marketIndex = mkt.index;
+  // A managed coin can be pointed at a symbol the venue does not list (the router only checks its
+  // shape): that engine takes no exposure, but what the previous one left open must still close.
+  let mkt = null;
+  try { mkt = await lighter.market(coin.market); }
+  catch (e) { if (!coin.managed || !(e && e.unknownMarket)) throw e; }
+  const marketIndex = mkt ? mkt.index : null;
   const isAsk = coin.side === 'short'; // long = buy (is_ask false)
 
   // The router checks leverage against its own list, not against the venue: a coin can ask for
@@ -759,7 +914,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   // engine takes no new exposure: no leverage update, no open or top-up. Deposits, take-profit,
   // reconciliation and withdraw keep running, so the tranches already open are still managed.
   {
-    const blocked = mkt.maxLeverage != null && coin.leverage > mkt.maxLeverage
+    const blocked = !mkt ? `${coin.market} is not listed on Lighter`
+      : mkt.maxLeverage != null && coin.leverage > mkt.maxLeverage
       ? `${coin.leverage}x is above ${coin.market}'s ${mkt.maxLeverage}x cap on Lighter` : null;
     if (blocked !== (st.engineBlocked ?? null)) {
       st.engineBlocked = blocked;
@@ -821,6 +977,10 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   }
   const apiPrivKey = decryptSecret(st.lighterApiPrivKey), apiKeyIndex = st.lighterApiKeyIndex;
 
+  // 3b) ENGINE SWITCH: nothing below runs while a position of the previous engine is open
+  if (coin.managed && await settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIndex, apiPrivKey, apiKeyIndex, sim, tag })) return;
+  if (!mkt) return;
+
   // 4) LEVERAGE on the venue: set at launch, and again whenever the engine changes.
   //    `lighterLeverage` is what Lighter actually has; everything sized below uses it, not the
   //    desired value, so a change the venue refuses never produces a position sized for a
@@ -860,7 +1020,15 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   //    in modalita' cross INCLUDE il margine delle posizioni (verificato su API) e
   //    usarlo come deployable causerebbe topup compounding fino alla liquidazione.
   const acc = await lighter.account(accountIndex);
-  const pos = (acc.positions || []).find((p) => Number(p.market_id) === Number(marketIndex));
+  let pos = (acc.positions || []).find((p) => Number(p.market_id) === Number(marketIndex));
+  if (coin.managed && strayPositions(acc.positions, marketIndex, coin.side).some((p) => !isDust(st, p))) {
+    // a position the engine does not own, found outside a switch: close it first, trade after
+    st.perpSwitch = { from: st.perpEngine || { market: coin.market, side: coin.side }, to: { market: coin.market, side: coin.side }, since: Date.now() };
+    if (!sim) checkpoint();
+    return;
+  }
+  // dust on the other side of this market is not the engine's position
+  if (coin.managed && pos && strayPositions([pos], marketIndex, coin.side).length) pos = undefined;
   const freeCollateralUsd = Number(acc.available_balance ?? acc.collateral ?? 0);
   let openedBaseThisTick = 0; // size aperta DOPO questa lettura di pos (vedi step 7)
 
@@ -872,16 +1040,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
   //     negativo, cioe' un debito che il prossimo take-profit ripaga prima di
   //     poter prelevare). Positivo = incassato: e' profitto del perp come un altro,
   //     e segue la stessa strada verso il buyback&burn.
-  {
-    const f = fundingDelta(st.perpFundingSeen, acc.positions);
-    st.perpFundingSeen = f.seen;
-    if (Math.abs(f.delta) >= 0.000001) {
-      st.perpFundingUsd = Number(st.perpFundingUsd || 0) + f.delta;
-      st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + f.delta;
-      if (!sim) checkpoint();
-      console.log(`  [${coin.symbol}] ${tag}funding ${f.delta >= 0 ? '+' : ''}$${f.delta.toFixed(6)} (cumulato $${Number(st.perpFundingUsd).toFixed(6)}): realizzato ora $${Number(st.perpRealizedUsd).toFixed(2)}`);
-    }
-  }
+  applyFunding(coin, st, acc.positions, { sim, tag, checkpoint });
 
   // 6) OPEN / TOPUP: deploya il collaterale libero al leverage scelto.
   //    Il profitto gia' REALIZZATO (perpRealizedUsd) resta fuori dal deployable:
@@ -1175,4 +1334,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { strayPositions, switchCredit, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

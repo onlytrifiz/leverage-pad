@@ -69,7 +69,11 @@ function maxLeverageFromImf(minImf) {
 
 // the sidecar's market entry → what the keeper uses (pure, testable without the venue)
 function parseMarket(symbol, info) {
-  if (!info) throw new Error(`mercato Lighter "${symbol}" inesistente sul profilo ${config.LIGHTER_PROFILE}`);
+  if (!info) {
+    const e = new Error(`mercato Lighter "${symbol}" inesistente sul profilo ${config.LIGHTER_PROFILE}`);
+    e.unknownMarket = true; // the list was read and does not carry it, as opposed to a failed read
+    throw e;
+  }
   const minBaseUnits = info.min_base ? Math.max(1, Math.round(parseFloat(info.min_base) * 10 ** info.size_dec)) : 1;
   const minQuoteUsd = info.min_quote ? parseFloat(info.min_quote) : 0;
   return {
@@ -81,6 +85,12 @@ function parseMarket(symbol, info) {
 // symbol → {index, sizeDec, priceDec, status, minBaseUnits, minQuoteUsd, maxLeverage}
 async function market(symbol) {
   return parseMarket(symbol, (await markets())[symbol]);
+}
+
+/** the market an open position belongs to, by venue id: { symbol, ...market } or null */
+async function marketById(id) {
+  const hit = Object.entries(await markets()).find(([, info]) => Number(info.index) === Number(id));
+  return hit ? { symbol: hit[0], ...parseMarket(hit[0], hit[1]) } : null;
 }
 
 const selftest = () => call('selftest');
@@ -105,6 +115,6 @@ const withdraw = ({ accountIndex, amount, apiPrivKey, apiKeyIndex = 4 }) =>
 
 module.exports = {
   enabled, simulate, mode: MODE,
-  selftest, markets, market, parseMarket, maxLeverageFromImf, resolveAccount, account,
+  selftest, markets, market, marketById, parseMarket, maxLeverageFromImf, resolveAccount, account,
   intentAddress, depositLatest, registerKey, setLeverage, open, close, addMargin, withdraw,
 };

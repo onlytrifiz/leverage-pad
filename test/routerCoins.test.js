@@ -213,7 +213,7 @@ function engineProvider(table) {
       if (!e) throw new Error('execution reverted');
       if (e instanceof Error) throw e;
       const tuple = [e.market ?? 'NVDA', e.side ?? 0, e.leverage, e.takeProfitPct, e.managed ?? false, e.creator ?? LAUNCHER,
-        e.pendingLeverage ?? 0, e.pendingTakeProfitPct ?? 0, e.pendingAt ?? 0];
+        e.pendingLeverage ?? 0, e.pendingTakeProfitPct ?? 0, e.pendingAt ?? 0, e.pendingSide ?? 0, e.pendingMarket ?? ''];
       return rc.ROUTER_IFACE.encodeFunctionResult('engineOf', [tuple]);
     },
   };
@@ -244,7 +244,7 @@ test('refreshEngines: applies changes, records the pending one, ignores what it 
     const n = await rc.refreshEngines(engineProvider({ [tok.toLowerCase()]: { leverage: 10, takeProfitPct: 50, pendingLeverage: 3, pendingTakeProfitPct: 300, pendingAt: at } }), reg, { log: (m) => logs.push(m) });
     assert.equal(n, 0);
     assert.equal(logs.length, 0);
-    assert.deepEqual(reg.coins[0].pendingEngine, { leverage: 3, takeProfitPct: 300, effectiveAt: at });
+    assert.deepEqual(reg.coins[0].pendingEngine, { market: 'NVDA', side: 'long', leverage: 3, takeProfitPct: 300, effectiveAt: at }, 'announced before market could change: it stays');
     assert.equal(reg.coins[0].leverage, 10);
   });
 
@@ -261,6 +261,44 @@ test('refreshEngines: applies changes, records the pending one, ignores what it 
     const tp = { coins: [v4coin(addr(0xa4))], state: {} };
     await rc.refreshEngines(engineProvider({ [addr(0xa4).toLowerCase()]: { leverage: 10, takeProfitPct: 9 } }), tp, { log: () => {} });
     assert.equal(tp.coins[0].takeProfitPct, 50);
+  });
+
+  await t.test('a managed coin: market and side are applied, and what is open is marked as the old engine\'s', async () => {
+    const tok = addr(0xb1), k = tok.toLowerCase();
+    const reg = { coins: [v4coin(tok)], state: { [k]: { lighterLeverage: 10, perpTranches: [{ base: 10, entryMark: 1 }] } } };
+    const logs = [];
+    const p = (e) => engineProvider({ [k]: { leverage: 10, takeProfitPct: 50, managed: true, ...e } });
+    assert.equal(await rc.refreshEngines(p({ market: 'BTC', side: 1 }), reg, { log: (m) => logs.push(m) }), 1);
+    assert.deepEqual([reg.coins[0].market, reg.coins[0].side], ['BTC', 'short']);
+    assert.deepEqual(reg.state[k].perpEngine, { market: 'NVDA', side: 'long' });
+    assert.equal(reg.state[k].lighterLeverage, null, 'leverage is per market on the venue');
+    assert.ok(logs.some((m) => m.includes('NVDA long → BTC short')), logs.join('\n'));
+    // a second change before the first was carried out: the open position is still the first one's
+    await rc.refreshEngines(p({ market: 'ETH', side: 0 }), reg, { log: () => {} });
+    assert.deepEqual(reg.state[k].perpEngine, { market: 'NVDA', side: 'long' });
+    // the same market on the other side keeps the leverage already set there
+    reg.state[k].lighterLeverage = 10;
+    await rc.refreshEngines(p({ market: 'ETH', side: 1 }), reg, { log: () => {} });
+    assert.equal(reg.state[k].lighterLeverage, 10);
+  });
+
+  await t.test('a coin that is not managed never moves market or side, whatever the router answers', async () => {
+    const tok = addr(0xb2);
+    const reg = { coins: [v4coin(tok, { managed: false })], state: {} };
+    assert.equal(await rc.refreshEngines(engineProvider({ [tok.toLowerCase()]: { market: 'BTC', side: 1, leverage: 10, takeProfitPct: 50, managed: false } }), reg, { log: () => {} }), 0);
+    assert.deepEqual([reg.coins[0].market, reg.coins[0].side], ['NVDA', 'long']);
+  });
+
+  await t.test('the announced market and side are part of the pending change; a malformed market is refused', async () => {
+    const tok = addr(0xb3);
+    const reg = { coins: [v4coin(tok)], state: {} };
+    await rc.refreshEngines(engineProvider({ [tok.toLowerCase()]: { leverage: 10, takeProfitPct: 50, managed: true, pendingMarket: 'XAU', pendingSide: 1, pendingLeverage: 5, pendingTakeProfitPct: 40, pendingAt: 1_800_000_000 } }), reg, { log: () => {} });
+    assert.deepEqual(reg.coins[0].pendingEngine, { market: 'XAU', side: 'short', leverage: 5, takeProfitPct: 40, effectiveAt: 1_800_000_000 });
+    assert.equal(reg.coins[0].market, 'NVDA');
+    const logs = [];
+    await rc.refreshEngines(engineProvider({ [tok.toLowerCase()]: { market: 'nv/da', leverage: 10, takeProfitPct: 50, managed: true } }), reg, { log: (m) => logs.push(m) });
+    assert.equal(reg.coins[0].market, 'NVDA');
+    assert.match(logs[0], /rejected/);
   });
 
   await t.test('zero creator (not launched through this router) is skipped', async () => {

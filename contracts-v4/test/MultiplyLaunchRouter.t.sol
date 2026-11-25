@@ -6,6 +6,7 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {MultiplyLaunchRouter} from "../src/MultiplyLaunchRouter.sol";
 import {DopplerLaunch} from "../src/DopplerLaunch.sol";
+import {UpgradeRouterManaged} from "../script/UpgradeRouterManaged.s.sol";
 
 interface IPoolManagerView {
     function extsload(bytes32 slot) external view returns (bytes32);
@@ -29,6 +30,23 @@ interface IERC20Meta {
     function name() external view returns (string memory);
     function symbol() external view returns (string memory);
     function tokenURI() external view returns (string memory);
+}
+
+/// `engineOf` as the implementations before the managed-market upgrade returned it
+interface ILegacyEngine {
+    struct Engine {
+        string market;
+        uint8 side;
+        uint8 leverage;
+        uint16 takeProfitPct;
+        bool managed;
+        address creator;
+        uint8 pendingLeverage;
+        uint16 pendingTakeProfitPct;
+        uint64 pendingAt;
+    }
+
+    function engineOf(address asset) external view returns (Engine memory);
 }
 
 interface IUUPS {
@@ -124,6 +142,9 @@ contract MultiplyLaunchRouterFork is Test {
     address constant USDG = 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168;
     address constant DEPLOYER = 0x23Bf247B662EFADf114642A65DbbB0CB7D0EBAc0; // holds USDG on the fork
     uint24 constant DYNAMIC = 0x800000;
+    address constant LIVE_ROUTER = 0xB9De90F875FFE04D57cC90EE030c0DfB84F25Acd;
+    address constant TEST9 = 0xa4f08fff7bB3543e377eD874a6863bF6Bdb60eFD;
+    address constant TEST14 = 0x7ca877C2761814EF51ea3B34B27eE9A3c6125D06;
 
     MultiplyLaunchRouter router;
     Swapper swapper;
@@ -214,13 +235,13 @@ contract MultiplyLaunchRouterFork is Test {
         return new MultiplyLaunchRouter.BuyOrder[](0);
     }
 
-    /// The engine bounds the upgrade sets: leverage 2,3,5,10,20,25,50, take-profit +10..+500%, 12 h notice.
+    /// The engine bounds the upgrade sets: leverage 2,3,5,10,20,25,50, take-profit +10..+500%, 1 h notice.
     function _engineConfig() internal pure returns (MultiplyLaunchRouter.EngineConfig memory) {
         return MultiplyLaunchRouter.EngineConfig({
             leverageMask: uint64((1 << 2) | (1 << 3) | (1 << 5) | (1 << 10) | (1 << 20) | (1 << 25) | (1 << 50)),
             minTakeProfitPct: 10,
             maxTakeProfitPct: 500,
-            managedDelay: 12 hours
+            managedDelay: 1 hours
         });
     }
 
@@ -487,17 +508,17 @@ contract MultiplyLaunchRouterFork is Test {
 
         vm.prank(trader);
         vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NotCreator.selector, asset));
-        router.proposeEngine(asset, 10, 200);
+        router.proposeEngine(asset, "NVDA", 0, 10, 200);
 
         vm.prank(launcher);
         vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
-        router.proposeEngine(asset, 7, 200);
+        router.proposeEngine(asset, "NVDA", 0, 7, 200);
 
-        uint64 at = uint64(block.timestamp + 12 hours);
+        uint64 at = uint64(block.timestamp + 1 hours);
         vm.expectEmit(true, false, false, true, address(router));
-        emit MultiplyLaunchRouter.EngineProposed(asset, 10, 200, at);
+        emit MultiplyLaunchRouter.EngineProposed(asset, "NVDA", 0, 10, 200, at);
         vm.prank(launcher);
-        router.proposeEngine(asset, 10, 200);
+        router.proposeEngine(asset, "NVDA", 0, 10, 200);
 
         MultiplyLaunchRouter.Engine memory e = router.engineOf(asset);
         assertEq(e.leverage, 3, "unchanged during the notice");
@@ -521,7 +542,7 @@ contract MultiplyLaunchRouterFork is Test {
 
         // a new proposal settles the due one first, then the owner withdraws it
         vm.prank(launcher);
-        router.proposeEngine(asset, 20, 500);
+        router.proposeEngine(asset, "NVDA", 0, 20, 500);
         e = router.engineOf(asset);
         assertEq(e.leverage, 10);
         assertEq(e.pendingLeverage, 20);
@@ -536,7 +557,7 @@ contract MultiplyLaunchRouterFork is Test {
 
         // the owner overrides immediately and drops anything pending
         vm.prank(launcher);
-        router.proposeEngine(asset, 25, 400);
+        router.proposeEngine(asset, "NVDA", 0, 25, 400);
         vm.prank(trader);
         vm.expectRevert();
         router.overrideEngine(asset, 2, 20);
@@ -551,9 +572,126 @@ contract MultiplyLaunchRouterFork is Test {
         vm.warp(block.timestamp + 13 hours);
         assertEq(router.engineOf(asset).leverage, 2, "the dropped proposal never lands");
 
-        // market and side are not part of any change
+        // a retune repeats market and side, and they stay
         assertEq(router.engineOf(asset).market, "NVDA");
         assertEq(router.engineOf(asset).side, 0);
+    }
+
+    /// Market and side move with the rest: the same notice, the same rules as a launch.
+    function test_managed_changesMarketAndSide() public {
+        MultiplyLaunchRouter.LaunchInput memory i = _input("Flip", "FLIP", 30_000, false, 0, 0, keccak256("flip"));
+        i.managed = true;
+        vm.prank(launcher);
+        (address asset,,) = router.launch(i, _none());
+
+        vm.startPrank(launcher);
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
+        router.proposeEngine(asset, "btc", 1, 10, 200);
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
+        router.proposeEngine(asset, "", 1, 10, 200);
+        vm.expectRevert(MultiplyLaunchRouter.InvalidEngine.selector);
+        router.proposeEngine(asset, "BTC", 2, 10, 200);
+
+        uint64 at = uint64(block.timestamp) + router.engineConfig().managedDelay;
+        vm.expectEmit(true, false, false, true, address(router));
+        emit MultiplyLaunchRouter.EngineProposed(asset, "BTC", 1, 10, 200, at);
+        router.proposeEngine(asset, "BTC", 1, 10, 200);
+        vm.stopPrank();
+
+        MultiplyLaunchRouter.Engine memory e = router.engineOf(asset);
+        assertEq(e.market, "NVDA", "unchanged during the notice");
+        assertEq(e.side, 0);
+        assertEq(e.pendingMarket, "BTC");
+        assertEq(e.pendingSide, 1);
+
+        vm.warp(at);
+        e = router.engineOf(asset);
+        assertEq(e.market, "BTC", "in effect at the announced time");
+        assertEq(e.side, 1);
+        assertEq(e.leverage, 10);
+        assertEq(e.pendingAt, 0);
+        assertEq(e.pendingMarket, "");
+        assertEq(e.pendingSide, 0);
+
+        // a due change survives the owner's override of the rest
+        vm.prank(owner);
+        router.overrideEngine(asset, 2, 20);
+        e = router.engineOf(asset);
+        assertEq(e.market, "BTC", "override keeps the due market");
+        assertEq(e.side, 1);
+        assertEq(e.leverage, 2);
+
+        // and a proposal on top of a due one settles it first; cancelling goes back to it
+        vm.prank(launcher);
+        router.proposeEngine(asset, "ETH", 0, 5, 50);
+        vm.warp(block.timestamp + 30 minutes);
+        vm.prank(launcher);
+        router.cancelEngineProposal(asset);
+        vm.warp(block.timestamp + 2 days);
+        e = router.engineOf(asset);
+        assertEq(e.market, "BTC", "a withdrawn change never lands");
+        assertEq(e.side, 1);
+        assertEq(e.leverage, 2);
+    }
+
+    /// The notice is one owner setting for every coin, and a change already announced keeps its time.
+    function test_managed_delayIsOwnerGlobal() public {
+        MultiplyLaunchRouter.LaunchInput memory i = _input("Delay", "DLY", 30_000, false, 0, 0, keccak256("dly"));
+        i.managed = true;
+        vm.prank(launcher);
+        (address asset,,) = router.launch(i, _none());
+        vm.prank(launcher);
+        router.proposeEngine(asset, "BTC", 1, 10, 200);
+        uint64 at = router.engineOf(asset).pendingAt;
+        assertEq(at, block.timestamp + 1 hours);
+
+        MultiplyLaunchRouter.EngineConfig memory c = _engineConfig();
+        c.managedDelay = 6 hours;
+        vm.prank(owner);
+        router.setEngineConfig(c);
+        assertEq(router.engineOf(asset).pendingAt, at, "announced under the old delay");
+        vm.prank(launcher);
+        router.proposeEngine(asset, "ETH", 0, 10, 200);
+        assertEq(router.engineOf(asset).pendingAt, block.timestamp + 6 hours);
+
+        c.managedDelay = 0; // allowed: a change lands in its own block
+        vm.prank(owner);
+        router.setEngineConfig(c);
+        vm.prank(launcher);
+        router.proposeEngine(asset, "SOL", 1, 10, 200);
+        assertEq(router.engineOf(asset).market, "SOL");
+        assertEq(router.engineOf(asset).pendingAt, 0);
+    }
+
+    /// The live proxy, upgraded on the fork: every running coin reads the same engine after it.
+    function test_liveProxy_upgradeKeepsEngines() public {
+        MultiplyLaunchRouter live = MultiplyLaunchRouter(LIVE_ROUTER);
+        address[2] memory coins = [TEST9, TEST14];
+        ILegacyEngine.Engine[2] memory before;
+        for (uint256 k; k < 2; k++) before[k] = ILegacyEngine(LIVE_ROUTER).engineOf(coins[k]);
+        // exactly what the script sends; its calls come from the owner, so hand it the proxy
+        UpgradeRouterManaged script = new UpgradeRouterManaged();
+        vm.prank(live.owner());
+        live.transferOwnership(address(script));
+        vm.prank(address(script));
+        live.acceptOwnership();
+        script.upgrade(LIVE_ROUTER, 1 hours);
+        assertEq(live.engineConfig().managedDelay, 1 hours);
+        for (uint256 k; k < 2; k++) {
+            MultiplyLaunchRouter.Engine memory e = live.engineOf(coins[k]);
+            assertEq(e.market, before[k].market);
+            assertEq(e.side, before[k].side);
+            assertEq(e.leverage, before[k].leverage);
+            assertEq(e.takeProfitPct, before[k].takeProfitPct);
+            assertEq(e.creator, before[k].creator);
+            assertEq(e.managed, false);
+            assertEq(e.pendingMarket, "");
+            // a reader still on the previous ABI decodes the longer struct to the same values
+            ILegacyEngine.Engine memory l = ILegacyEngine(LIVE_ROUTER).engineOf(coins[k]);
+            assertEq(l.market, before[k].market);
+            assertEq(l.creator, before[k].creator);
+            assertEq(l.pendingAt, 0);
+        }
     }
 
     /// Without the flag the creator has no say; only the owner's override remains.
@@ -562,7 +700,7 @@ contract MultiplyLaunchRouterFork is Test {
         (address asset,,) = router.launch(_input("Fixed", "FIX", 30_000, false, 0, 0, keccak256("fix")), _none());
         vm.prank(launcher);
         vm.expectRevert(abi.encodeWithSelector(MultiplyLaunchRouter.NotManaged.selector, asset));
-        router.proposeEngine(asset, 10, 100);
+        router.proposeEngine(asset, "NVDA", 0, 10, 100);
         vm.prank(owner);
         router.overrideEngine(asset, 2, 100);
         assertEq(router.engineOf(asset).leverage, 2);
@@ -607,7 +745,7 @@ contract MultiplyLaunchRouterFork is Test {
         router.pause();
         vm.prank(launcher);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        router.proposeEngine(asset, 10, 100);
+        router.proposeEngine(asset, "NVDA", 0, 10, 100);
         vm.prank(owner);
         router.overrideEngine(asset, 10, 100); // the escape hatch works while paused
         assertEq(router.engineOf(asset).leverage, 10);
