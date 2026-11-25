@@ -132,6 +132,8 @@ const tokens = new Map(); // account → { token, until, renew, asking, askAt }
 // one at a time and on its own: a token is never worth making an order wait
 const tokenSigning = createSemaphore(1);
 let keyOf = () => null;
+const saidAuth = new Map(); // account → the last thing said of it: only changes are
+const sayAuth = (id, msg) => { if (saidAuth.get(id) !== msg) { saidAuth.set(id, msg); console.log(`  [auth] account ${id}: ${msg}`); } };
 /** `fn(account)` → { apiPrivKey, apiKeyIndex } of an account we run, or null */
 function useKeys(fn) {
   keyOf = fn;
@@ -144,7 +146,7 @@ function useKeys(fn) {
       if (key) {
         t.asking = true;
         tokenSigning(() => spawn('auth-token', { accountIndex: id, apiKeyIndex: key.apiKeyIndex, seconds: TOKEN_S }, { LIGHTER_API_PRIVKEY: key.apiPrivKey }))
-          .then((r) => { t.token = r.token; t.until = Date.now() + TOKEN_S * 1000 - 60_000; }, () => { t.askAt = Date.now() + AGAIN_MS; })
+          .then((r) => { t.token = r.token; t.until = Date.now() + TOKEN_S * 1000 - 60_000; }, (e) => { t.askAt = Date.now() + AGAIN_MS; sayAuth(id, `no token signed (${String(e.message).slice(0, 80)})`); })
           .finally(() => { t.asking = false; });
       }
     }
@@ -153,7 +155,8 @@ function useKeys(fn) {
     // refused: forgotten, unless it has already been replaced
     const t = tokens.get(id);
     if (t && t.token === token) Object.assign(t, { token: null, until: 0, askAt: Date.now() + AGAIN_MS });
-  });
+    sayAuth(id, 'token refused, reads go without');
+  }, (id) => sayAuth(id, 'reads on its own token'));
 }
 
 const selftest = () => call('selftest');

@@ -206,7 +206,14 @@ function connect() {
     retry += 1;
     setTimeout(connect, wait);
   };
-  ws.onclose = reopen;
+  // Lighter hangs up on a client it has not heard from for two minutes
+  const pinger = setInterval(() => {
+    if (ws.readyState === WebSocket.OPEN) ws.send('{"type":"ping"}');
+  }, 30_000);
+  ws.onclose = () => {
+    clearInterval(pinger);
+    reopen();
+  };
   ws.onerror = () => ws.close();
 }
 

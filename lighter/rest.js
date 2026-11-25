@@ -58,7 +58,7 @@ const queuesOf = (id) => {
   if (!perAccount.has(id)) perAccount.set(id, { reads: createLimiter({ perMinute: config.LIGHTER_READS_PER_MIN }), trades: createLimiter({ perMinute: config.LIGHTER_TRADES_PER_MIN }) });
   return perAccount.get(id);
 };
-let tokenOf = () => null, refused = () => {}; // account → its token now, or null (never waits)
+let tokenOf = () => null, refused = () => {}, accepted = () => {}; // account → its token now, or null (never waits)
 const barred = new Map();                     // account → the token of it the venue would not have
 const tokenFor = (id) => {
   const t = id == null ? null : tokenOf(id);
@@ -92,6 +92,7 @@ async function get(path, params, { isTrades = false, as = null } = {}) {
     e.venue = body.message || '';
     throw e;
   }
+  if (token) accepted(id);
   return body;
 }
 
@@ -169,7 +170,7 @@ async function markets() {
 module.exports = {
   account, fills, tx, resolveAccount, markets, urgently, isUrgent, createLimiter, spareReads: () => reads.spare(),
   /** `fn(account)`: the token to read it with, now, or null */
-  useTokens(fn, onRefused = () => {}) { tokenOf = fn; refused = onRefused; },
+  useTokens(fn, onRefused = () => {}, onAccepted = () => {}) { tokenOf = fn; refused = onRefused; accepted = onAccepted; },
   authed: (id) => tokenFor(id == null ? null : Number(id)) != null,
   /** requests the sidecar makes for an account: on its token when it has one */
   charge(n, id) { (id != null && tokenFor(Number(id)) ? queuesOf(Number(id)).reads : reads).charge(n); },

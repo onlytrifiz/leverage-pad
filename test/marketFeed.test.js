@@ -52,6 +52,19 @@ test('feed: what is not a mark is ignored, a ping is answered, a handler that th
   bad.feed.stop();
 });
 
+test('feed: the line is kept up with a ping, whose answer is not a word from the markets', async () => {
+  let t = 0;
+  const { feed } = make({ pingMs: 5, now: () => t });
+  feed.watch([1]); const s = Socket.all[0];
+  await tick(20); assert.equal(s.sent.length, 0, 'not before it is open');
+  s.open(); await tick(30);
+  assert.ok(s.sent.filter((m) => m.type === 'ping').length >= 2);
+  t = 19_000; s.mark(1, 5); t = 45_000; s.say({ type: 'pong' });
+  await tick(5_100);
+  assert.equal(feed.live(), false, 'only pongs: a dead line');
+  feed.stop(); const n = s.sent.length; await tick(20); assert.equal(s.sent.length, n);
+});
+
 test('feed: a lost line comes back by itself with everything it was listening to, and forgets its marks', async () => {
   const { feed } = make();
   feed.watch([1, 15]); const s = Socket.all[0]; s.open(); s.mark(1, 5);
