@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ethers } from "ethers";
 import type { CoinDetail } from "@/lib/types";
-import { PUBLIC_RPC, USDG, DOPPLER, UNIVERSAL_ROUTER, PERMIT2, V4_POOL_MANAGER, explorerTx } from "@/lib/clientConfig";
+import { PUBLIC_RPC, USDG, NATIVE, MULTICALL3, DOPPLER, UNIVERSAL_ROUTER, PERMIT2, V4_POOL_MANAGER, explorerTx } from "@/lib/clientConfig";
+import { NoRoute, quoteRoute, swapRoute } from "@/lib/swap";
 import { TICK_SPACING, DYNAMIC_FEE_FLAG } from "@/lib/doppler";
 import { multicall } from "@/lib/multicall";
 import { sendGuardedTx, waitForReceipt, txErrorMessage } from "@/lib/tx";
@@ -59,8 +60,12 @@ const QUOTER = "0xce6cd4e35447e05a39a50a4bcf61f2dcd93a8f0d";
 
 const readProvider = new ethers.providers.StaticJsonRpcProvider(PUBLIC_RPC, { chainId: 4663, name: "robinhood" });
 
-type Account = { quote: ethers.BigNumber; coin: ethers.BigNumber; erc20ToPermit2: ethers.BigNumber; permit2ToRouter: ethers.BigNumber; permit2Expiry: number; checkedAt: number };
-type Quote = { amountIn: ethers.BigNumber; out: ethers.BigNumber; minOut: ethers.BigNumber; hookFee: number };
+type Account = { eth: ethers.BigNumber; quote: ethers.BigNumber; coin: ethers.BigNumber; erc20ToPermit2: ethers.BigNumber; permit2ToRouter: ethers.BigNumber; permit2Expiry: number; checkedAt: number };
+/** `viaEth` quotes are KyberSwap's and end in its router; the others are ours, straight to the pool */
+type Quote = { amountIn: ethers.BigNumber; out: ethers.BigNumber; minOut: ethers.BigNumber; hookFee: number; viaEth: boolean; dir: "buy" | "sell" };
+/** ETH left for gas when someone presses max */
+const GAS_RESERVE = ethers.utils.parseEther("0.0003");
+const MULTICALL_IFACE = new ethers.utils.Interface(["function getEthBalance(address) view returns (uint256)"]);
 
 export default function SwapPanel({ detail }: { detail: CoinDetail }) {
   const { coin, demo, poolRaw } = detail;
@@ -71,12 +76,23 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
   const [txDone, setTxDone] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadedAcct, setLoadedAcct] = useState<Account | null>(null);
-  const [quoted, setQuoted] = useState<Quote | null>(null);
+  const [quoteOn, setQuoted] = useState<Quote | null>(null);
+  /** what is paid for a buy and received for a sell; null until chosen, then the wallet's own money decides */
+  const [moneyPick, setMoney] = useState<"ETH" | "USDG" | null>(null);
+  const [noRoute, setNoRoute] = useState(false);
 
-  const inDec = dir === "buy" ? coin.pairDecimals : 18;
-  const outDec = dir === "buy" ? 18 : coin.pairDecimals;
-  const inSym = dir === "buy" ? coin.pairSymbol : coin.symbol;
-  const outSym = dir === "buy" ? coin.symbol : coin.pairSymbol;
+  const acct = account ? loadedAcct : null;
+  // a wallet with ETH and no USDG starts on ETH
+  const money = moneyPick ?? (acct && acct.quote.lt(ethers.utils.parseUnits("1", 6)) && acct.eth.gt(GAS_RESERVE) ? "ETH" : "USDG");
+  const viaEth = money === "ETH";
+  const moneyDec = viaEth ? 18 : coin.pairDecimals;
+  const moneySym = viaEth ? "ETH" : coin.pairSymbol;
+  const inDec = dir === "buy" ? moneyDec : 18;
+  const outDec = dir === "buy" ? 18 : moneyDec;
+  const inSym = dir === "buy" ? moneySym : coin.symbol;
+  const outSym = dir === "buy" ? coin.symbol : moneySym;
+  // a quote made for the other money or the other side is not a quote
+  const quoted = quoteOn && quoteOn.viaEth === viaEth && quoteOn.dir === dir ? quoteOn : null;
   const tokenIn = dir === "buy" ? coin.pair : coin.token;
   const tokenOut = dir === "buy" ? coin.token : coin.pair;
   const coinIs0 = BN(coin.token).lt(BN(USDG));
@@ -113,7 +129,39 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
       return;
     }
     let live = true;
+    const stop = new AbortController();
+    // an aggregator's route lives seconds: it is asked again while it is on screen
+    let again: ReturnType<typeof setInterval> | undefined;
+    const feeOf = (s: { startFee: number; endFee: number; startingTime: number; durationSeconds: number } | null | undefined) => {
+      if (!s) return coin.fee;
+      if (Number(s.startFee) === Number(s.endFee) || Number(s.durationSeconds) === 0) return Number(s.endFee);
+      const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - Number(s.startingTime));
+      return elapsed >= Number(s.durationSeconds)
+        ? Number(s.endFee)
+        : Number(s.startFee) - Math.floor(((Number(s.startFee) - Number(s.endFee)) * elapsed) / Number(s.durationSeconds));
+    };
+    const viaKyber = async () => {
+      try {
+        const [route, [s]] = await Promise.all([
+          quoteRoute(dir === "buy" ? NATIVE : coin.token, dir === "buy" ? coin.token : NATIVE, amountIn, stop.signal),
+          multicall(readProvider, [{ target: DOPPLER.rehype, iface: REHYPE_IFACE, fn: "getFeeSchedule", args: [coin.poolId] }]).catch(() => [null]),
+        ]);
+        const out = BN(route.routeSummary.amountOut);
+        if (!live) return;
+        setNoRoute(false);
+        setQuoted({ amountIn, out, minOut: out.mul(10_000 - SLIPPAGE_BPS).div(10_000), hookFee: feeOf(s as never), viaEth: true, dir });
+      } catch (e) {
+        if (!live) return;
+        setNoRoute(e instanceof NoRoute);
+        setQuoted(null);
+      }
+    };
     const t = setTimeout(async () => {
+      if (viaEth) {
+        await viaKyber();
+        if (live) again = setInterval(() => !document.hidden && void viaKyber(), 8_000);
+        return;
+      }
       try {
         const [q, s] = await multicall(readProvider, [
           { target: QUOTER, iface: QUOTER_IFACE, fn: "quoteSingle", args: [poolKey, { zeroForOne, amountSpecified: amountIn.mul(-1), sqrtPriceLimitX96: zeroForOne ? MIN_SQRT.add(1) : MAX_SQRT.sub(1) }] },
@@ -121,33 +169,33 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
         ]);
         if (!q) throw new Error("no quote");
         const gross: ethers.BigNumber = (zeroForOne ? q.amount1 : q.amount0).abs();
-        let hookFee = s ? Number(s.endFee) : coin.fee;
-        if (s && Number(s.startFee) !== Number(s.endFee) && Number(s.durationSeconds) > 0) {
-          const elapsed = Math.max(0, Math.floor(Date.now() / 1000) - Number(s.startingTime));
-          hookFee = elapsed >= Number(s.durationSeconds) ? Number(s.endFee) : Number(s.startFee) - Math.floor(((Number(s.startFee) - Number(s.endFee)) * elapsed) / Number(s.durationSeconds));
-        }
+        const hookFee = feeOf(s as never);
         const out = gross.mul(1_000_000 - hookFee).div(1_000_000);
-        if (live) setQuoted({ amountIn, out, minOut: out.mul(10_000 - SLIPPAGE_BPS).div(10_000), hookFee });
+        if (live) setQuoted({ amountIn, out, minOut: out.mul(10_000 - SLIPPAGE_BPS).div(10_000), hookFee, viaEth: false, dir });
       } catch {
         if (live) setQuoted(null);
       }
     }, 250);
     return () => {
       live = false;
+      stop.abort();
       clearTimeout(t);
+      clearInterval(again);
     };
-  }, [amountIn, poolRaw, poolKey, zeroForOne, coin.poolId, coin.fee]);
+  }, [amountIn, poolRaw, poolKey, zeroForOne, coin.poolId, coin.fee, coin.token, viaEth, dir]);
 
   /** balances and both allowance hops in one request */
   const refresh = useCallback(
     async (addr: string) => {
-      const [q, c, a, p] = await multicall(readProvider, [
+      const [q, c, a, p, e] = await multicall(readProvider, [
         { target: coin.pair, iface: ERC20_IFACE, fn: "balanceOf", args: [addr] },
         { target: coin.token, iface: ERC20_IFACE, fn: "balanceOf", args: [addr] },
         { target: tokenIn, iface: ERC20_IFACE, fn: "allowance", args: [addr, PERMIT2] },
         { target: PERMIT2, iface: PERMIT2_IFACE, fn: "allowance", args: [addr, tokenIn, UNIVERSAL_ROUTER] },
+        { target: MULTICALL3, iface: MULTICALL_IFACE, fn: "getEthBalance", args: [addr] },
       ]);
       setLoadedAcct({
+        eth: e ? e[0] : BN(0),
         quote: q ? q[0] : BN(0),
         coin: c ? c[0] : BN(0),
         erc20ToPermit2: a ? a[0] : BN(0),
@@ -165,12 +213,12 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
     refresh(account).catch(() => {});
   }, [account, refresh]);
 
-  const acct = account ? loadedAcct : null;
-  const balanceIn = acct ? (dir === "buy" ? acct.quote : acct.coin) : null;
-  const insufficient = !!(quoted && balanceIn && quoted.amountIn.gt(balanceIn));
-  const needsErc20Approval = !!(quoted && acct && acct.erc20ToPermit2.lt(quoted.amountIn));
+  const balanceIn = acct ? (dir === "buy" ? (viaEth ? acct.eth : acct.quote) : acct.coin) : null;
+  const maxIn = balanceIn && dir === "buy" && viaEth ? (balanceIn.gt(GAS_RESERVE) ? balanceIn.sub(GAS_RESERVE) : BN(0)) : balanceIn;
+  const insufficient = !!(quoted && maxIn && quoted.amountIn.gt(maxIn));
+  const needsErc20Approval = !!(quoted && !viaEth && acct && acct.erc20ToPermit2.lt(quoted.amountIn));
   // an allowance that expires within the hour is treated as spent: the swap is not instant
-  const needsPermit2 = !!(quoted && acct && (acct.permit2ToRouter.lt(quoted.amountIn) || acct.permit2Expiry <= acct.checkedAt + 3600));
+  const needsPermit2 = !!(quoted && !viaEth && acct && (acct.permit2ToRouter.lt(quoted.amountIn) || acct.permit2Expiry <= acct.checkedAt + 3600));
   const needsApproval = needsErc20Approval || needsPermit2;
 
   async function swap() {
@@ -178,6 +226,23 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
     setError(null);
     setTxDone(null);
     try {
+      if (quoted.viaEth) {
+        const hash = await swapRoute({
+          provider,
+          read: readProvider,
+          account,
+          tokenIn: dir === "buy" ? NATIVE : coin.token,
+          tokenOut: dir === "buy" ? coin.token : NATIVE,
+          amountIn: quoted.amountIn,
+          shownOut: quoted.out,
+          slippageBps: SLIPPAGE_BPS,
+          onStep: (w) => setBusy(w === "approve" ? `Approving ${inSym}` : "Swapping"),
+        });
+        setTxDone(hash);
+        setAmount("");
+        refresh(account).catch(() => {});
+        return;
+      }
       if (needsErc20Approval) {
         setBusy(`Approving ${inSym}`);
         const h = await sendGuardedTx(provider, { from: account, to: tokenIn, data: ERC20_IFACE.encodeFunctionData("approve", [PERMIT2, ethers.constants.MaxUint256]) });
@@ -221,6 +286,14 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
     }
   }
 
+  const pickMoney = (m: "ETH" | "USDG") => {
+    setMoney(m);
+    setNoRoute(false);
+    setError(null);
+    // an amount of ETH is not an amount of USDG
+    if (dir === "buy") setAmount("");
+  };
+
   const tradingOff = demo || !poolRaw;
   const fmtUnits = (v: ethers.BigNumber, dec: number, max = 4) =>
     Number(ethers.utils.formatUnits(v, dec)).toLocaleString("en-US", { maximumFractionDigits: max });
@@ -232,7 +305,9 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
           <ArrowUpDown key={dir} aria-hidden size={16} animate className="text-brand" />
           Trade
         </PanelTitle>
-        <PanelMeta>Uniswap v4 · fee {coin.fee / 10000}%</PanelMeta>
+        <PanelMeta>
+          {viaEth ? "KyberSwap" : "Uniswap v4"} · fee {coin.fee / 10000}%
+        </PanelMeta>
       </PanelHeader>
       <div className="flex flex-col gap-3 p-4">
         <div role="radiogroup" aria-label="Trade direction" className="relative grid grid-cols-2 gap-1 rounded-lg bg-void p-1">
@@ -263,8 +338,8 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-xs text-ink-3">You pay</span>
             {balanceIn && (
-              <button type="button" className="min-w-0 truncate text-xs text-ink-3 transition-colors hover:text-brand" onClick={() => setAmount(ethers.utils.formatUnits(balanceIn, inDec))}>
-                Balance {fmtUnits(balanceIn, inDec, 2)}, max
+              <button type="button" className="min-w-0 truncate text-xs text-ink-3 transition-colors hover:text-brand" onClick={() => setAmount(ethers.utils.formatUnits(maxIn ?? balanceIn, inDec))}>
+                Balance {fmtUnits(balanceIn, inDec, viaEth && dir === "buy" ? 5 : 2)}, max
               </button>
             )}
           </div>
@@ -278,7 +353,7 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
               aria-label={`Amount in ${inSym}`}
               className="num w-full min-w-0 bg-transparent text-2xl text-ink placeholder:text-ink-3 focus:outline-none disabled:opacity-50"
             />
-            <span className="shrink-0 text-sm text-ink-2">{inSym}</span>
+            {dir === "buy" ? <MoneyPick value={money} onChange={pickMoney} /> : <span className="shrink-0 text-sm text-ink-2">{inSym}</span>}
           </div>
         </div>
 
@@ -288,15 +363,15 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
             <span className="num w-full min-w-0 truncate text-2xl text-ink">
               <AnimatePresence mode="popLayout" initial={false}>
                 <motion.span key={quoted ? fmtUnits(quoted.out, outDec) : "empty"} initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.18 }} className="inline-block">
-                  {quoted ? fmtUnits(quoted.out, outDec) : "-"}
+                  {quoted ? fmtUnits(quoted.out, outDec, outDec === 18 && dir === "sell" ? 6 : 4) : "-"}
                 </motion.span>
               </AnimatePresence>
             </span>
-            <span className="shrink-0 text-sm text-ink-2">{outSym}</span>
+            {dir === "sell" ? <MoneyPick value={money} onChange={pickMoney} /> : <span className="shrink-0 text-sm text-ink-2">{outSym}</span>}
           </div>
           {quoted && (
             <div className="mt-1.5 text-xs text-ink-3">
-              Min received {fmtUnits(quoted.minOut, outDec)} · fee now {quoted.hookFee / 10000}% · slippage 1%
+              Min received {fmtUnits(quoted.minOut, outDec, outDec === 18 && dir === "sell" ? 6 : 4)} · fee now {quoted.hookFee / 10000}% · slippage 1%
             </div>
           )}
         </div>
@@ -312,6 +387,15 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
               {busy ?? (insufficient ? `Not enough ${inSym}` : needsApproval ? `Approve and swap ${inSym}` : `Swap ${inSym} → ${outSym}`)}
             </Button>
           </ChainGate>
+        )}
+
+        {viaEth && noRoute && amountIn && (
+          <p className="text-xs leading-relaxed text-ink-3">
+            No ETH route for this token yet: a new pool takes a few seconds to be found.{" "}
+            <button type="button" className="font-medium text-brand hover:underline" onClick={() => pickMoney("USDG")}>
+              Use USDG
+            </button>
+          </p>
         )}
 
         {txDone && (
@@ -335,5 +419,25 @@ export default function SwapPanel({ detail }: { detail: CoinDetail }) {
         </p>
       </div>
     </Panel>
+  );
+}
+
+/** the money side of the trade: ETH through KyberSwap, or USDG straight to the pool */
+function MoneyPick({ value, onChange }: { value: "ETH" | "USDG"; onChange: (v: "ETH" | "USDG") => void }) {
+  return (
+    <span role="radiogroup" aria-label="Pay or receive in" className="flex shrink-0 rounded-md bg-panel p-0.5 shadow-[inset_0_0_0_1px_var(--color-line)]">
+      {(["ETH", "USDG"] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          role="radio"
+          aria-checked={value === m}
+          onClick={() => onChange(m)}
+          className={`rounded px-2 py-1 text-xs font-semibold transition-colors ${value === m ? "bg-brand-soft text-brand" : "text-ink-3 hover:text-ink"}`}
+        >
+          {m}
+        </button>
+      ))}
+    </span>
   );
 }

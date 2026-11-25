@@ -28,6 +28,8 @@ export const EXPLORER = CHAIN.explorer;
 export const LIGHTER_WS = "wss://api.rh.lighter.xyz/stream";
 
 export const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+/** native ETH, as aggregators spell it */
+export const NATIVE = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 
 /**
  * Doppler's official Robinhood Chain deployment (docs.doppler.lol/reference/contract-addresses),

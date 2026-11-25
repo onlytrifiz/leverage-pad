@@ -15,7 +15,8 @@ import { CoinSeal } from "@/components/brand/CoinSeal";
 import { Banknote } from "@/components/brand/Banknote";
 import { EngravedArt } from "@/components/brand/EngravedArt";
 import { fmtChange, fmtMove } from "@/lib/format";
-import { USDG, LAUNCH_FEE_HUB, LAUNCH_ROUTER, explorerTx, explorerToken, explorerAddr } from "@/lib/clientConfig";
+import { USDG, NATIVE, MULTICALL3, LAUNCH_FEE_HUB, LAUNCH_ROUTER, explorerTx, explorerToken, explorerAddr } from "@/lib/clientConfig";
+import { quoteRoute, swapRoute } from "@/lib/swap";
 import { multicall } from "@/lib/multicall";
 import { sendGuardedTx, waitForReceipt, txErrorMessage } from "@/lib/tx";
 import {
@@ -154,6 +155,10 @@ function normalizeLink(raw: string, kind: "website" | "x" | "telegram"): string 
   return /^https:\/\/[^\s]+$/i.test(url) ? url.slice(0, LINK_MAX) : "";
 }
 
+const MULTICALL_IFACE = new ethers.utils.Interface(["function getEthBalance(address) view returns (uint256)"]);
+/** ETH a launch may still need for gas after the swap that funds its buy */
+const LAUNCH_GAS_RESERVE = ethers.utils.parseEther("0.0006");
+
 /** USDG has 6 decimals: anything finer would make parseUnits throw and silently drop the first buy. */
 const clampUsdgInput = (v: string) => {
   const cleaned = v.replace(/[^0-9.]/g, "");
@@ -210,7 +215,7 @@ export default function LaunchForm({
   const [feeSplit, setFeeSplit] = useState<FeeSplit | null>(null);
   const [protocolOwner, setProtocolOwner] = useState<string | undefined>(undefined);
   const [simError, setSimError] = useState<string | null>(null);
-  const [acct, setAcct] = useState<{ usdg: ethers.BigNumber; allowance: ethers.BigNumber } | null>(null);
+  const [acct, setAcct] = useState<{ usdg: ethers.BigNumber; allowance: ethers.BigNumber; eth: ethers.BigNumber } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [launched, setLaunched] = useState<Launched | null>(null);
@@ -298,11 +303,12 @@ export default function LaunchForm({
 
   /** balances and the Bundler allowance in one request */
   const refresh = useCallback(async (addr: string) => {
-    const [b, a] = await multicall(readProvider, [
+    const [b, a, e] = await multicall(readProvider, [
       { target: USDG, iface: ERC20_IFACE, fn: "balanceOf", args: [addr] },
       { target: USDG, iface: ERC20_IFACE, fn: "allowance", args: [addr, LAUNCH_ROUTER] },
+      { target: MULTICALL3, iface: MULTICALL_IFACE, fn: "getEthBalance", args: [addr] },
     ]);
-    setAcct({ usdg: b ? b[0] : ethers.constants.Zero, allowance: a ? a[0] : ethers.constants.Zero });
+    setAcct({ usdg: b ? b[0] : ethers.constants.Zero, allowance: a ? a[0] : ethers.constants.Zero, eth: e ? e[0] : ethers.constants.Zero });
   }, []);
 
   useEffect(() => {
@@ -394,6 +400,50 @@ export default function LaunchForm({
   }, [address, params, routerInput, orders, withBuy, buyIn, acct]);
 
   const insufficient = !!(withBuy && acct && buyIn.gt(acct.usdg));
+  /*
+   * Most wallets hold ETH and no USDG. What the launch buy misses is swapped first, as a step of its
+   * own with its own signature: the launch that follows is the same one, and nothing is spent on it
+   * if the swap is refused.
+   */
+  const missing = insufficient && acct ? buyIn.sub(acct.usdg) : null;
+  const missingKey = missing?.toString() ?? "";
+  const [ethFor, setEthFor] = useState<{ key: string; eth: ethers.BigNumber; out: ethers.BigNumber } | null>(null);
+  useEffect(() => {
+    if (!missingKey) return;
+    const stop = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        // the aggregator takes an input: size it from a first quote, with 1% to spare
+        const want = ethers.BigNumber.from(missingKey);
+        const probe = ethers.utils.parseEther("0.005");
+        const first = await quoteRoute(NATIVE, USDG, probe, stop.signal);
+        const eth = probe.mul(want).mul(101).div(ethers.BigNumber.from(first.routeSummary.amountOut).mul(100));
+        const exact = await quoteRoute(NATIVE, USDG, eth, stop.signal);
+        setEthFor({ key: missingKey, eth, out: ethers.BigNumber.from(exact.routeSummary.amountOut) });
+      } catch {
+        if (!stop.signal.aborted) setEthFor(null);
+      }
+    }, 400);
+    return () => {
+      stop.abort();
+      clearTimeout(t);
+    };
+  }, [missingKey]);
+  const topUp = missing && ethFor && ethFor.key === missingKey && ethFor.out.gte(missing) && acct && acct.eth.gt(ethFor.eth.add(LAUNCH_GAS_RESERVE)) ? ethFor : null;
+
+  async function getUsdg() {
+    if (!topUp || !address || !provider) return;
+    setError(null);
+    try {
+      setBusy("Swapping ETH for USDG");
+      await swapRoute({ provider, read: readProvider, account: address, tokenIn: NATIVE, tokenOut: USDG, amountIn: topUp.eth, shownOut: topUp.out, slippageBps: 50, onStep: () => {} });
+      await refresh(address);
+    } catch (err) {
+      setError(txErrorMessage(err));
+    } finally {
+      setBusy(null);
+    }
+  }
   const needsApproval = !!(withBuy && acct && acct.allowance.lt(buyIn));
 
   async function launch() {
@@ -446,10 +496,17 @@ export default function LaunchForm({
   /* what each choice means, in plain numbers, recomputed as you change it */
   const up = side === "long";
   const move10 = 10 * lev;
+  const usd2 = (v: ethers.BigNumber) => Number(ethers.utils.formatUnits(v, 6)).toLocaleString("en-US", { maximumFractionDigits: 2 });
   const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
   const launchButton = (
     <ChainGate connectLabel="Connect wallet to launch">
+      {topUp && missing && (
+        <Button size="xl" variant="outline" className="mb-2 h-auto min-h-11 w-full py-2 whitespace-normal" onClick={getUsdg} disabled={!!busy}>
+          {busy === "Swapping ETH for USDG" && <Spinner data-icon="inline-start" />}
+          {busy === "Swapping ETH for USDG" ? busy : `Swap ${Number(ethers.utils.formatEther(topUp.eth)).toPrecision(3)} ETH for the ${usd2(missing)} USDG it needs`}
+        </Button>
+      )}
       <Button size="xl" className="w-full" onClick={launch} disabled={!routerInput || !orders || !predicted || !!busy || insufficient || !marketOk || !levOk}>
         {busy && <Spinner data-icon="inline-start" />}
         {busy ??
