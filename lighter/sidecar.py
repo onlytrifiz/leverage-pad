@@ -328,6 +328,15 @@ async def cmd_withdraw(p):
     # withdraw "normale": nessuna fee/limite, verso l'indirizzo L1 originante
     # (= il sub-wallet su 4663). Riporta il profitto realizzato per bruciarlo on-chain.
     client = signer(p["accountIndex"], p.get("apiKeyIndex", 4))
+    # its hash goes out before it is sent: whatever comes after, the venue can be asked about it
+    sign = client.sign_withdraw
+
+    def signed(*a, **k):
+        r = sign(*a, **k)
+        if r[3] is None:
+            print(json.dumps({"signed": r[2]}), flush=True)
+        return r
+    client.sign_withdraw = signed
     try:
         _, resp, err = await client.withdraw(
             asset_id=client.ASSET_ID_USDC, route_type=client.ROUTE_PERP, amount=float(p["amount"]))
@@ -355,7 +364,10 @@ async def main():
         # what was asked, it can be asked again as it is
         status = getattr(e, "status", None)
         busy = not SENDING["tx"] and isinstance(status, int) and (status == 429 or status >= 500)
-        out({"ok": False, "error": f"{type(e).__name__}: {e}", "retry": busy})
+        # the venue's own limits (429, 405) refuse at the door, also what was sent: it was not taken
+        limited = SENDING["tx"] and status in (405, 429)
+        out({"ok": False, "error": f"{type(e).__name__}: {e}", "retry": busy or limited, "limited": limited,
+             **({"definitive": True} if limited else {})})
 
 
 if __name__ == "__main__":

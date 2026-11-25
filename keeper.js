@@ -683,6 +683,38 @@ function bookFeeIncome(st, realQuote) {
   st.buybackReserveRaw = BN(st.buybackReserveRaw).add(buybackCut).toString();
 }
 
+/**
+ * USDG in the wallet that no bucket knows goes to the engine, and a bucket the wallet cannot cover
+ * is brought down to it. A node a block behind shows either for a moment: a surplus is believed
+ * when it is there twice, and only as much as both times; a hole when it has been there a while.
+ */
+function sweepSurplus({ coin, st, checkpoint, real, accounted, unitUsd, now = Date.now() }) {
+  const usd = (raw) => usdOf(raw, coin.pairDecimals, unitUsd);
+  const surplus = real.gt(accounted) ? real.sub(accounted) : BN(0);
+  if (usd(surplus) >= config.CLAIM_MIN_USD) {
+    st.shortSince = 0;
+    const seen = st.surplusSeen;
+    if (!seen) { st.surplusSeen = { raw: surplus.toString(), at: now }; checkpoint(); return; }
+    if (now - seen.at < config.SEEN_AGAIN_MS) return;
+    const both = surplus.lt(seen.raw) ? surplus : BN(seen.raw);
+    st.surplusSeen = null;
+    st.perpReserveRaw = BN(st.perpReserveRaw).add(both).toString();
+    checkpoint();
+    console.log(`  [${coin.symbol}] sweep: $${usd(both).toFixed(2)} non attribuiti → perp reserve`);
+    return;
+  }
+  if (st.surplusSeen) { st.surplusSeen = null; checkpoint(); }
+  const short = accounted.gt(real) ? accounted.sub(real) : BN(0);
+  if (usd(short) < 0.01) { if (st.shortSince) { st.shortSince = 0; checkpoint(); } return; }
+  if (!st.shortSince) { st.shortSince = now; checkpoint(); return; }
+  if (now - st.shortSince < config.SHORT_BELIEVED_MS) return;
+  const off = short.lt(st.perpReserveRaw) ? short : BN(st.perpReserveRaw);
+  st.shortSince = 0;
+  st.perpReserveRaw = BN(st.perpReserveRaw).sub(off).toString();
+  checkpoint();
+  console.log(`  [${coin.symbol}] the wallet holds $${usd(short).toFixed(2)} less than the books: $${usd(off).toFixed(2)} taken off the perp reserve`);
+}
+
 async function tickCoin(keeper, locker, coin, st, checkpoint) {
   const token = coin.token;
   const sub = deriveSubWallet(token, provider);
@@ -732,13 +764,35 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
     console.log(`  [${coin.symbol}] withdraw con esito ambiguo ($${amt.toFixed(2)}): trattato come inviato — verra' accreditato solo all'arrivo reale`);
   }
 
+  // What is done on the chain, step by step: one that fails is tried again at the next round, and
+  // the position is looked after whatever happened here.
+  try { await chainSteps({ keeper, locker, coin, st, checkpoint, sub, unitUsd, quote, quoteIs0, coinC }); }
+  catch (e) { console.log(`  [${coin.symbol}] chain: ${e.message.slice(0, 140)}`); }
+
+  // ── 6. PERP su Lighter (o stub) ───────────────────────────────────────────
+  const perpUsd = usdOf(BN(st.perpReserveRaw), coin.pairDecimals, unitUsd);
+  if (lighter.enabled) {
+    try { await perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote); }
+    catch (e) { console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
+  } else if (perpUsd >= config.OPEN_GATE_USD && !st.perpGateLogged) {
+    console.log(`  [${coin.symbol}] PERP (stub): riserva $${perpUsd.toFixed(2)} ≥ $${config.OPEN_GATE_USD} → ${coin.market} ${coin.side} ${coin.leverage}x quando Lighter sara' attivo (PERPSPAD_LIGHTER_ENABLED)`);
+    st.perpGateLogged = true; checkpoint();
+  }
+
+  st.lastTickTs = Date.now();
+}
+
+async function chainSteps({ keeper, locker, coin, st, checkpoint, sub, unitUsd, quote, quoteIs0, coinC }) {
+  const token = coin.token;
   // ── 0a. WITHDRAW: credito SOLO dagli USDG davvero arrivati dal bridge ────────
   // Match per MITTENTE, non per surplus aggregato: gli inflow dal pool sono fee,
   // qualunque altro inflow durante la finestra del withdraw e' il settlement.
   // Cosi' fee incassate da collect() esterne o fondi orfani non vengono piu'
   // scambiati per profitto, e il profitto vero non resta orfano.
+  // While another is still being settled nobody looks: what arrives could be either's, and the
+  // cursor would pass over the second.
   let seenTo = null; // the last block whose arrivals have been credited
-  if (Number(st.perpWithdrawPendingUsd) > 0) {
+  if (Number(st.perpWithdrawPendingUsd) > 0 && !(Number(st.perpWithdrawIntentUsd) > 0)) {
     if (!st.perpWithdrawBlock) { st.perpWithdrawBlock = await provider.getBlockNumber(); st.perpWithdrawScanBlock = st.perpWithdrawBlock - 1; checkpoint(); }
     const latest = await provider.getBlockNumber();
     const fromBlock = Number(st.perpWithdrawScanBlock ?? st.perpWithdrawBlock - 1) + 1;
@@ -780,12 +834,7 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
     // while a withdrawal is on its way the balance is read where its arrivals were looked for:
     // one that landed since would be swept now and credited again at the next tick
     const real = await quote.balanceOf(sub.address, ...(seenTo != null ? [{ blockTag: seenTo }] : []));
-    const surplus = real.gt(accounted) ? real.sub(accounted) : ethers.constants.Zero;
-    if (usdOf(surplus, coin.pairDecimals, unitUsd) >= config.CLAIM_MIN_USD) {
-      st.perpReserveRaw = BN(st.perpReserveRaw).add(surplus).toString();
-      checkpoint();
-      console.log(`  [${coin.symbol}] sweep: $${usdOf(surplus, coin.pairDecimals, unitUsd).toFixed(2)} non attribuiti → perp reserve`);
-    }
+    sweepSurplus({ coin, st, checkpoint, real, accounted, unitUsd });
   }
 
   // ── 1+2. CLAIM e SPLIT, per venue (v4: sink; V3: locker) ────────────────────
@@ -854,18 +903,6 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
       console.log(`  [${coin.symbol}] BUYBACK&BURN: $${spendUsd.toFixed(2)} → ${ethers.utils.formatEther(bought)} ${coin.symbol} bruciati (minOut ${ethers.utils.formatEther(minOut)})`);
     }
   }
-
-  // ── 6. PERP su Lighter (o stub) ───────────────────────────────────────────
-  const perpUsd = usdOf(BN(st.perpReserveRaw), coin.pairDecimals, unitUsd);
-  if (lighter.enabled) {
-    try { await perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote); }
-    catch (e) { console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
-  } else if (perpUsd >= config.OPEN_GATE_USD && !st.perpGateLogged) {
-    console.log(`  [${coin.symbol}] PERP (stub): riserva $${perpUsd.toFixed(2)} ≥ $${config.OPEN_GATE_USD} → ${coin.market} ${coin.side} ${coin.leverage}x quando Lighter sara' attivo (PERPSPAD_LIGHTER_ENABLED)`);
-    st.perpGateLogged = true; checkpoint();
-  }
-
-  st.lastTickTs = Date.now();
 }
 
 /** a client order index no other order of the account has: its trades are found by it */
@@ -1072,26 +1109,29 @@ async function withdrawProceeds({ coin, st, checkpoint, accountIndex, apiPrivKey
   if (st.perpCapitalUsd < 1e-6) st.perpCapitalUsd = 0;
   if (Math.abs(st.perpRealizedUsd) < 1e-6) st.perpRealizedUsd = 0;
   st.perpWithdrawIntentUsd = amount; st.perpWithdrawIntentProfitUsd = profit;
-  st.perpWithdrawCashUsd = cash; st.perpWithdrawAt = Date.now(); st.perpWithdrawWas = was; st.perpWithdrawSent = false;
+  st.perpWithdrawCashUsd = cash; st.perpWithdrawAt = Date.now(); st.perpWithdrawWas = was; st.perpWithdrawSent = false; st.perpWithdrawTx = null;
   checkpoint();
   try {
-    await lighter.withdraw({ accountIndex, amount, apiPrivKey, apiKeyIndex });
-    st.perpWithdrawSent = true; checkpoint();
+    const sent = await lighter.withdraw({ accountIndex, amount, apiPrivKey, apiKeyIndex });
+    st.perpWithdrawSent = true; st.perpWithdrawTx = (sent && sent.txHash) || null; checkpoint();
     console.log(`  [${coin.symbol}] withdraw: $${amount.toFixed(2)} da Lighter → sub-wallet, di cui $${profit.toFixed(2)} di guadagno`);
   } catch (e) {
     if (e && e.definitive) {
       // es. importo sotto il minimo di Lighter: non e' partito nulla
-      undoWithdrawal(st); st.perpWithdrawRetryAt = Date.now() + (e.retry ? 60_000 : 30 * 60 * 1000); checkpoint();
+      undoWithdrawal(st); st.perpWithdrawRetryAt = Date.now() + (e.retry && !e.limited ? 60_000 : 30 * 60 * 1000); checkpoint();
       console.log(`  [${coin.symbol}] withdraw rifiutato da Lighter ($${amount.toFixed(2)}): riaccreditato, si ritenta piu' avanti (${e.message.slice(0, 80)})`);
       return false;
-    } else console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} con esito ignoto (${e.message.slice(0, 80)}): lo dira' il saldo`);
+    } else {
+      st.perpWithdrawTx = e.txHash || null; checkpoint();
+      console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} con esito ignoto (${e.message.slice(0, 80)}): lo dira' ${e.txHash ? 'la sua transazione' : 'il saldo'}`);
+    }
   }
   return true;
 }
 
 function clearIntent(st) {
   st.perpWithdrawIntentUsd = 0; st.perpWithdrawIntentProfitUsd = 0;
-  st.perpWithdrawCashUsd = null; st.perpWithdrawWas = null; st.perpWithdrawSent = false;
+  st.perpWithdrawCashUsd = null; st.perpWithdrawWas = null; st.perpWithdrawSent = false; st.perpWithdrawTx = null;
 }
 function undoWithdrawal(st) {
   st.perpRealizedUsd = st.perpWithdrawWas.realized; st.perpCapitalUsd = st.perpWithdrawWas.capital;
@@ -1116,19 +1156,36 @@ async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
     console.log(`  [${coin.symbol}] withdraw: $${amount.toFixed(2)} in arrivo`);
     return true;
   }
-  if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
-  // Never executed, or hidden by a deposit that landed meanwhile. Taken back only when the venue
-  // never said yes and the cash is to the cent what it was; otherwise it may have left: it is
-  // treated as sent, and credited only if it really arrives.
-  if (st.perpWithdrawSent || Math.abs(cash - Number(st.perpWithdrawCashUsd)) > 0.01) {
-    intentToPending(st);
-    console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} non verificabile: trattato come inviato`);
-  } else {
-    undoWithdrawal(st);
-    console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} mai eseguito: riaccreditato`);
+  const undo = (why) => {
+    undoWithdrawal(st); checkpoint();
+    console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} ${why}: riaccreditato`);
+    return true;
+  };
+  // its own transaction knows, when there is one; nothing that is not executed by its expiry will be
+  if (st.perpWithdrawTx) {
+    const t = await lighter.tx(st.perpWithdrawTx);
+    if (t && t.status === 0) return undo('fallito');
+    if (t && t.status >= 2) {
+      intentToPending(st); checkpoint();
+      console.log(`  [${coin.symbol}] withdraw: $${amount.toFixed(2)} eseguito, in arrivo`);
+      return true;
+    }
+    if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
+    return undo('mai eseguito');
   }
-  checkpoint();
-  return true;
+  if (age < config.LIGHTER_ORDER_EXPIRY_MS) return false;
+  // No transaction to ask about (killed between signing and knowing): the cash says it, with the
+  // one deposit that may have landed meanwhile. Taken back only when the venue never said yes and
+  // the cash is, to the cent, what it would be without it; otherwise it may have left: it is
+  // treated as sent, and credited only if it really arrives.
+  const moved = cash - Number(st.perpWithdrawCashUsd), landed = Number(st.perpDepositUsd || 0);
+  const untouched = Math.abs(moved) <= 0.01 || (landed > 0 && Math.abs(moved - landed) <= 0.01);
+  if (st.perpWithdrawSent || !untouched) {
+    intentToPending(st); checkpoint();
+    console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)} non verificabile: trattato come inviato`);
+    return true;
+  }
+  return undo('mai eseguito');
 }
 
 /**
@@ -1385,7 +1442,7 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
       console.log(`  [${coin.symbol}] ${tag}perp deposit: depositerei $${perpUsd.toFixed(2)} USDG → Lighter (intent ${intentAddress})`);
     } else {
       await ensureGas(keeper, sub.address);
-      st.perpDepositAt = Date.now();
+      st.perpDepositAt = Date.now(); st.perpDepositUsd = perpUsd;
       try {
         await moving({
           st, checkpoint, wallet: sub, bucket: 'perpReserveRaw', raw: depositRaw, label: 'perp deposit',
@@ -1569,7 +1626,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
             ready: [...ready].sort((a, b) => a.ts - b.ts), keep,
           });
           try {
-            await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: config.LIGHTER_MAX_SLIPPAGE, clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
+            // never past the entry of the worst of them: a book thinner than the gain is not a gain
+            await lighter.close({ accountIndex, marketIndex, baseAmount: closeBase, isAsk: !isAsk, maxSlippage: Math.min(config.LIGHTER_MAX_SLIPPAGE, 0.9 * Math.min(...ready.map((t) => Math.abs(mark - t.entryMark))) / mark), clientOrderIndex: o.id, apiPrivKey, apiKeyIndex });
           } catch (e) {
             if (!(e && e.definitive)) throw e; // unknown: settled on its trades, next tick
             st.perpOrder = null; if (!e.retry) st.perpTpSplit = split >= 5 ? 0 : split + 1; checkpoint();
@@ -1707,6 +1765,7 @@ function reasonToTick({ coin, st, brief, feedLive, now = Date.now() }) {
   const idle = now - Number(st.perpLookAt || 0) >= config.PERP_LOOK_MS ? 'look' : null;
   const usd = (raw) => usdOf(BN(raw || '0'), coin.pairDecimals, 1);
   if (st.perpOrder || st.txOut || Number(st.perpWithdrawIntentUsd || 0) > 0) return 'in flight';
+  if (st.surplusSeen || st.shortSince) return 'books';
   if (!brief) return 'unread';
   if (brief.sinkCoinRaw.gt(0) || usd(brief.sinkRaw) >= config.CLAIM_MIN_USD) return 'fees';
   if (config.RETIRED.has(coin.token.toLowerCase())) return usd(brief.quoteRaw) >= config.CLAIM_MIN_USD || st.perpOpen ? 'retired' : idle;
@@ -1910,10 +1969,13 @@ async function main() {
       key: keyOf, parallel: config.TICK_PARALLEL, patienceMs: config.TICK_PATIENCE_MS,
       work: async (coin) => {
         const commit = () => store.commit(keyOf(coin));
+        const book = () => JSON.stringify((reg.state[keyOf(coin)].perpTranches || []).map((t) => t.base));
+        const before = book();
         try { await tickCoin(keeper, locker, coin, reg.state[keyOf(coin)], commit); }
         catch (e) { console.log(`  [${coin.symbol}] ERRORE tick: ${e.message.slice(0, 140)}`); }
         // seen, whatever came of it: one that always fails must not keep its place in front
         reg.state[keyOf(coin)].perpLookAt = Date.now();
+        if (book() !== before) urgent.served(keyOf(coin), { acted: true, went: true });
         commit();
       },
     });
@@ -1945,4 +2007,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { refusedByNode, sendNow, receiptOf, moving, settleTxOut, StuckTxError, readBriefs, reasonToTick, hasMature, strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { sweepSurplus, settleWithdrawal, refusedByNode, sendNow, receiptOf, moving, settleTxOut, StuckTxError, readBriefs, reasonToTick, hasMature, strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

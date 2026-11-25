@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const lighter = require('../lighter/client');
 const config = require('../config');
-const { strayPositions, settleEngineSwitch, closeProceeds, withdrawalOf, splitArrival, settleOrder, depositDue, minDeploy, perpTick, tickCoin } = require('../keeper');
+const { strayPositions, settleEngineSwitch, closeProceeds, withdrawalOf, splitArrival, settleOrder, depositDue, minDeploy, perpTick, tickCoin, settleWithdrawal, sweepSurplus } = require('../keeper');
 const { encryptSecret } = require('../lib/secrets');
 
 Object.assign(config, { LIGHTER_FILL_RETRY_MS: 0, LIGHTER_ORDER_SETTLE_MS: 0, MASTER_SECRET: 'test-secret', PERP_WITHDRAW_FLOOR_USD: 25, OPEN_GATE_USD: 25, TOPUP_STEP_USD: 25, TRANCHE_INTERVAL_MS: 3_600_000 });
@@ -638,4 +638,74 @@ test('a leverage the venue was too busy to set opens nothing at the old one', as
   lighter.setLeverage = async () => {};
   await e.tick();
   assert.equal(e.st.lighterLeverage, 2); assert.equal(e.v.opens.length, 1);
+});
+
+test('two tokens born in the same process never share their books', () => {
+  const { freshState, STATE_DEFAULTS, addCoin } = require('../lib/registry');
+  const reg = { coins: [], state: {} };
+  addCoin(reg, { token: '0xAA' }); addCoin(reg, { token: '0xBB' });
+  reg.state['0xaa'].perpTranches.push({ base: 1167 }); reg.state['0xaa'].perpDust[1] = 3; reg.state['0xaa'].perpFundingSeen[1] = 4;
+  for (const s of [reg.state['0xbb'], freshState(), STATE_DEFAULTS]) assert.deepEqual([s.perpTranches, s.perpDust, s.perpFundingSeen], [[], {}, {}]);
+});
+
+test('two tokens opening together, from the state a new one is given', async () => {
+  const { freshState } = require('../lib/registry');
+  const go = async (over) => { const e = engine({ cash: 100, ...over }); e.st = { ...freshState(), ...e.st, perpTranches: freshState().perpTranches }; await e.tick(); return e.st; };
+  const a = await go({ px: 60_000 }), b = await go({ px: 140 });
+  assert.equal(a.perpTranches.length, 1); assert.equal(b.perpTranches.length, 1);
+  close(a.perpTranches[0].entryMark, 60_060); close(b.perpTranches[0].entryMark, 140.14);
+});
+
+test('a withdrawal is known by its own transaction, whatever the cash says', async () => {
+  const run = async (tx, { age = 0, cash = 30.5, hash = 'h' } = {}) => {
+    const st = { perpRealizedUsd: 0, perpCapitalUsd: 0, perpWithdrawIntentUsd: 30, perpWithdrawIntentProfitUsd: 6, perpWithdrawPendingUsd: 0, perpWithdrawCashUsd: 30.5, perpWithdrawAt: Date.now() - age, perpWithdrawWas: { realized: 6, capital: 24 }, perpWithdrawSent: true, perpWithdrawTx: hash };
+    lighter.account = async () => ({ collateral: String(cash), positions: [] });
+    lighter.tx = async () => { if (tx instanceof Error) throw tx; return tx; };
+    const done = await settleWithdrawal({ coin: { symbol: 'T' }, st, checkpoint: () => {}, accountIndex: 1 }).catch(() => 'threw');
+    return [done, st.perpWithdrawPendingUsd, st.perpCapitalUsd];
+  };
+  const late = 11 * 60_000;
+  assert.deepEqual(await run({ status: 3 }), [true, 30, 0], 'executed, and a deposit hides the cash');
+  assert.deepEqual(await run({ status: 0 }), [true, 0, 24], 'failed: given back at once');
+  assert.deepEqual(await run({ status: 1 }), [false, 0, 0], 'on its way');
+  assert.deepEqual(await run(null), [false, 0, 0], 'not seen yet');
+  assert.deepEqual(await run(null, { age: late }), [true, 0, 24], 'answered 200 and never executed: not pending for ever');
+  assert.deepEqual(await run(null, { age: late, cash: 60 }), [true, 0, 24], 'nor because a deposit landed');
+  assert.deepEqual(await run(new Error('500')), ['threw', 0, 0]);
+  assert.deepEqual(await run(null, { cash: 0.5 }), [true, 30, 0], 'the cash is gone: it left');
+});
+
+test('without its transaction the cash says it, and the deposit that may have landed is known', async () => {
+  const run = async (cash, landed, sent = false) => {
+    const st = { perpRealizedUsd: 0, perpCapitalUsd: 0, perpWithdrawIntentUsd: 30, perpWithdrawPendingUsd: 0, perpWithdrawCashUsd: 30.5, perpWithdrawAt: Date.now() - 11 * 60_000, perpWithdrawWas: { realized: 6, capital: 24 }, perpWithdrawSent: sent, perpWithdrawTx: null, perpDepositUsd: landed };
+    lighter.account = async () => ({ collateral: String(cash), positions: [] });
+    await settleWithdrawal({ coin: { symbol: 'T' }, st, checkpoint: () => {}, accountIndex: 1 });
+    return st.perpWithdrawPendingUsd;
+  };
+  assert.equal(await run(30.5, 0), 0); assert.equal(await run(70.5, 40), 0, 'the deposit landed, the withdrawal did not leave');
+  assert.equal(await run(40.5, 40), 30, 'both'); assert.equal(await run(55, 40), 30, 'cannot tell'); assert.equal(await run(30.5, 0, true), 30);
+});
+
+test('a surplus is believed when it is there twice, a hole when it has been there a while', () => {
+  const BN = require('ethers').BigNumber.from, coin = { symbol: 'T', pairDecimals: 6 };
+  const st = { perpReserveRaw: '10000000' };
+  let now = 1_000;
+  const see = (real, accounted) => sweepSurplus({ coin, st, checkpoint: () => {}, real: BN(real), accounted: BN(accounted), unitUsd: 1, now });
+  see(35e6, 10e6); assert.equal(st.perpReserveRaw, '10000000', 'a node a block behind');
+  now += 5_000; see(35e6, 10e6); assert.equal(st.perpReserveRaw, '10000000', 'the same moment');
+  see(10e6, 10e6); assert.equal(st.surplusSeen, null, 'and it was');
+  see(35e6, 10e6); now += 21_000; see(15e6, 10e6); assert.equal(st.perpReserveRaw, '15000000', 'only what was there both times');
+  see(10e6, 15e6); now += 5 * 60_000; see(10e6, 15e6); assert.equal(st.perpReserveRaw, '15000000');
+  see(15e6, 15e6); assert.equal(st.shortSince, 0);
+  see(10e6, 15e6); now += 11 * 60_000; see(10e6, 15e6); assert.equal(st.perpReserveRaw, '10000000');
+  see(0, 10e6); now += 11 * 60_000; see(0, 30e6); assert.equal(st.perpReserveRaw, '0', 'never below nothing');
+});
+
+test('a take-profit never accepts a price past the entry of what it closes', async () => {
+  const e = engine({ cash: 100, coin: { leverage: 50, takeProfitPct: 20 } });
+  await e.tick();
+  const asked = [], send = lighter.close;
+  lighter.close = async (o) => { asked.push(o.maxSlippage); return send(o); };
+  e.v.px = e.st.perpTranches[0].entryMark * 1.005; await e.tick();
+  assert.equal(asked.length, 1); assert.ok(asked[0] < 0.005 && asked[0] > 0.003, String(asked[0]));
 });

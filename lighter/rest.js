@@ -115,6 +115,12 @@ async function fills({ accountIndex, marketIndex, clientOrderIndex, since = 0 })
   return { ok: true, size, price: size > 0 ? quote / size : null };
 }
 
+/** 0 failed, 1 pending, 2 and 3 executed; null: the venue has never seen it */
+async function tx({ hash }) {
+  try { return { status: Number((await get('/api/v1/tx', { by: 'hash', value: hash })).status) }; }
+  catch (e) { if (/transaction not found/i.test(e.venue || '')) return null; throw e; }
+}
+
 async function resolveAccount({ address }) {
   let r;
   try { r = await get('/api/v1/accountsByL1Address', { l1_address: address }); }
@@ -138,4 +144,4 @@ async function markets() {
   return { ok: true, markets: out };
 }
 
-module.exports = { account, fills, resolveAccount, markets, urgently, isUrgent, createLimiter, charge: (n) => reads.charge(n), spareReads: () => reads.spare() };
+module.exports = { account, fills, tx, resolveAccount, markets, urgently, isUrgent, createLimiter, charge: (n) => reads.charge(n), spareReads: () => reads.spare() };

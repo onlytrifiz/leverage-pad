@@ -131,6 +131,8 @@ module.exports = {
   MAX_GAS_PRICE_WEI: process.env.PERPSPAD_MAX_GAS_PRICE_WEI || '5000000000', // 5 gwei: cap anti-drain se l'RPC gonfia il gasPrice
   GAS_TICK_UNITS: 700000,         // gas del tick peggiore del sub-wallet (approve+swap+burn)
   GAS_TOPUP_MULT: 3,              // il top-up porta il sub-wallet a MULT × il costo del tick
+  SEEN_AGAIN_MS: 20_000,          // an unknown surplus is believed when it is still there after this
+  SHORT_BELIEVED_MS: 10 * 60 * 1000, // and a hole after this
   RPC_TIMEOUT_MS: 25_000,
   BROADCAST_TIMEOUT_MS: 15_000,
   TX_GIVE_UP_MS: 15 * 60 * 1000,  // a transfer not mined after this has its nonce used for nothing
@@ -148,7 +150,7 @@ module.exports = {
   // public reads (lighter/rest.js): the venue allows 60 a minute per IP, trades 40, and the signed
   // calls of the sidecar come out of the same allowance
   LIGHTER_REST_URL: process.env.PERPSPAD_LIGHTER_REST_URL || 'https://api.rh.lighter.xyz',
-  LIGHTER_READS_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_READS_PER_MIN || 55), // all of them, trades included; a signed call counts for one
+  LIGHTER_READS_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_READS_PER_MIN || 55), // all of them, trades included; a signed call counts for three
   LIGHTER_TRADES_PER_MIN: Number(process.env.PERPSPAD_LIGHTER_TRADES_PER_MIN || 25),
   LIGHTER_READ_TIMEOUT_MS: 15_000,
   LIGHTER_SIGNERS: 4,             // signed calls (one Python process each) at once

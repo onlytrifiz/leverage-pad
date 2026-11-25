@@ -37,7 +37,7 @@ const signing = createSemaphore(config.LIGHTER_SIGNERS, { reserved: 1 });
 const call = (cmd, params = {}, env = {}, { staleMs = Infinity } = {}) => {
   const asked = Date.now();
   return signing(() => {
-    if (Date.now() - asked <= staleMs) { rest.charge(1); return spawn(cmd, params, env); }
+    if (Date.now() - asked <= staleMs) { rest.charge(3); return spawn(cmd, params, env); }
     const e = new Error(`lighter:${cmd}: waited too long for its turn`);
     e.definitive = true; e.retry = true;
     throw e;
@@ -49,7 +49,12 @@ function spawn(cmd, params, env) {
       { env: { ...process.env, LIGHTER_PROFILE: config.LIGHTER_PROFILE, ...env }, timeout: 60000, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => {
         let parsed = null;
-        try { parsed = JSON.parse((stdout || '').trim().split('\n').pop()); } catch { /* sotto */ }
+        const lines = (stdout || '').trim().split('\n');
+        try { parsed = JSON.parse(lines.at(-1)); } catch { /* sotto */ }
+        // what was signed is known even when what came of it is not
+        let signed = null;
+        for (const l of lines) try { signed = JSON.parse(l).signed || signed; } catch { /* not it */ }
+        if (parsed && parsed.ok && signed) parsed.txHash ??= signed;
         if (parsed && parsed.ok) return resolve(parsed);
         if (parsed && parsed.error) {
           // The sidecar says whether the failure is a refusal (nothing happened on the venue, the
@@ -57,11 +62,13 @@ function spawn(cmd, params, env) {
           const e = new Error('lighter:' + cmd + ': ' + parsed.error);
           e.definitive = parsed.definitive === true;
           e.retry = parsed.retry === true; // the venue was busy, it did not judge the request
+          e.limited = parsed.limited === true; // it was past one of the venue's own limits
+          e.txHash = signed;
           return reject(e);
         }
         // nessun JSON: timeout, processo ucciso, crash → esito AMBIGUO, la
         // richiesta potrebbe essere partita. Nessun ripristino automatico.
-        return reject(new Error('lighter:' + cmd + ': ' + (err ? err.message : 'output non-JSON')));
+        return reject(Object.assign(new Error('lighter:' + cmd + ': ' + (err ? err.message : 'output non-JSON')), { txHash: signed }));
       });
   });
 }
@@ -131,6 +138,8 @@ const open = ({ accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clie
   call('open', { accountIndex, marketIndex, notionalUsd, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
 const close = ({ accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex = 0, apiPrivKey, apiKeyIndex = 4 }) =>
   call('close', { accountIndex, marketIndex, baseAmount, isAsk, maxSlippage, clientOrderIndex, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey }, { staleMs: config.LIGHTER_STALE_ORDER_MS });
+/** a transaction on the venue by its hash: { status }, or null when it has never seen it */
+const tx = (hash) => rest.tx({ hash });
 /** what the order with this client index traded: { size, price }, price null when nothing is seen yet */
 const fills = ({ accountIndex, marketIndex, clientOrderIndex, since = 0 }) => rest.fills({ accountIndex, marketIndex, clientOrderIndex, since });
 const addMargin = ({ accountIndex, marketIndex, usdcAmount, apiPrivKey, apiKeyIndex = 4 }) =>
@@ -142,5 +151,5 @@ const withdraw = ({ accountIndex, amount, apiPrivKey, apiKeyIndex = 4 }) =>
 module.exports = {
   enabled, simulate, mode: MODE, urgently: rest.urgently, spareReads: rest.spareReads,
   selftest, markets, market, marketById, parseMarket, maxLeverageFromImf, resolveAccount, account,
-  intentAddress, depositLatest, registerKey, setLeverage, open, close, fills, addMargin, withdraw,
+  intentAddress, depositLatest, registerKey, setLeverage, open, close, fills, tx, addMargin, withdraw,
 };
