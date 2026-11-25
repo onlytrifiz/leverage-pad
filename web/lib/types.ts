@@ -170,6 +170,8 @@ export type CoinDetail = {
     feesCollectedUsd: number;
     buybackReserveUsd: number;
     perpReserveUsd: number;
+    /** fees on their way to the position: the engine's part of the fee wallet plus what the keeper has set aside */
+    waitingUsd: number;
     creatorOwedUsd: number;
     treasuryOwedUsd: number;
     perpFundedUsd: number;

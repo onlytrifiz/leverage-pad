@@ -83,7 +83,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
   const notices = <EngineNotices detail={detail} />;
 
   if (!open) {
-    const reserve = stats.perpReserveUsd ?? 0;
+    const reserve = stats.waitingUsd;
     const pct = Math.max(0, Math.min(1, reserve / OPEN_GATE_USD));
     const R = 54;
     const C = 2 * Math.PI * R;

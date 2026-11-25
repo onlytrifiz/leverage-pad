@@ -153,6 +153,7 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
       feesCollectedUsd: st ? fmt(st.totalCollected0, d) : feesFromSwaps,
       buybackReserveUsd: st ? fmt(st.buybackReserveRaw, d) : 0,
       perpReserveUsd: st ? fmt(st.perpReserveRaw, d) : 0,
+      waitingUsd: (chain.subQuote ?? 0) * chain.subEngineShare + (st ? fmt(st.perpReserveRaw, d) : 0),
       creatorOwedUsd: st ? fmt(st.creatorOwedRaw, d) : 0,
       treasuryOwedUsd: st ? fmt(st.treasuryOwedRaw, d) : 0,
       perpFundedUsd: st?.perpDepositedUsd ?? 0,

@@ -215,6 +215,7 @@ export function demoDetail(address: string): CoinDetail | null {
       feesCollectedUsd: s.fees,
       buybackReserveUsd: 3 + r() * 20,
       perpReserveUsd: s.perp ? 5 + r() * 14 : 8 + r() * 10,
+      waitingUsd: s.perp ? 9 : 14,
       creatorOwedUsd: r(),
       treasuryOwedUsd: r(),
       perpFundedUsd: s.perpFunded,

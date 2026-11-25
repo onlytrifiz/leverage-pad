@@ -99,6 +99,7 @@ const ROUTER_ABI = [
 ];
 
 const ERC20_IFACE = new ethers.utils.Interface(ERC20_ABI);
+const SINK_IFACE = new ethers.utils.Interface(["function treasuryBps() view returns (uint16)", "function receivedBps() view returns (uint16)"]);
 const PM_IFACE = new ethers.utils.Interface(POOL_MANAGER_ABI);
 const ROUTER_IFACE = new ethers.utils.Interface(ROUTER_ABI);
 
@@ -454,6 +455,8 @@ export type CoinChainState = {
   /** fee destination balances, only requested by the detail read */
   subQuote: number | null;
   subCoin: number | null;
+  /** the part of the fee wallet's balance that is the engine's, the rest being the protocol's */
+  subEngineShare: number;
 };
 
 const EMPTY_STATE = (coin: Coin): CoinChainState => ({
@@ -466,6 +469,7 @@ const EMPTY_STATE = (coin: Coin): CoinChainState => ({
   coinIsToken0: coinIsToken0Of(coin),
   subQuote: null,
   subCoin: null,
+  subEngineShare: 1,
 });
 
 /**
@@ -479,7 +483,7 @@ export async function readCoinStates(
 ): Promise<Map<string, CoinChainState>> {
   const out = new Map<string, CoinChainState>();
   if (coins.length === 0) return out;
-  const perCoin = withSubWallet ? 5 : 3;
+  const perCoin = withSubWallet ? 7 : 3;
   let groups: (ethers.utils.Result | null)[][];
   try {
     groups = await multicallPerItem(provider, coins, (coin) => {
@@ -491,7 +495,10 @@ export async function readCoinStates(
       if (withSubWallet) {
         calls.push(
           { target: coin.pair, iface: ERC20_IFACE, fn: "balanceOf", args: [coin.subWallet] },
-          { target: coin.token, iface: ERC20_IFACE, fn: "balanceOf", args: [coin.subWallet] }
+          { target: coin.token, iface: ERC20_IFACE, fn: "balanceOf", args: [coin.subWallet] },
+          // the sink's own split, fixed at launch; a hub has none and the calls fail alone
+          { target: coin.subWallet, iface: SINK_IFACE, fn: "treasuryBps" },
+          { target: coin.subWallet, iface: SINK_IFACE, fn: "receivedBps" }
         );
       }
       return calls;
@@ -507,7 +514,8 @@ export async function readCoinStates(
       out.set(coin.token.toLowerCase(), EMPTY_STATE(coin));
       return;
     }
-    const [slot0Word, liqWord, supply, quoteBal, coinBal] = g;
+    const [slot0Word, liqWord, supply, quoteBal, coinBal, treasuryBps, receivedBps] = g;
+    const received = receivedBps ? Number(receivedBps[0]) : 0;
     const coinIsToken0 = coinIsToken0Of(coin);
     const slot0 = slot0Word ? decodeSlot0(slot0Word[0]) : null;
     const uninitialized = slot0 ? slot0.sqrtPriceX96.isZero() : true;
@@ -523,6 +531,7 @@ export async function readCoinStates(
       coinIsToken0,
       subQuote: quoteBal ? Number(ethers.utils.formatUnits(quoteBal[0], coin.pairDecimals)) : null,
       subCoin: coinBal ? Number(ethers.utils.formatUnits(coinBal[0], 18)) : null,
+      subEngineShare: treasuryBps && received > 0 ? 1 - Number(treasuryBps[0]) / received : 1,
     });
   });
   return out;

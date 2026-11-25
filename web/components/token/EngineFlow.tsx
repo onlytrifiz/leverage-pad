@@ -18,8 +18,6 @@ import { AnimatedNumber } from "@/components/motion";
  */
 export default function EngineFlow({ detail }: { detail: CoinDetail }) {
   const { stats, coin, perp, subWallet } = detail;
-  // what has landed and what the keeper has already set aside for the next deposit
-  const waiting = (subWallet.quoteBalanceUsd ?? 0) + (stats.perpReserveUsd ?? 0);
   const stations = [
     {
       icon: CircleDollarSign,
@@ -29,8 +27,8 @@ export default function EngineFlow({ detail }: { detail: CoinDetail }) {
     },
     {
       icon: Wallet,
-      label: "In the fee wallet",
-      value: <AnimatedNumber value={waiting} format="usd" countOnMount />,
+      label: "Waiting to deposit",
+      value: <AnimatedNumber value={stats.waitingUsd} format="usd" countOnMount />,
       note:
         subWallet.coinBalance != null && subWallet.coinBalance >= 1
           ? `and ${fmtInt(subWallet.coinBalance)} tokens to burn`

@@ -45,7 +45,7 @@ type Props = {
   serial: string;
   /** the token's logo; absent, the animal takes its place */
   image?: string;
-  /** a managed coin's note carries a stamp: its engine can be retuned by the creator */
+  /** the stamp: managed, its creator can change the engine; fixed, its market and side are for life */
   managed?: boolean;
   /** tilt, foil and glare follow the pointer */
   interactive?: boolean;
@@ -218,11 +218,17 @@ export function Banknote({ symbol, name, market, side, leverage, serial, image, 
         <span className="num absolute top-[5.4%] left-[5.2%] text-[1.35cqw] tracking-[0.08em] text-down/85">{short}</span>
         <span className="num absolute right-[5.2%] bottom-[5.2%] text-[1.35cqw] tracking-[0.08em] text-down/85">{short}</span>
 
-        {managed && (
-          <span className="absolute bottom-[15.5%] left-[43%] -rotate-6 rounded-[0.7cqw] border-[0.35cqw] border-down bg-[#eef6f0]/60 px-[1.5cqw] py-[0.6cqw] font-display text-[2.5cqw] leading-none font-bold tracking-[0.16em] text-down uppercase shadow-[inset_0_0_0_0.35cqw_#eef6f0,inset_0_0_0_0.5cqw_rgba(179,38,30,0.75)]">
-            Managed
-          </span>
-        )}
+        {/* who can change the engine, stamped as a clerk would: red for its creator, green for nobody */}
+        <span
+          className={cn(
+            "absolute bottom-[15.5%] left-[43%] -rotate-6 rounded-[0.7cqw] border-[0.35cqw] bg-[#eef6f0]/60 px-[1.5cqw] py-[0.6cqw] font-display text-[2.5cqw] leading-none font-bold tracking-[0.16em] uppercase",
+            managed
+              ? "border-[#b3261e] text-[#b3261e] shadow-[inset_0_0_0_0.35cqw_#eef6f0,inset_0_0_0_0.5cqw_rgba(179,38,30,0.75)]"
+              : "border-[#0f6b3f] text-[#0f6b3f] shadow-[inset_0_0_0_0.35cqw_#eef6f0,inset_0_0_0_0.5cqw_rgba(15,107,63,0.75)]"
+          )}
+        >
+          {managed ? "Managed" : "Fixed"}
+        </span>
 
         {/* glare: the lamp catching the paper */}
         <motion.div
