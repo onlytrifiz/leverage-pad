@@ -36,3 +36,6 @@ web/.21st/
 # local screenshots and editor leftovers
 /*.png
 *.bak
+
+# brand source art (covers, logo masters): large, and the repo is public
+/brand/

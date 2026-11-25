@@ -6,13 +6,14 @@
 FROM node:22-bookworm-slim
 
 # Python for lighter/sidecar.py: Lighter's signing ships only in its Python/Go SDKs.
-# The SDK bundles the native signer (lighter-signer-linux-amd64.so). Versions pinned to the
-# ones the keeper has run with since August 2026.
+# The SDK bundles the native signer (lighter-signer-linux-amd64.so). Versions are pinned.
+# 1.1.3 is the first signer that accepts market ids from 4095 up (ANT, SNDK, UNI, …): 1.1.2
+# rejects them with "MarketIndex is not valid", and a token there would never open.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
  && rm -rf /var/lib/apt/lists/* \
  && python3 -m venv /opt/lighter \
- && /opt/lighter/bin/pip install --no-cache-dir lighter-sdk==1.1.2 eth-account==0.13.7
+ && /opt/lighter/bin/pip install --no-cache-dir lighter-sdk==1.1.3 eth-account==0.13.7
 
 WORKDIR /app
 COPY package.json package-lock.json ./
