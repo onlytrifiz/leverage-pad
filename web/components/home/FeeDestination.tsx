@@ -5,7 +5,7 @@ import { cn } from "cn";
 import { FEE_SPLIT_PCT, PROFIT_SPLIT_PCT } from "@/lib/doppler";
 
 /**
- * Where a $100 fee goes: the fuel the perp runs on.
+ * Where a fee goes, in shares: the fuel the perp runs on.
  *
  * One bar, filled left to right as it enters the view: the fill is the point (a
  * fee being spent), so it moves once and then holds still. The split comes from
@@ -18,7 +18,7 @@ type Segment = { label: string; value: number; className: string; ink: string };
 const ROWS: { name: string; caption: string; segments: Segment[] }[] = [
   {
     name: "A trading fee, split",
-    caption: `$${FEE_SPLIT_PCT.engine} becomes a position the token owns, in a wallet of its own. On a win, all of it and ${PROFIT_SPLIT_PCT.buyback}% of the gain buy the token back.`,
+    caption: `${FEE_SPLIT_PCT.engine}% becomes a position the token owns, in a wallet of its own. On a win, all of it and ${PROFIT_SPLIT_PCT.buyback}% of the gain buy the token back.`,
     segments: [
       { label: "The token's position", value: FEE_SPLIT_PCT.engine, className: "bg-brand", ink: "text-white" },
       { label: "Protocol", value: FEE_SPLIT_PCT.treasury, className: "bg-step-4/50", ink: "text-ink" },
@@ -36,7 +36,6 @@ export default function FeeDestination() {
             <span className={"font-display text-xl font-semibold text-ink"}>
               {row.name}
             </span>
-            <span className="num text-sm text-ink-3">$100 fee</span>
           </div>
           {/*
             The track watches the viewport, not the segments: a segment starts
@@ -64,11 +63,11 @@ export default function FeeDestination() {
               >
                 {s.value >= 12 ? (
                   <span className={cn("flex min-w-0 items-baseline gap-2 px-3 text-sm font-semibold", s.ink)}>
-                    <span className="num shrink-0">${s.value}</span>
-                    <span className="truncate font-medium opacity-90">{s.label}</span>
+                    <span className="num shrink-0">{s.value}%</span>
+                    <span className={cn("truncate font-medium opacity-90", s.value < 40 && "hidden sm:inline")}>{s.label}</span>
                   </span>
                 ) : (
-                  <span className={cn("num w-full text-center text-2xs font-semibold", s.ink)}>${s.value}</span>
+                  <span className={cn("num w-full text-center text-2xs font-semibold", s.ink)}>{s.value}%</span>
                 )}
               </motion.div>
             ))}
@@ -76,7 +75,7 @@ export default function FeeDestination() {
           <p className="mt-2.5 max-w-[60ch] text-sm leading-relaxed text-ink-3">{row.caption}</p>
           {(
             <p className="mt-1 text-xs text-ink-3 sm:hidden">
-              ${FEE_SPLIT_PCT.treasury} protocol, ${FEE_SPLIT_PCT.doppler} Doppler.
+              {FEE_SPLIT_PCT.treasury}% protocol, {FEE_SPLIT_PCT.doppler}% Doppler.
             </p>
           )}
         </div>

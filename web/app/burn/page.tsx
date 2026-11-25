@@ -85,7 +85,7 @@ export default async function BurnPage() {
             <h2 className="text-3xl leading-[1.1] font-bold tracking-[-0.03em] sm:text-4xl">Where the money comes from.</h2>
             <p className="mt-3 max-w-[54ch] text-lg leading-relaxed text-ink-2">
               The protocol earns twice: a share of every trading fee, and a share of the gain when a token&apos;s position takes profit. Both
-              are cut the same way.
+              go the same way.
             </p>
           </RevealBlock>
           <div className="mt-9">
