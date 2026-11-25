@@ -96,7 +96,9 @@ function keeperWallet() {
 // gasPrice usato per INVIARE, sempre cappato: un RPC ostile che gonfia il prezzo
 // non deve poter dimensionare top-up enormi ne' bruciare gas a piacere.
 async function cappedGasPrice() {
-  const gp = await gasPrice();
+  // a quarter above the last price: between the read and the send the base fee may rise, and a price
+  // under it is refused. What is paid is the base fee either way.
+  const gp = (await gasPrice()).mul(5).div(4);
   const cap = BN(config.MAX_GAS_PRICE_WEI);
   return gp.gt(cap) ? cap : gp;
 }
