@@ -385,13 +385,26 @@ function TranchesBody() {
         collateral.
       </p>
       <p>
-        <K>Managed tokens (soon).</K> At launch the creator will choose whether the engine is fixed
-        forever or <K>managed</K>. A managed token&apos;s creator can retune leverage and
-        take-profit later: every change is announced on-chain by the router and takes
-        effect <N>12 hours</N> after, and the token carries a Managed badge everywhere.
-        Market and side never change. Independently, the router&apos;s owner can override
-        any token&apos;s leverage or take-profit immediately, the escape hatch for a venue
-        that lowers a cap or delists a market; every override is a public event.
+        <K>Managed tokens.</K> At launch the creator chooses whether the engine is fixed
+        or <K>managed</K>. A fixed token keeps its market and side for life. A managed
+        token&apos;s creator can change all of it later: market, side, leverage and
+        take-profit. Every change is announced on-chain by the router and takes effect after
+        a notice, <N>1 hour</N> today, so holders can see it and decide; the token carries a
+        Managed badge everywhere and its page lists every change. The notice is one setting for every
+        token, kept by the router&apos;s owner, and moving it never moves a change already
+        announced.
+      </p>
+      <p>
+        <K>What a change of market or side does.</K> When it takes effect the keeper closes the
+        whole position at market, reduce-only, and opens nothing until that close has filled. A net profit
+        is banked like any other ({PROFIT_SPLIT_PCT.buyback}% buyback, {PROFIT_SPLIT_PCT.treasury}% protocol),
+        net of what the close cost; a net loss is final. What is left is the collateral of the new position.
+        If the market is closed or the book is empty, the keeper waits and tries again.
+      </p>
+      <p>
+        <K>The owner&apos;s override.</K> Independently, the router&apos;s owner can override any
+        token&apos;s leverage or take-profit immediately, fixed or managed, the escape hatch for a
+        venue that lowers a cap; never its market or side. Every override is a public event.
       </p>
       <p>
         <K>Banking a tranche.</K> When a tranche matures, the keeper closes exactly

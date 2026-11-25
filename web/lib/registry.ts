@@ -46,6 +46,8 @@ export type CoinState = {
   lastTickTs: number;
   /** why the keeper is not opening (e.g. leverage above the venue's cap), null when it can */
   engineBlocked?: string | null;
+  /** (managed) the old position still being closed after a change of market or side */
+  perpSwitch?: { from: { market: string; side: "long" | "short" }; to: { market: string; side: "long" | "short" }; since: number } | null;
   /** the leverage actually set on the venue */
   lighterLeverage?: number | null;
 };

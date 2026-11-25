@@ -16,6 +16,7 @@ import CoinChart from "@/components/token/CoinChart";
 import EngineCockpit from "@/components/token/EngineCockpit";
 import EngineFlow from "@/components/token/EngineFlow";
 import ManageEngine from "@/components/token/ManageEngine";
+import EngineHistory from "@/components/token/EngineHistory";
 
 export const dynamic = "force-dynamic";
 
@@ -76,7 +77,10 @@ export default async function TokenPage({
             <EngineCockpit detail={detail} />
           </div>
           <div className="min-w-0 empty:hidden max-lg:order-3">
-            <ManageEngine coin={coin} />
+            <ManageEngine coin={coin} delayS={detail.managedDelayS} />
+          </div>
+          <div className="min-w-0 empty:hidden max-lg:order-3">
+            <EngineHistory coin={coin} now={detail.stats.updatedAt} />
           </div>
           <div className="min-w-0 max-lg:order-3">
             <EngineFlow detail={detail} />

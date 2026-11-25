@@ -1,9 +1,10 @@
 import { ethers } from "ethers";
 import { RPC_URL, PINATA_GATEWAY } from "./config";
 import { USDG, DOPPLER, V4_POOL_MANAGER, LAUNCH_ROUTER, LAUNCH_FEE_HUB, ROUTER_DEPLOY_BLOCK } from "./clientConfig";
-import type { Candle, Coin, FeedItem } from "./types";
+import type { Candle, Coin, EngineLogItem, FeedItem } from "./types";
 import { multicallPerItem, type Call } from "./multicall";
-import { LEGACY_TP } from "./doppler";
+import { LEGACY_TP, MANAGED_DELAY_FALLBACK_S } from "./doppler";
+import { memo } from "./memo";
 
 /**
  * On-chain reads for coins launched through the multiply router (Uniswap v4 via
@@ -85,7 +86,12 @@ const ROUTER_ABI = [
   // the engine at launch, validated and emitted by the router (metadata is for the image)
   "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint16 takeProfitPct, bool managed, address indexed creator)",
   // the engine now: a managed coin's change, or the owner's override, after the launch event
-  "function engineOf(address asset) view returns ((string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed,address creator,uint8 pendingLeverage,uint16 pendingTakeProfitPct,uint64 pendingAt))",
+  "function engineOf(address asset) view returns ((string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed,address creator,uint8 pendingLeverage,uint16 pendingTakeProfitPct,uint64 pendingAt,uint8 pendingSide,string pendingMarket))",
+  // the engine's changes after launch
+  "event EngineProposed(address indexed asset, string market, uint8 side, uint8 leverage, uint16 takeProfitPct, uint64 effectiveAt)",
+  "event EngineProposalCancelled(address indexed asset, address indexed by)",
+  "event EngineOverridden(address indexed asset, uint8 leverage, uint16 takeProfitPct, address indexed by)",
+  "function engineConfig() view returns ((uint64 leverageMask,uint16 minTakeProfitPct,uint16 maxTakeProfitPct,uint32 managedDelay))",
   // the coin's fee sink: zero for coins launched before the sink upgrade (their fees went to the hub)
   "function sinkOf(address asset) view returns (address)",
 ];
@@ -193,6 +199,39 @@ const SIDES = new Set(["long", "short"]);
 let coinsCache: { at: number; coins: Coin[] } | null = null;
 const COINS_TTL_MS = 10_000;
 
+const sideOf = (n: unknown): "long" | "short" => (Number(n) === 1 ? "short" : "long");
+
+const ENGINE_CHANGE_TOPICS = new Set(
+  ["EngineProposed", "EngineProposalCancelled", "EngineOverridden"].map((n) => ROUTER_IFACE.getEventTopic(n))
+);
+
+/** the engine's changes after launch, per coin, newest first */
+function engineHistory(logs: ethers.providers.Log[], tOf: (block: number) => number) {
+  const out = new Map<string, EngineLogItem[]>();
+  for (const l of logs) {
+    const { name, args: a } = ROUTER_IFACE.parseLog(l);
+    const base = { ts: tOf(l.blockNumber), txHash: l.transactionHash };
+    const tuning = () => ({ leverage: Number(a.leverage), takeProfitPct: Number(a.takeProfitPct) });
+    const item: EngineLogItem =
+      name === "EngineProposed"
+        ? { ...base, kind: "announced", engine: { market: String(a.market), side: sideOf(a.side), ...tuning() }, effectiveAt: Number(a.effectiveAt) }
+        : name === "EngineOverridden"
+          ? { ...base, kind: "override", engine: tuning() }
+          : { ...base, kind: "withdrawn", engine: null };
+    const k = String(a.asset).toLowerCase();
+    out.set(k, [item, ...(out.get(k) ?? [])]);
+  }
+  return out;
+}
+
+/** the router's notice for managed coins, in seconds: one owner setting for all of them */
+export function readManagedDelay(): Promise<number> {
+  return memo("managed-delay", 60_000, async () => {
+    const r = new ethers.Contract(LAUNCH_ROUTER, ROUTER_IFACE, provider);
+    return Number((await r.engineConfig()).managedDelay);
+  }).catch(() => MANAGED_DELAY_FALLBACK_S);
+}
+
 /**
  * Every coin launched through the router, newest first. One log query from the
  * router's deploy block (adaptive range), one multicall for names and symbols,
@@ -237,9 +276,9 @@ async function scanRouterCoins(): Promise<Coin[]> {
   );
   // a window that failed would make coins vanish: keep the last full list rather than cache a short one
   if (missed > 0 && coinsCache) return coinsCache.coins;
-  const logs = chunks
-    .flat()
-    .filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic || l.topics[0] === legacyEngineTopic);
+  const all = chunks.flat();
+  const changes = all.filter((l) => ENGINE_CHANGE_TOPICS.has(l.topics[0]));
+  const logs = all.filter((l) => l.topics[0] === launchTopic || l.topics[0] === engineTopic || l.topics[0] === legacyEngineTopic);
   // the engine event of each asset, emitted in the same transaction as its launch
   const engines = new Map<
     string,
@@ -275,6 +314,7 @@ async function scanRouterCoins(): Promise<Coin[]> {
     return [];
   }
   const tOf = await blockTimeEstimator(launches[0].log.blockNumber, latest);
+  const engineLogs = engineHistory(changes, tOf);
   const names = await multicallPerItem(provider, launches, ({ ev }) => [
     { target: ev.asset, iface: ERC20_IFACE, fn: "name" },
     { target: ev.asset, iface: ERC20_IFACE, fn: "symbol" },
@@ -292,10 +332,22 @@ async function scanRouterCoins(): Promise<Coin[]> {
     // before the event existed (none on this router) and for the image
     const onChain = engines.get(String(ev.asset).toLowerCase());
     const eng = m?.multiply ?? {};
-    const side = onChain?.side ?? (SIDES.has(String(eng.side)) ? (eng.side as "long" | "short") : "long");
+    const launchSide = onChain?.side ?? (SIDES.has(String(eng.side)) ? (eng.side as "long" | "short") : "long");
     // engineOf is the current engine; the launch event is the fallback, metadata the last resort
     const now = names[i]?.[3]?.[0] as
-      | { creator: string; leverage: number; takeProfitPct: number; managed: boolean; pendingLeverage: number; pendingTakeProfitPct: number; pendingAt: ethers.BigNumber }
+      | {
+          market: string;
+          side: number;
+          creator: string;
+          leverage: number;
+          takeProfitPct: number;
+          managed: boolean;
+          pendingLeverage: number;
+          pendingTakeProfitPct: number;
+          pendingAt: ethers.BigNumber;
+          pendingSide: number;
+          pendingMarket: string;
+        }
       | undefined;
     const live = now && !ethers.BigNumber.from(now.creator).isZero() ? now : undefined;
     const takeProfitPct =
@@ -303,6 +355,8 @@ async function scanRouterCoins(): Promise<Coin[]> {
       onChain?.takeProfitPct ??
       (Number(eng.takeProfitPct) || LEGACY_TP[String(eng.risk)] || 50);
     const pendingAt = live ? Number(live.pendingAt) : 0;
+    const market = (live?.market || onChain?.market) ?? (String(eng.market ?? "").toUpperCase() || "?");
+    const side = live ? sideOf(live.side) : launchSide;
     const sink: string | undefined = names[i]?.[2]?.[0];
     const feeDestination = sink && !ethers.BigNumber.from(sink).isZero() ? sink : LAUNCH_FEE_HUB;
     return {
@@ -319,15 +373,23 @@ async function scanRouterCoins(): Promise<Coin[]> {
       launcher: ev.launcher,
       subWallet: feeDestination,
       creator: onChain?.creator || (eng.creator && /^0x[0-9a-fA-F]{40}$/.test(eng.creator) ? eng.creator : ev.launcher),
-      market: onChain?.market ?? (String(eng.market ?? "").toUpperCase() || "?"),
+      market,
       side,
       leverage: (live ? Number(live.leverage) : undefined) ?? onChain?.leverage ?? (Number(eng.leverage) || 0),
       takeProfitPct,
       managed: live ? Boolean(live.managed) : (onChain?.managed ?? false),
       pendingEngine:
         pendingAt > 0 && live
-          ? { leverage: Number(live.pendingLeverage), takeProfitPct: Number(live.pendingTakeProfitPct), effectiveAt: pendingAt }
+          ? {
+              // empty = announced on the implementation that could not change them
+              market: live.pendingMarket || market,
+              side: live.pendingMarket ? sideOf(live.pendingSide) : side,
+              leverage: Number(live.pendingLeverage),
+              takeProfitPct: Number(live.pendingTakeProfitPct),
+              effectiveAt: pendingAt,
+            }
           : null,
+      engineLog: engineLogs.get(String(ev.asset).toLowerCase()) ?? [],
       tokenURI: String(ev.tokenURI),
       image: imageUrl(m?.image),
       socials: { website: link(m?.website), x: link(m?.x), telegram: link(m?.telegram) },

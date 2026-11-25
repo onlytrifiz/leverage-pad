@@ -159,22 +159,23 @@ export default function AssetPicker({
                 aria-checked={on}
                 onClick={() => onPick(m.symbol)}
                 className={cn(
-                  "flex min-w-0 items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition-colors",
+                  "@container flex min-w-0 items-center rounded-xl border px-3 py-2.5 text-left transition-colors",
                   on ? "border-brand bg-brand-soft shadow-[0_0_0_3px_var(--color-brand-soft)]" : "border-line bg-panel hover:border-line-2"
                 )}
               >
                 <AssetIcon symbol={m.symbol} size={28} />
-                <span className="min-w-0 flex-1">
+                {/* a tile too narrow for both keeps the ticker and its leverage whole */}
+                <span className="ml-2.5 min-w-0 flex-1">
                   <span className="flex items-baseline justify-between gap-2">
                     <span className="truncate text-sm font-semibold text-ink">{m.symbol}</span>
                     {m.change24h != null && (
-                      <span className={cn("num shrink-0 text-xs", m.change24h >= 0 ? "text-up" : "text-down")}>
+                      <span className={cn("num shrink-0 text-xs @max-[150px]:hidden", m.change24h >= 0 ? "text-up" : "text-down")}>
                         {fmtChange(m.change24h, 1)}
                       </span>
                     )}
                   </span>
                   <span className="flex items-baseline justify-between gap-2">
-                    <span className="num truncate text-2xs text-ink-3">{fmtMark(m.mark)}</span>
+                    <span className="num truncate text-2xs text-ink-3 @max-[150px]:hidden">{fmtMark(m.mark)}</span>
                     {m.maxLeverage != null && (
                       <span className="num shrink-0 text-2xs text-ink-3" title={`Lighter allows ${m.maxLeverage}x`}>
                         max {Math.min(m.maxLeverage, levCap)}x

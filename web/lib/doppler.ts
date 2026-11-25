@@ -114,10 +114,22 @@ export const TP_PRESETS = [
   { pct: 100, label: "degen" },
   { pct: 300, label: "moon" },
 ] as const;
-/** a managed coin's change waits this long before it applies */
-export const MANAGED_DELAY_HOURS = 12;
-// The router supports managed coins; the launch form offers them once the creator tools ship.
-export const MANAGED_LIVE = false;
+/**
+ * How long a managed coin's change waits before it applies. The router's owner sets it for every
+ * coin (`engineConfig.managedDelay`), so pages read the live value (`readManagedDelay`); this is
+ * what they say until it answers.
+ */
+export const MANAGED_DELAY_FALLBACK_S = 3600;
+/** a notice in words: "1 hour", "30 minutes", "2 days" */
+export function fmtNotice(seconds: number): string {
+  const unit = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+  if (seconds <= 0) return "no notice";
+  if (seconds % 86_400 === 0) return unit(seconds / 86_400, "day");
+  if (seconds % 3600 === 0) return unit(seconds / 3600, "hour");
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}h ${Math.round((seconds % 3600) / 60)}m`;
+  if (seconds >= 60) return unit(Math.round(seconds / 60), "minute");
+  return unit(seconds, "second");
+}
 /** the keeper's take-profit decay: from this day a deposit's target falls, reaching the floor at the end */
 export const TP_DECAY = { startDays: 7, endDays: 30, floorPct: 10 } as const;
 
@@ -407,9 +419,9 @@ export const ROUTER_IFACE = new ethers.utils.Interface([
   "function validEngine(string market,uint8 side,uint8 leverage,uint16 takeProfitPct) view returns (bool)",
   "event MultiplyEngine(address indexed asset, string market, uint8 side, uint8 leverage, uint16 takeProfitPct, bool managed, address indexed creator)",
   // stored engines (router upgrade of 2026-10-05): the current values, and a managed coin's announced change
-  "function engineOf(address asset) view returns ((string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed,address creator,uint8 pendingLeverage,uint16 pendingTakeProfitPct,uint64 pendingAt))",
+  "function engineOf(address asset) view returns ((string market,uint8 side,uint8 leverage,uint16 takeProfitPct,bool managed,address creator,uint8 pendingLeverage,uint16 pendingTakeProfitPct,uint64 pendingAt,uint8 pendingSide,string pendingMarket))",
   "function engineConfig() view returns ((uint64 leverageMask,uint16 minTakeProfitPct,uint16 maxTakeProfitPct,uint32 managedDelay))",
-  "function proposeEngine(address asset,uint8 leverage,uint16 takeProfitPct)",
+  "function proposeEngine(address asset,string market,uint8 side,uint8 leverage,uint16 takeProfitPct)",
   "function cancelEngineProposal(address asset)",
   "function saltFor(address launcher,bytes32 salt) pure returns (bytes32)",
   "function policy() view returns ((address numeraire,address feeHub,uint256 protocolShareWad,uint256 supply,uint256 defaultMcap,uint256 minMcap,uint256 maxMcap,uint24 minFee,uint24 maxFee,int24 tickSpacing,uint24 snipeStartFee,uint32 snipeSeconds))",

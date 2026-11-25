@@ -1,6 +1,6 @@
 import { ethers } from "ethers";
 import { loadRegistry, type RegistryTranche } from "./registry";
-import { poolCandles, coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd } from "./chain";
+import { poolCandles, coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd, readManagedDelay } from "./chain";
 import { resolveAccountIndex, perpPosition } from "./lighter";
 import { demoCoins, demoDetail, demoCandles, demoFeed, demoPositions } from "./mock";
 import { FORCE_DEMO } from "./config";
@@ -112,9 +112,10 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
   const st = reg.state[coin.token.toLowerCase()];
 
   /* price, supply and both fee-destination balances in a single request; fees from the swap log */
-  const [states, feesFromSwaps] = await Promise.all([
+  const [states, feesFromSwaps, managedDelayS] = await Promise.all([
     readCoinStates([coin], { withSubWallet: true }),
     poolFeesUsd(coin).catch(() => 0),
+    readManagedDelay(),
   ]);
   const chain = states.get(coin.token.toLowerCase())!;
 
@@ -127,13 +128,16 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
       : st ? fmt(st.totalBurnedRaw, 18) : 0;
   const priceUsd = chain.priceUsd;
 
+  // while a managed coin switches, what is open (and its tranches) belongs to the engine before
+  const switching = st?.perpSwitch ?? null;
+  const book = { ...coin, ...(switching?.from ?? {}) };
   let perp = null;
   const accountIndex =
     st?.lighterAccountIndex ?? (await resolveAccountIndex(coin.subWallet).catch(() => null));
   if (accountIndex != null) {
-    perp = await perpPosition(accountIndex, coin.market).catch(() => null);
+    perp = await perpPosition(accountIndex, book.market).catch(() => null);
   }
-  const tranches = buildTrancheViews(st?.perpTranches, coin, perp?.markPrice ?? null);
+  const tranches = buildTrancheViews(st?.perpTranches, book, perp?.markPrice ?? null);
 
   const d = coin.pairDecimals;
   return {
@@ -156,6 +160,8 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
     perp,
     tranches,
     engineBlocked: st?.engineBlocked ?? null,
+    engineSwitch: switching ? { from: switching.from } : null,
+    managedDelayS,
     subWallet: {
       address: coin.subWallet,
       quoteBalanceUsd: chain.subQuote,
@@ -198,17 +204,18 @@ export async function openPositions(): Promise<OpenPosition[]> {
       const accountIndex =
         st?.lighterAccountIndex ?? (await resolveAccountIndex(coin.subWallet).catch(() => null));
       if (accountIndex == null) return null;
-      const p = await perpPosition(accountIndex, coin.market).catch(() => null);
+      const { market, side } = st?.perpSwitch?.from ?? coin;
+      const p = await perpPosition(accountIndex, market).catch(() => null);
       if (!p?.open) return null;
       const pnlPct =
         p.unrealizedPnlUsd != null && p.collateralUsd ? (p.unrealizedPnlUsd / p.collateralUsd) * 100 : null;
       return {
         token: coin.token,
         symbol: coin.symbol,
-        market: coin.market,
+        market,
         accountIndex,
         marketId: p.marketId,
-        side: coin.side,
+        side,
         leverage: coin.leverage,
         notionalUsd: p.positionSizeUsd,
         collateralUsd: p.collateralUsd,

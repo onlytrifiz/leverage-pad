@@ -53,8 +53,7 @@ import {
   TP_PRESETS,
   TP_MOVE_MAX_PCT,
   maxTakeProfitPct,
-  MANAGED_DELAY_HOURS,
-  MANAGED_LIVE,
+  fmtNotice,
   type EngineParams,
 } from "@/lib/doppler";
 import { AnimatedNumber } from "@/components/motion";
@@ -163,10 +162,13 @@ const clampUsdgInput = (v: string) => {
 export default function LaunchForm({
   initialMarket = "NVDA",
   initialSide = "long",
+  managedDelayS,
 }: {
   /** preset from the URL (`/launch?market=TSLA&side=short`), e.g. from the market's movers */
   initialMarket?: string;
   initialSide?: "long" | "short";
+  /** the router's notice for managed tokens, in seconds */
+  managedDelayS: number;
 }) {
   const { address, provider } = useWallet();
   const { markets: listed, loaded } = useMarkets();
@@ -435,7 +437,6 @@ export default function LaunchForm({
   /* what each choice means, in plain numbers, recomputed as you change it */
   const up = side === "long";
   const move10 = 10 * lev;
-  const liqAway = 100 / lev;
   const usd0 = (n: number) => `$${Math.round(n).toLocaleString("en-US")}`;
 
   const launchButton = (
@@ -614,10 +615,6 @@ export default function LaunchForm({
                 never open.
               </p>
             )}
-            <div className="mt-5 grid grid-cols-2 gap-3">
-              <Readout tone="up" label={`If ${market} moves 10% ${up ? "up" : "down"}`} value={`+${move10}%`} note="on the position" />
-              <Readout tone="down" label="Liquidation" value={`~${liqAway.toFixed(liqAway < 10 ? 1 : 0)}%`} note={`against you, before fees and funding`} />
-            </div>
           </Step>
 
           <Step n={4} title="When it takes profit" meta="Per deposit">
@@ -820,7 +817,7 @@ export default function LaunchForm({
               className="flex min-h-8 w-full flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-left sm:min-h-10"
             >
               <span className="font-display text-xl font-semibold text-ink sm:text-2xl">Advanced</span>
-              <span className="text-sm text-ink-3">{advanced ? "Hide" : `${managed ? "Managed by you" : "Fixed forever"} · Protection ${snipe.seconds > 0 ? fmtSeconds(snipe.seconds) : "off"}`}</span>
+              <span className="text-sm text-ink-3">{advanced ? "Hide" : `${managed ? "Managed by you" : "Fixed engine"} · Protection ${snipe.seconds > 0 ? fmtSeconds(snipe.seconds) : "off"}`}</span>
             </button>
             <AnimatePresence initial={false}>
               {advanced && (
@@ -834,34 +831,27 @@ export default function LaunchForm({
                     <section>
                       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
                         <h3 className="text-base font-semibold text-ink">Who can change it</h3>
-                        <span className="text-sm text-ink-3">Market and side never change</span>
+                        <span className="text-sm text-ink-3">Chosen once, at launch</span>
                       </div>
                       <OptionGroup label="Engine control" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <OptionCard selected={!managed} onClick={() => setManaged(false)}>
-                          <span className="font-semibold text-ink">Fixed forever</span>
+                          <span className="font-semibold text-ink">Fixed</span>
                           <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                            Leverage and take-profit stay as launched. Holders buy a rule that cannot move.
+                            {market} {side} for life, and nothing you can change after launch. The protocol can still adjust
+                            leverage and take-profit if Lighter&apos;s limits move.
                           </span>
                         </OptionCard>
                         <OptionCard
                           selected={managed}
-                          disabled={!MANAGED_LIVE}
                           onClick={() => setManaged(true)}
-                          className="disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border disabled:hover:bg-card"
                         >
                           <span className="flex items-baseline justify-between gap-2">
-                            <span className={MANAGED_LIVE ? "font-semibold text-brand" : "font-semibold text-ink-2"}>Managed by you</span>
-                            {MANAGED_LIVE ? (
-                              <span className="text-xs text-ink-3">{MANAGED_DELAY_HOURS}h notice</span>
-                            ) : (
-                              <span className="rounded-full border border-line-2 px-2 py-px text-2xs font-medium tracking-wide text-ink-3 uppercase">
-                                Soon
-                              </span>
-                            )}
+                            <span className="font-semibold text-brand">Managed by you</span>
+                            <span className="text-xs text-ink-3">{managedDelayS > 0 ? `${fmtNotice(managedDelayS)} notice` : "no notice"}</span>
                           </span>
                           <span className="mt-1 block text-xs leading-relaxed text-ink-3">
-                            You can retune leverage and take-profit later. Every change is announced on-chain and lands{" "}
-                            {MANAGED_DELAY_HOURS} hours after, and the token carries a Managed badge everywhere.
+                            You can change the market, flip long and short, and retune leverage and take-profit. Every change is
+                            announced on-chain first, and the token carries a Managed badge everywhere.
                           </span>
                         </OptionCard>
                       </OptionGroup>

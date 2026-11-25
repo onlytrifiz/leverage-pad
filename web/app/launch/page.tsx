@@ -1,5 +1,6 @@
 import LaunchForm from "@/components/LaunchForm";
 import { MarketsProvider } from "@/components/markets-provider";
+import { readManagedDelay } from "@/lib/chain";
 
 export const metadata = { title: "Launch" };
 
@@ -16,9 +17,10 @@ export default async function LaunchPage({
   const sp = await searchParams;
   const market = sp.market && /^[A-Z0-9]{1,16}$/i.test(sp.market) ? sp.market.toUpperCase() : undefined;
   const side = sp.side === "short" || sp.side === "long" ? sp.side : undefined;
+  const managedDelayS = await readManagedDelay();
   return (
     <MarketsProvider>
-      <LaunchForm initialMarket={market} initialSide={side} />
+      <LaunchForm initialMarket={market} initialSide={side} managedDelayS={managedDelayS} />
     </MarketsProvider>
   );
 }

@@ -1,3 +1,4 @@
+import { MANAGED_DELAY_FALLBACK_S } from "./doppler";
 import type { Candle, Coin, CoinDetail, FeedItem, OpenPosition, TrancheView } from "./types";
 import { USDG } from "./config";
 
@@ -84,6 +85,7 @@ const specCoin = (s: DemoSpec): Coin => ({
   takeProfitPct: s.risk === "safe" ? 20 : s.risk === "degen" ? 100 : 50,
   managed: false,
   pendingEngine: null,
+  engineLog: [],
   createdAt: new Date(Date.now() - s.ageDays * 86_400_000).toISOString(),
 });
 
@@ -200,6 +202,8 @@ export function demoDetail(address: string): CoinDetail | null {
   return {
     demo: true,
     engineBlocked: null,
+    engineSwitch: null,
+    managedDelayS: MANAGED_DELAY_FALLBACK_S,
     coin: specCoin(s),
     stats: {
       priceUsd: price,

@@ -78,6 +78,16 @@ const QA: { q: string; a: React.ReactNode }[] = [
       </p>
     ),
   },
+  {
+    q: "Can a token change direction?",
+    a: (
+      <p>
+        Only if it was launched as managed. Its creator can then move it to another market or flip it between long and
+        short; every change is announced on-chain before it takes effect, and the token wears a Managed badge. A fixed
+        token keeps its market and side for life.
+      </p>
+    ),
+  },
 ];
 
 export default function Faq() {

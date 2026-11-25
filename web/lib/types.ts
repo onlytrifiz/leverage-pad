@@ -1,3 +1,15 @@
+export type EngineSettings = { market: string; side: "long" | "short"; leverage: number; takeProfitPct: number };
+
+/** one line of a coin's engine history, from the router's events */
+export type EngineLogItem = {
+  kind: "announced" | "withdrawn" | "override";
+  /** what was announced or set; an override only sets leverage and take-profit, a withdrawal nothing */
+  engine: Partial<EngineSettings> | null;
+  ts: number;
+  txHash: string;
+  effectiveAt?: number;
+};
+
 /**
  * A coin launched through the multiply router: a Doppler market on Uniswap v4.
  * Everything here is read from the router's `MultiplyLaunch` event and the
@@ -28,10 +40,12 @@ export type Coin = {
   leverage: number;
   /** each deposit banks at +takeProfitPct% on its collateral (current value, after any change) */
   takeProfitPct: number;
-  /** launched managed: its creator may retune leverage and take-profit, after a notice */
+  /** launched managed: its creator may change the engine (market and side too), after a notice */
   managed: boolean;
   /** a managed coin's announced change, not in effect yet */
-  pendingEngine: { leverage: number; takeProfitPct: number; effectiveAt: number } | null;
+  pendingEngine: (EngineSettings & { effectiveAt: number }) | null;
+  /** every change announced, withdrawn or overridden since launch, newest first */
+  engineLog: EngineLogItem[];
   tokenURI: string;
   /** the metadata's image as a loadable URL (the creator's logo, or the generated seal) */
   image?: string;
@@ -140,6 +154,10 @@ export type CoinDetail = {
   tranches: TrancheView[];
   /** the keeper's reason for not opening, shown on the coin page; null when the engine can run */
   engineBlocked: string | null;
+  /** a managed coin's market or side changed and the keeper is still closing the old position */
+  engineSwitch: { from: { market: string; side: "long" | "short" } } | null;
+  /** seconds between a managed coin's announcement and its effect, as the router has it now */
+  managedDelayS: number;
   subWallet: {
     address: string;
     quoteBalanceUsd: number | null;

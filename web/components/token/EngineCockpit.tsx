@@ -5,6 +5,8 @@ import { motion, useReducedMotion } from "motion/react";
 import { cn } from "cn";
 import type { CoinDetail } from "@/lib/types";
 import { fmtMark, fmtSignedUsd, fmtUsd } from "@/lib/format";
+import { fmtNotice } from "@/lib/doppler";
+import { engineDiff } from "@/lib/engine";
 import { OPEN_GATE_USD, fmtThreshold } from "@/lib/thresholds";
 import { useLiveMark, useLivePositions } from "@/hooks/use-lighter-live";
 import AssetIcon from "@/components/AssetIcon";
@@ -27,7 +29,9 @@ import { LivePulse } from "@/components/motion";
 
 export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
   const reduced = useReducedMotion();
-  const { coin, perp, stats, tranches } = detail;
+  const { coin, perp, stats, tranches, managedDelayS } = detail;
+  // during a switch the open position is still the previous engine's
+  const runs = detail.engineSwitch?.from ?? coin;
   const all = useLivePositions(perp?.accountIndex);
   const live = perp?.marketId != null ? (all?.[perp.marketId] ?? null) : null;
   const open = all != null ? !!live : !!perp?.open;
@@ -35,7 +39,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
   const size = live?.size ?? null;
   const entry = live?.entryPrice ?? perp?.entryPrice ?? null;
   const mark = useLiveMark(perp?.marketId) ?? perp?.markPrice ?? null;
-  const sign = live?.sign ?? (coin.side === "short" ? -1 : 1);
+  const sign = live?.sign ?? (runs.side === "short" ? -1 : 1);
   const pnl =
     mark != null && size && entry != null
       ? sign * (mark - entry) * size
@@ -46,7 +50,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
   const funding = live?.fundingPaidUsd ?? perp?.fundingPaidUsd ?? null;
 
   const trigger = coin.takeProfitPct / 100;
-  const isShort = coin.side === "short";
+  const isShort = runs.side === "short";
   // the nearest target: tranches arrive sorted by progress, the first is closest to banking
   const target =
     tranches[0]?.targetMark ??
@@ -63,7 +67,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
         {coin.managed && (
           <span
             className="rounded-full border border-brand/40 px-2 py-0.5 text-2xs font-semibold tracking-wide text-brand uppercase"
-            title="Its creator can retune leverage and take-profit, each change announced 12 hours ahead"
+            title={`Its creator can change market, side, leverage and take-profit, ${managedDelayS > 0 ? `each change announced ${fmtNotice(managedDelayS)} ahead` : "each change announced on-chain"}`}
           >
             Managed
           </span>
@@ -237,7 +241,7 @@ export default function EngineCockpit({ detail }: { detail: CoinDetail }) {
  * change that lands at a known time.
  */
 function EngineNotices({ detail }: { detail: CoinDetail }) {
-  const { coin, engineBlocked } = detail;
+  const { coin, engineBlocked, engineSwitch } = detail;
   const p = coin.pendingEngine;
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   useEffect(() => {
@@ -245,7 +249,7 @@ function EngineNotices({ detail }: { detail: CoinDetail }) {
     const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30_000);
     return () => clearInterval(id);
   }, [p]);
-  if (!engineBlocked && !p) return null;
+  if (!engineBlocked && !engineSwitch && !p) return null;
   const left = p ? Math.max(0, p.effectiveAt - now) : 0;
   const h = Math.floor(left / 3600);
   const m = Math.floor((left % 3600) / 60);
@@ -254,13 +258,18 @@ function EngineNotices({ detail }: { detail: CoinDetail }) {
       {engineBlocked && (
         <p className="bg-[color-mix(in_oklch,var(--color-down),transparent_90%)] px-5 py-3 text-sm text-ink">
           <span className="font-semibold text-down">Engine paused.</span> {engineBlocked}. Fees keep accumulating; the
-          position opens once the leverage fits the venue.
+          position opens once the engine fits the venue.
+        </p>
+      )}
+      {engineSwitch && (
+        <p className="bg-panel-2 px-5 py-3 text-sm text-ink">
+          <span className="font-semibold">Switching.</span> The {engineSwitch.from.market} {engineSwitch.from.side} closes first,
+          then the engine opens {coin.market} {coin.side}. A closed market or an empty book can make it wait.
         </p>
       )}
       {p && (
         <p className="bg-brand-soft px-5 py-3 text-sm text-ink">
-          <span className="font-semibold text-brand">Change announced by the creator</span>: {coin.leverage}x → {p.leverage}x,
-          take-profit +{coin.takeProfitPct}% → +{p.takeProfitPct}%,{" "}
+          <span className="font-semibold text-brand">Change announced by the creator</span>: {engineDiff(coin, p)},{" "}
           {left > 0 ? (
             <>
               in effect in <span className="num font-semibold">{h}h {m}m</span>.
