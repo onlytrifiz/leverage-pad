@@ -10,6 +10,7 @@ const { buildSwapCalldata } = require('./lib/v3');
 const registry = require('./lib/registry');
 const publish = require('./lib/publish');
 const { flywheelTick } = require('./lib/flywheel');
+const { createFeed, createUrgent } = require('./lib/marketFeed');
 const routerCoins = require('./lib/routerCoins');
 const { legacyTakeProfitPct } = require('./lib/launchParams');
 const v4 = require('./lib/v4');
@@ -1519,6 +1520,42 @@ function lockHolderAlive(lock, { pid = process.pid, host = os.hostname(), kill =
   try { kill(lpid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 }
 
+/**
+ * Is there a tranche of this token at its target, at this mark? The alarm behind the live marks:
+ * the same rule as the take-profit's, on the state in memory. Nothing is closed on its word.
+ */
+function hasMature(coin, st, mark) {
+  if (!st || config.RETIRED.has(coin.token.toLowerCase()) || coin.engineError) return false;
+  // an order in flight or a switch under way has the token already
+  if (st.perpOrder || st.perpSwitch || Number(st.perpWithdrawIntentUsd || 0) > 0) return false;
+  if (coin.managed && st.perpEngine && (st.perpEngine.market !== coin.market || st.perpEngine.side !== coin.side)) return false;
+  const tranches = Array.isArray(st.perpTranches) ? st.perpTranches : [];
+  return tranches.length > 0 && matureTranches(tranches, mark, coin.side, st.lighterLeverage ?? coin.leverage, coinTrigger(coin)).ready.length > 0;
+}
+
+/** the tokens with an open position, by the venue's market id, for the live marks to look at */
+async function urgentEntries(reg, coins) {
+  const out = [];
+  for (const coin of coins) {
+    const st = reg.state[coin.token.toLowerCase()];
+    if (!st || !Array.isArray(st.perpTranches) || !st.perpTranches.length) continue;
+    try { out.push({ key: coin.token.toLowerCase(), marketId: (await lighter.market(coin.market)).index, coin, st }); }
+    catch { /* not listed, or the list could not be read: the round looks at it */ }
+  }
+  return out;
+}
+
+/** the perp half of a tick, for a token a live mark put in front of the others */
+async function urgentTick(keeper, entry, checkpoint) {
+  const { coin, st } = entry;
+  const size = () => (st.perpTranches || []).reduce((a, t) => a + t.base, 0);
+  const before = size();
+  try { await perpTick(keeper, coin, st, checkpoint, deriveSubWallet(coin.token, provider), priceUsd(coin.pair, coin.pairSymbol), erc20(coin.pair)); }
+  catch (e) { console.log(`  [${coin.symbol}] perp: ${e.message.slice(0, 140)}`); }
+  checkpoint();
+  return size() !== before || !!st.perpOrder;
+}
+
 // lockfile single-instance: creazione ATOMICA (flag wx) — due keeper avviati
 // insieme non possono piu' passare entrambi il check.
 function acquireLock() {
@@ -1605,6 +1642,19 @@ async function main() {
   console.log(`keeper ${keeper.address} | locker ${config.LOCKER} | tick ${config.TICK_MS}ms | lighter:${lighter.mode}${only ? ' | solo ' + only : ''}`);
   warnIfNotProduction();
 
+  // live marks: a token at its target goes before the others, whatever the round is doing
+  const watching = lighter.enabled && !lighter.simulate && !flag('once') && !!config.LIGHTER_WS_URL;
+  const urgent = createUrgent({ isDue: (e, mark) => hasMature(e.coin, e.st, mark) });
+  const feed = watching ? createFeed({ url: config.LIGHTER_WS_URL, onMark: (id, mark) => urgent.onMark(id, mark) }) : null;
+  /** whoever is waiting in front; a few at a time, so the round goes on whatever the market does */
+  const serveUrgent = async (checkpoint, most = 5) => {
+    for (let i = 0; i < most; i++) {
+      const e = urgent.take();
+      if (!e) return;
+      urgent.served(e.key, await urgentTick(keeper, e, checkpoint));
+    }
+  };
+
   do {
     const reg = registry.load();
     const checkpoint = () => registry.save(reg);
@@ -1615,7 +1665,15 @@ async function main() {
     } catch (e) { console.log(`  sync router: ${e.message.slice(0, 120)}`); }
     const coins = reg.coins.filter((c) => !only || c.token.toLowerCase() === only.toLowerCase());
     if (!coins.length) console.log(ts() + ' nessuna coin nel registry');
+    const listen = async () => {
+      if (!feed) return;
+      const entries = await urgentEntries(reg, coins);
+      urgent.load(entries);
+      feed.watch(new Set(entries.map((e) => e.marketId)));
+    };
+    await listen();
     for (const coin of coins) {
+      if (feed) await serveUrgent(checkpoint);
       const st = reg.state[coin.token.toLowerCase()];
       if (!st) { console.log(`  [${coin.symbol}] stato mancante nel registry, salto`); continue; }
       try { await tickCoin(keeper, locker, coin, st, checkpoint); }
@@ -1636,7 +1694,14 @@ async function main() {
     // estratto pubblico per il sito (senza chiavi API ne' stato interno):
     // in produzione il frontend gira su un host remoto e non vede il file locale
     publish.writeSnapshot(reg);
-    if (!flag('once')) await sleep(config.TICK_MS);
+    if (flag('once')) break;
+    await listen(); // what this round opened and closed
+    const until = Date.now() + config.TICK_MS;
+    for (let left = config.TICK_MS; left > 0; left = until - Date.now()) {
+      if (!feed) { await sleep(left); break; }
+      await urgent.wait(left);
+      if (urgent.size()) { await serveUrgent(checkpoint); publish.writeSnapshot(reg); }
+    }
   } while (!flag('once'));
 }
 
@@ -1645,4 +1710,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { hasMature, strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

@@ -137,6 +137,8 @@ module.exports = {
   // Il collaterale entra da Robinhood Chain (4663) via intent-address; ogni
   // sub-wallet della coin e' il proprio account Lighter (isolamento per-coin).
   LIGHTER_PROFILE: process.env.PERPSPAD_LIGHTER_PROFILE || 'robinhood',
+  // public stream of marks (lib/marketFeed.js); empty = none, the keeper only looks at each round
+  LIGHTER_WS_URL: process.env.PERPSPAD_LIGHTER_WS_URL ?? 'wss://api.rh.lighter.xyz/stream?encoding=json&readonly=true',
   LIGHTER_PYTHON: process.env.PERPSPAD_LIGHTER_PYTHON || 'python3', // interprete col lighter-sdk installato
   LIGHTER_API_KEY_INDEX: Number(process.env.PERPSPAD_LIGHTER_API_KEY_INDEX || 4), // 0-3 riservati a desktop/mobile
   LIGHTER_MAX_SLIPPAGE: Number(process.env.PERPSPAD_LIGHTER_MAX_SLIPPAGE || 0.02),  // 2% sugli ordini market
