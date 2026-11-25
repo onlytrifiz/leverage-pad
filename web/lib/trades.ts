@@ -216,32 +216,19 @@ async function read(coin: Coin): Promise<Store> {
 // ── candles ─────────────────────────────────────────────────────────────────
 
 const CANDLES = 1_000;
-/** quiet buckets are drawn, flat, this far back: quiet is part of the picture, and a gap would hide it */
-const FILLED = 500;
-
 /**
- * Candles, oldest first. Each opens where the one before closed and the first at the launch price,
+ * Candles with something in them, oldest first: a quiet bucket has none. Each opens where the one before closed and the first at the launch price,
  * so the series has no jumps the pool did not make. The hook's own conversions move the price and
  * are drawn; they are nobody's trade and are not in the volume.
  */
 function candlesOf(swaps: Swap[], resolution: Resolution, launchPrice: number): { candles: Candle[]; complete: boolean } {
   const size = RESOLUTIONS[resolution];
-  const now = Math.floor(Date.now() / 1000 / size) * size;
-  const from = now - (FILLED - 1) * size;
   const out: Candle[] = [];
   let prev = launchPrice;
-  // at one second a quiet minute would be sixty empty bars: there only what traded is drawn
-  const fill = (until: number) => {
-    if (size < 60 || !out.length) return;
-    for (let t = Math.max(out[out.length - 1].time + size, from); t < until; t += size) {
-      out.push({ time: t, open: prev, high: prev, low: prev, close: prev, volume: 0, trades: 0, buys: 0 });
-    }
-  };
   for (const s of swaps) {
     const time = Math.floor(s.ts / size) * size;
     let c = out[out.length - 1];
     if (!c || time > c.time) {
-      fill(time);
       c = { time, open: prev, high: prev, low: prev, close: prev, volume: 0, trades: 0, buys: 0 };
       out.push(c);
     }
@@ -255,7 +242,6 @@ function candlesOf(swaps: Swap[], resolution: Resolution, launchPrice: number): 
     }
     prev = s.price;
   }
-  fill(now + size);
   return { candles: out.slice(-CANDLES), complete: out.length <= CANDLES };
 }
 

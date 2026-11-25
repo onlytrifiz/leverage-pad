@@ -27,7 +27,7 @@ import { ARROW_PATH, HatchLayer, MarksLayer, placeBuybacks, placeLines } from ".
 
 /**
  * The token's chart, drawn from its pool's swaps, with the engine on it: a buyback is marked where it
- * landed and a dated line stands where the engine changed. Quiet stretches are drawn flat.
+ * landed and a dated line stands where the engine changed. Only what traded is drawn.
  *
  * Printed like the notes: the line stands on engraved strokes, a rising candle is hollow and a
  * falling one solid, so direction never hangs on telling green from red.
