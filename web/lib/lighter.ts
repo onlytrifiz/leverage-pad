@@ -1,5 +1,6 @@
 import { LIGHTER_API } from "./config";
 import type { PerpPosition } from "./types";
+import type { AccountView } from "./registry";
 
 /**
  * Letture pubbliche dall'API REST di Lighter (profilo Robinhood). Nessuna
@@ -144,7 +145,7 @@ export async function marketCloses(symbol: string, resolution: string, size: num
   const now = Math.ceil(Date.now() / 1000 / size) * size;
   const j = await lighterGet(
     `/api/v1/candles?market_id=${id}&resolution=${resolution}&start_timestamp=${(now - count * size) * 1000}&end_timestamp=${now * 1000}&count_back=${count}`,
-    10
+    60
   );
   const rows = Array.isArray(j?.c) ? (j.c as { t: number; c: number }[]) : [];
   return rows.map((r) => ({ time: Math.floor(r.t / 1000 / size) * size, value: Number(r.c) })).filter((p) => p.value > 0).slice(-count);
@@ -166,6 +167,45 @@ export async function marketIdBySymbol(symbol: string): Promise<number | null> {
   if (!j || !Array.isArray(j.order_books)) return null;
   const m = (j.order_books as Record<string, unknown>[]).find((o) => o.symbol === symbol);
   return m ? Number(m.market_id) : null;
+}
+
+/**
+ * A position from the keeper's last read of the account and the market's mark now: one read of
+ * every market for the whole site, instead of one read of Lighter per token per page. Size, entry
+ * and liquidation move only when the keeper acts, and it reads the account each time it does.
+ */
+export function perpFromView(accountIndex: number, view: AccountView, market: MarketRow | null): PerpPosition {
+  const num = (v: string | null | undefined) => (v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
+  const mark = market?.mark ?? null;
+  const marketId = market?.marketId ?? null;
+  const pos = marketId != null ? view.positions.find((p) => p.marketId === marketId) : undefined;
+  const freeUsd = num(view.available);
+  const size = pos ? Math.abs(Number(pos.size)) : 0;
+  if (!pos || !(size > 0)) {
+    return {
+      accountIndex, marketId, open: false, collateralUsd: num(view.collateral), positionSizeUsd: null, entryPrice: null,
+      markPrice: mark, unrealizedPnlUsd: null, liquidationPrice: null, fundingPaidUsd: null, freeUsd,
+    };
+  }
+  const entry = Number(pos.entry), sign = Number(pos.sign) === -1 ? -1 : 1;
+  return {
+    accountIndex,
+    marketId,
+    open: true,
+    collateralUsd: num(pos.margin) ?? num(view.collateral),
+    positionSizeUsd: size * (mark ?? entry),
+    entryPrice: entry,
+    markPrice: mark,
+    unrealizedPnlUsd: mark != null ? sign * size * (mark - entry) : null,
+    liquidationPrice: num(pos.liquidation),
+    fundingPaidUsd: num(pos.funding),
+    freeUsd,
+  };
+}
+
+/** a market by symbol, from the one read of all of them */
+export async function marketRow(symbol: string): Promise<MarketRow | null> {
+  return (await allMarkets()).find((m) => m.symbol === symbol) ?? null;
 }
 
 export async function perpPosition(

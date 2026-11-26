@@ -124,6 +124,7 @@ module.exports = {
   PAUSED: new Set((process.env.PERPSPAD_PAUSED || '').toLowerCase().split(/[\s,]+/).filter((a) => /^0x[0-9a-f]{40}$/.test(a))),
 
   TICK_MS: Number(process.env.PERPSPAD_TICK_MS || 15000),
+  ALERT_MIN_ETH: Number(process.env.PERPSPAD_ALERT_MIN_ETH || 0.002), // below this the keeper wallet is said to need gas
   TICK_PARALLEL: Number(process.env.PERPSPAD_TICK_PARALLEL || 4),   // tokens side by side in a round
   URGENT_PARALLEL: 4,                                               // and in front of it, on a live mark
   TICK_PATIENCE_MS: 60_000,       // a token still at work after this is left to its own timeouts

@@ -1,7 +1,7 @@
 import { ethers } from "ethers";
 import { loadRegistry, type CoinState, type RegistryTranche } from "./registry";
 import { coinFeed, readCoinStates, loadRouterCoins, poolFeesUsd, readManagedDelay } from "./chain";
-import { resolveAccountIndex, perpPosition } from "./lighter";
+import { resolveAccountIndex, perpPosition, perpFromView, marketRow } from "./lighter";
 import { demoCoins, demoDetail, demoCandles, demoFeed, demoPositions } from "./mock";
 import { FORCE_DEMO } from "./config";
 import { PROFIT_SPLIT_PCT, decayedTakeProfitPct } from "./doppler";
@@ -141,10 +141,15 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
   const switching = st?.perpSwitch ?? null;
   const book = { ...coin, ...(switching?.from ?? {}) };
   let perp = null;
-  const accountIndex =
-    st?.lighterAccountIndex ?? (await resolveAccountIndex(coin.subWallet).catch(() => null));
+  // a token the keeper knows has no account until it says so: Lighter is asked only about others
+  const accountIndex = st
+    ? (st.lighterAccountIndex ?? null)
+    : await resolveAccountIndex(coin.subWallet).catch(() => null);
   if (accountIndex != null) {
-    perp = await perpPosition(accountIndex, book.market).catch(() => null);
+    // the keeper's read when there is one; Lighter itself only for a token it has not read yet
+    perp = st?.perpView
+      ? perpFromView(accountIndex, st.perpView, await marketRow(book.market).catch(() => null))
+      : await perpPosition(accountIndex, book.market).catch(() => null);
   }
   const tranches = buildTrancheViews(st?.perpTranches, book, perp?.markPrice ?? null);
 
@@ -231,11 +236,14 @@ export async function openPositions(): Promise<OpenPosition[]> {
   const rows = await Promise.all(
     reg.coins.map(async (coin): Promise<OpenPosition | null> => {
       const st = reg.state[coin.token.toLowerCase()];
-      const accountIndex =
-        st?.lighterAccountIndex ?? (await resolveAccountIndex(coin.subWallet).catch(() => null));
+      const accountIndex = st
+        ? (st.lighterAccountIndex ?? null)
+        : await resolveAccountIndex(coin.subWallet).catch(() => null);
       if (accountIndex == null) return null;
       const { market, side } = st?.perpSwitch?.from ?? coin;
-      const p = await perpPosition(accountIndex, market).catch(() => null);
+      const p = st?.perpView
+        ? perpFromView(accountIndex, st.perpView, await marketRow(market).catch(() => null))
+        : await perpPosition(accountIndex, market).catch(() => null);
       if (!p?.open) return null;
       const pnlPct =
         p.unrealizedPnlUsd != null && p.collateralUsd ? (p.unrealizedPnlUsd / p.collateralUsd) * 100 : null;

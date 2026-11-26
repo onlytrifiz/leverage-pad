@@ -259,7 +259,7 @@ net loss is final; what is left is the collateral of the new position.</p>
 <section>
 <h2>5.&ensp;Profit Return and Supply Dynamics</h2>
 <p><b class="run">Withdrawal.</b> Once what take-profits took out clears a floor <i>W</i> = $20, it is withdrawn from
-Lighter over the zk bridge (typically minutes) back to the token&rsquo;s treasury. The keeper recognizes the settlement
+Lighter over the zk bridge (up to about 30 minutes) back to the token&rsquo;s treasury. The keeper recognizes the settlement
 from the onchain transfer itself and divides it as</p>
 <div class="eq"><span class="rm">buyback</span> = <i>K</i> + 0.70 <i>g</i>,&emsp;<span class="rm">operator</span> = 0.30 <i>g</i></div>
 <p>The capital has already been divided once, as a fee, and is not divided again: a dollar that enters the engine
@@ -276,7 +276,7 @@ token that reaches a sink or a treasury, and any voluntary burn by a holder. Tra
 they are put to work, which is what makes the buyback larger than they were.</p>
 <p><b class="run">Operator revenue.</b> The operator earns 25% of trading fees and 30% of realized gains, and nothing
 else: no launch fee, no share of capital, no share of the pool. Of those earnings, 70% buys the platform token,
-MULTIPLY, on its own pool and burns it, from the time that token is live; 30% stays in the operator&rsquo;s treasury. The
+MULTIPLY (<span style="font-family: Menlo, monospace; font-size: 0.86em; word-break: break-all">0xBe021bF099efF1C81d799079358943A981b77642</span> on Robinhood Chain), on its own pool and burns it; 30% stays in the operator&rsquo;s treasury. The
 keeper counts them from the transfers of the sinks and the treasuries alone, every thirty minutes, and buys in a size
 that moves the price by at most 1%.</p>
 </section>

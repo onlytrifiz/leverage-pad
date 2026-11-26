@@ -26,7 +26,17 @@ export type RegistryTranche = {
   leverage?: number;
 };
 
+/** the keeper's last read of a token's Lighter account */
+export type AccountView = {
+  at: number;
+  collateral: string | null;
+  available: string | null;
+  positions: { marketId: number; sign: number; size: string; entry: string; margin: string | null; liquidation: string | null; funding: string | null }[];
+};
+
 export type CoinState = {
+  /** what the keeper last read of the account: the site shows it instead of asking Lighter */
+  perpView?: AccountView;
   perpReserveRaw: string;
   buybackReserveRaw: string;
   treasuryOwedRaw: string;

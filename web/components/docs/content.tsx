@@ -457,7 +457,7 @@ function ProfitsBody() {
     <>
       <p>
         <K>Coming home.</K> Once what take-profits took out clears <N>{fmtThreshold(BUYBACK_FLOOR_USD)}</N>, it&apos;s
-        withdrawn from Lighter over the zk bridge (~15 minutes) back to the
+        withdrawn from Lighter over the zk bridge (up to about 30 minutes) back to the
         token&apos;s sub-wallet. <K>All the capital and {PROFIT_SPLIT_PCT.buyback}% of the gain</K> go to the
         buyback reserve, {PROFIT_SPLIT_PCT.treasury}% of the gain to the protocol treasury.
       </p>

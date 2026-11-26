@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { LogoMark } from "@/components/brand/LogoMark";
-import { CHAIN, EXPLORER, PLATFORM_TOKEN, explorerAddr } from "@/lib/clientConfig";
+import { CHAIN, EXPLORER, PLATFORM_TOKEN, SOCIALS, explorerAddr } from "@/lib/clientConfig";
 import { IntroLink } from "@/components/intro/IntroButton";
 import { Reveal, RevealItem } from "@/components/motion";
 
@@ -69,6 +69,15 @@ export default function Footer({ router }: { router?: string }) {
               Every token here holds a perp. Trading fees load it, and when it wins it buys the token and burns it.
             </p>
             <IntroLink className="mt-4 text-sm font-semibold text-brand underline-offset-4 hover:underline" />
+            {SOCIALS.length > 0 && (
+              <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2 text-ink-2">
+                {SOCIALS.map((s) => (
+                  <External key={s.label} href={s.href}>
+                    {s.label}
+                  </External>
+                ))}
+              </div>
+            )}
           </RevealItem>
 
           {COLUMNS.map((col) => (

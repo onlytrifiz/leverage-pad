@@ -11,6 +11,7 @@ const registry = require('./lib/registry');
 const publish = require('./lib/publish');
 const { flywheelTick } = require('./lib/flywheel');
 const { createFeed, createUrgent } = require('./lib/marketFeed');
+const { createHealth } = require('./lib/health');
 const { createLanes, createMutex } = require('./lib/lanes');
 const { createStore } = require('./lib/store');
 const { multicall } = require('./lib/multicall');
@@ -820,7 +821,7 @@ async function chainSteps({ keeper, locker, coin, st, checkpoint, sub, unitUsd, 
         st.treasuryOwedRaw = BN(st.treasuryOwedRaw).add(toTreasury).toString();
         st.perpWithdrawPendingUsd = Math.max(0, pendingUsd - usdOf(creditRaw, coin.pairDecimals, unitUsd));
         st.perpWithdrawPendingProfitUsd = pendingProfitUsd * (st.perpWithdrawPendingUsd / pendingUsd);
-        if (st.perpWithdrawPendingUsd < 0.01) { st.perpDoubtUsd = 0; st.perpWithdrawPendingUsd = 0; st.perpWithdrawPendingProfitUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
+        if (st.perpWithdrawPendingUsd < 0.01) { st.perpDoubtUsd = 0; st.perpDoubt = null; st.perpWithdrawPendingUsd = 0; st.perpWithdrawPendingProfitUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
         console.log(`  [${coin.symbol}] rientrato dal bridge: $${usdOf(creditRaw, coin.pairDecimals, unitUsd).toFixed(2)} → $${usdOf(toBuyback, coin.pairDecimals, unitUsd).toFixed(2)} buyback / $${usdOf(toTreasury, coin.pairDecimals, unitUsd).toFixed(2)} treasury`);
       }
       checkpoint(); // persiste comunque lo scanBlock (mai ricontare gli stessi log)
@@ -1148,8 +1149,49 @@ function intentToPending(st) {
   clearIntent(st);
 }
 
+/**
+ * A withdrawal booked as sent because its transaction could not be read for hours is asked about
+ * again, every so often. Executed: it left the account, and only its arrival is waited for. Failed:
+ * it never left, and goes back to where it came from, to be withdrawn again. No answer: as it was.
+ */
+const DOUBT_ASK_MS = 30 * 60_000;
+async function settleDoubts({ coin, st, checkpoint, accountIndex }) {
+  if (!Array.isArray(st.perpDoubt) || !st.perpDoubt.length) return;
+  // not while another withdrawal is in flight: undone, it would put back the books as they were
+  // before this, and it counts on the arrival window this may close
+  if (Number(st.perpWithdrawIntentUsd || 0) > 0) return;
+  const left = [];
+  for (const d of st.perpDoubt) {
+    if (Date.now() < Number(d.askAt || 0) || !d.tx) { left.push(d); continue; }
+    let t;
+    try { t = await lighter.tx(d.tx, accountIndex); } catch { t = null; }
+    const out = () => { st.perpDoubtUsd = Math.max(0, Number(st.perpDoubtUsd || 0) - d.usd); };
+    if (t && t.status >= 2) {
+      out();
+      console.log(`  [${coin.symbol}] withdraw di $${d.usd.toFixed(2)} senza risposta: eseguito, in arrivo`);
+    } else if (t && t.status === 0) {
+      out();
+      // what leaves the pending is given back, and as profit only what leaves its profit share: the
+      // share of what is still on its way stays with it
+      const pp = Number(st.perpWithdrawPendingProfitUsd || 0);
+      let after = Math.max(0, Number(st.perpWithdrawPendingUsd || 0) - d.usd);
+      if (after < 0.01) after = 0;
+      const ppAfter = Math.min(after, Math.max(0, pp - d.profitUsd));
+      const profit = Math.min(d.usd, pp - ppAfter);
+      st.perpWithdrawPendingUsd = after; st.perpWithdrawPendingProfitUsd = ppAfter;
+      st.perpRealizedUsd = Number(st.perpRealizedUsd || 0) + profit;
+      st.perpCapitalUsd = Number(st.perpCapitalUsd || 0) + (d.usd - profit);
+      if (!(st.perpWithdrawPendingUsd > 0)) { st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null; }
+      console.log(`  [${coin.symbol}] withdraw di $${d.usd.toFixed(2)} senza risposta: fallito, riaccreditato`);
+    } else left.push({ ...d, askAt: Date.now() + DOUBT_ASK_MS });
+  }
+  st.perpDoubt = left.length ? left : null;
+  checkpoint();
+}
+
 /** did the withdrawal in flight leave? Its cash says so; false while it does not say yet */
 async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
+  await settleDoubts({ coin, st, checkpoint, accountIndex });
   const amount = Number(st.perpWithdrawIntentUsd || 0);
   if (!(amount > 0) || st.perpWithdrawCashUsd == null) return true;
   const cash = isolatedCash(await lighter.account(accountIndex));
@@ -1176,6 +1218,8 @@ async function settleWithdrawal({ coin, st, checkpoint, accountIndex }) {
       if (!st.perpWithdrawUnread) { st.perpWithdrawUnread = Date.now(); checkpoint(); }
       if (Date.now() - st.perpWithdrawUnread < config.TX_UNREAD_MS) return false;
       st.perpDoubtUsd = Number(st.perpDoubtUsd || 0) + amount;
+      // kept, to be asked again now and then: the venue may answer tomorrow
+      st.perpDoubt = [...(st.perpDoubt || []), { tx: st.perpWithdrawTx, usd: amount, profitUsd: Number(st.perpWithdrawIntentProfitUsd || 0), askAt: Date.now() + DOUBT_ASK_MS }];
       intentToPending(st); checkpoint();
       console.log(`  [${coin.symbol}] withdraw di $${amount.toFixed(2)}: la sua transazione non si legge da ore, trattato come inviato e tenuto fuori dal motore`);
       return true;
@@ -1365,6 +1409,7 @@ async function retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote) {
     await send(sub, { to: coin.pair, data: quote.interface.encodeFunctionData('transfer', [config.TREASURY, held]), gasLimit: 100000 }, 'retired sweep');
     for (const b of ['perpReserveRaw', 'buybackReserveRaw', 'treasuryOwedRaw', 'creatorOwedRaw']) st[b] = '0';
     st.perpWithdrawPendingUsd = 0; st.perpWithdrawPendingProfitUsd = 0; st.perpWithdrawBlock = null; st.perpWithdrawScanBlock = null;
+    st.perpDoubtUsd = 0; st.perpDoubt = null; // all it had is in the sweep: nothing of it is kept out any more
     checkpoint();
     console.log(`  [${coin.symbol}] retired: ${ethers.utils.formatUnits(held, coin.pairDecimals)} ${coin.pairSymbol} → ${config.TREASURY}`);
   }
@@ -1683,6 +1728,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
         // mature ma sotto il minimo d'ordine: restano in lista e si chiudono con le prossime
         if (!st.perpSmallLogged) console.log(`  [${coin.symbol}] ${ready.length} tranche mature sotto il minimo d'ordine (${closeBase} < ${minAsk}): accumulo`);
         st.perpSmallLogged = true;
+        // nothing to make smaller or fewer: no reason to come back for it every round
+        if (st.perpTpDeep || st.perpTpSplit) { st.perpTpDeep = 0; st.perpTpSplit = 0; checkpoint(); }
       }
     }
   }
@@ -1963,6 +2010,8 @@ async function main() {
   const urgent = createUrgent({ isDue: (e, mark) => hasMature(e.coin, e.st, mark) });
   const feed = watching ? createFeed({ url: config.LIGHTER_WS_URL, onMark: (id, mark) => urgent.onMark(id, mark) }) : null;
   let marketOf = new Map(); // token → the market its position is on
+  const health = createHealth();
+  let gasEth = null, gasAt = 0;
   const urgentLane = async () => {
     for (;;) {
       await urgent.wait(60_000);
@@ -2048,7 +2097,14 @@ async function main() {
     }
     // estratto pubblico per il sito (senza chiavi API ne' stato interno):
     // in produzione il frontend gira su un host remoto e non vede il file locale
-    publish.writeSnapshot(store.committed());
+    const committed = store.committed();
+    if (Date.now() - gasAt > 10 * 60_000) {
+      gasAt = Date.now();
+      try { gasEth = Number(ethers.utils.formatEther(await provider.getBalance(keeper.address))); } catch { /* the last one stands */ }
+    }
+    publish.writeSnapshot(committed, { viewOf: lighter.accountView });
+    try { publish.writeHealth(health.check({ reg: committed, feedWanted: !!feed && feed.wanted(), feedLive: !!feed && feed.live(), gasEth })); }
+    catch (e) { console.log(`  health: ${String(e.message).slice(0, 100)}`); }
     if (!flag('once')) await sleep(config.TICK_MS);
   } while (!flag('once'));
 }
@@ -2058,4 +2114,4 @@ if (require.main === module) {
 }
 
 // helper puri esportati per i test a secco
-module.exports = { sweepSurplus, settleWithdrawal, refusedByNode, sendNow, receiptOf, moving, settleTxOut, StuckTxError, readBriefs, reasonToTick, hasMature, strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };
+module.exports = { sweepSurplus, settleWithdrawal, settleDoubts, refusedByNode, sendNow, receiptOf, moving, settleTxOut, StuckTxError, readBriefs, reasonToTick, hasMature, strayPositions, closeProceeds, withdrawalOf, splitArrival, settleOrder, retireTick, depositDue, minDeploy, tickCoin, settleEngineSwitch, perpTick, trancheTargetMark, effectiveTrigger, coinTrigger, markFromPosition, reconcileTranches, matureTranches, realizedFromTranches, removeClosedBase, addTranche, fundingDelta, quoteExactInV3, coinValueInQuote, isFeeInflow, lockHolderAlive };

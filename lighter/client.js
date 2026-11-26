@@ -161,7 +161,23 @@ function useKeys(fn) {
 
 const selftest = () => call('selftest');
 const resolveAccount = (address) => rest.resolveAccount({ address });
-const account = (accountIndex) => rest.account({ accountIndex });
+// The last read of every account, in memory: the site shows it instead of asking Lighter itself
+const views = new Map();
+const account = async (accountIndex) => {
+  const a = await rest.account({ accountIndex });
+  views.set(Number(accountIndex), {
+    at: Date.now(),
+    collateral: a.collateral,
+    available: a.available_balance,
+    positions: a.positions.filter((p) => Math.abs(Number(p.size)) > 0).map((p) => ({
+      marketId: Number(p.market_id), sign: Number(p.sign), size: p.size, entry: p.avg_entry_price,
+      margin: p.allocated_margin, liquidation: p.liquidation_price, funding: p.total_funding_paid_out,
+    })),
+  });
+  return a;
+};
+/** what was last read of an account, or null */
+const accountView = (accountIndex) => (accountIndex == null ? null : views.get(Number(accountIndex)) ?? null);
 const intentAddress = ({ chainId, fromAddr, amount }) => call('intent-address', { chainId, fromAddr, amount });
 const depositLatest = (address) => call('deposit-latest', { address });
 const registerKey = ({ accountIndex, apiKeyIndex, ethPrivKey }) =>
@@ -184,7 +200,7 @@ const withdraw = ({ accountIndex, amount, apiPrivKey, apiKeyIndex = 4 }) =>
   call('withdraw', { accountIndex, amount, apiKeyIndex }, { LIGHTER_API_PRIVKEY: apiPrivKey });
 
 module.exports = {
-  enabled, simulate, mode: MODE, urgently: rest.urgently, spareReads: rest.spareReads, authed: rest.authed, useKeys,
+  enabled, simulate, mode: MODE, urgently: rest.urgently, spareReads: rest.spareReads, authed: rest.authed, useKeys, accountView,
   selftest, markets, market, marketById, parseMarket, maxLeverageFromImf, resolveAccount, account,
   intentAddress, depositLatest, registerKey, setLeverage, open, close, fills, tx, addMargin, withdraw,
 };

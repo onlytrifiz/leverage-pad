@@ -85,6 +85,12 @@ export const ROUTER_DEPLOY_BLOCK = Number(process.env.NEXT_PUBLIC_LAUNCH_ROUTER_
 /** Canonical Multicall3 — verified deployed at this address on chain 4663. */
 export const MULTICALL3 = "0xcA11bde05977b3631167028862bE2a173976CA11";
 
+/** the project's own channels, shown in the footer once they are set */
+export const SOCIALS = [
+  { label: "X", href: process.env.NEXT_PUBLIC_X_URL ?? "https://x.com/Multiply_cash" },
+  { label: "Telegram", href: process.env.NEXT_PUBLIC_TELEGRAM_URL ?? "" },
+].filter((s) => /^https:\/\//.test(s.href));
+
 export const explorerAddr = (a: string) => `${EXPLORER}/address/${a}`;
 export const explorerTx = (h: string) => `${EXPLORER}/tx/${h}`;
 export const explorerToken = (a: string) => `${EXPLORER}/token/${a}`;
