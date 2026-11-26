@@ -22,7 +22,7 @@ The whole design is in the [whitepaper](web/public/whitepaper.pdf) and in the
 
 When a tranche takes profit, all of its capital and 70% of its gain buy and burn the token; 30% of
 the gain goes to the protocol. Of everything the protocol earns, 70% buys and burns
-[$MULTIPLY](https://multiply.cash/burn) every 30 minutes.
+[$MULTIPLY](https://multiply.cash/burn) every 5 minutes.
 
 Liquidity is seeded one-sided into a Uniswap v4 pool by Doppler and locked: there is no owner, no
 mint after launch, and the pool cannot be pulled.

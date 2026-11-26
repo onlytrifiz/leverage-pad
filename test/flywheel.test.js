@@ -70,10 +70,10 @@ test('70% of what sinks and sub-wallets paid buys and burns; anything else that 
   assert.equal(publicFlywheel(w.reg.flywheel).history[0].usd, 21);
 });
 
-test('every 30 minutes, from $5 up, and what is below waits', async () => {
+test('every 5 minutes, from $5 up, and what is below waits', async () => {
   const w = world();
   await w.run(); w.pay(SINK, 7e6); await w.later(); assert.equal(w.sends.length, 0);
-  w.pay(SINK, 1e6); await w.later(29); assert.equal(w.sends.length, 0);
+  w.pay(SINK, 1e6); await w.later(4); assert.equal(w.sends.length, 0);
   await w.later(1); assert.equal(w.sends.length, 2);
   assert.equal(w.reg.flywheel.spentRaw, '5600000');
 });
@@ -141,6 +141,25 @@ test('a reverted buy gives the money back to the next', async () => {
   w.send = async () => { throw new Error('reverted'); };
   await assert.rejects(w.later());
   assert.equal(w.reg.flywheel.owedRaw, '70000000'); assert.equal(w.reg.flywheel.buying, null);
+});
+
+test('a failed buy is tried again at the next tick, a few times, then at the usual pace', async () => {
+  const w = world();
+  await w.run(); w.pay(SINK, 100e6);
+  const ok = w.send;
+  w.send = async () => { throw new Error('reverted'); };
+  await assert.rejects(w.later());
+  // seconds later, not minutes: a new quote and a new try
+  for (let i = 0; i < 3; i++) await assert.rejects(w.later(0.25));
+  assert.equal(w.reg.flywheel.failStreak, 4);
+  await w.later(0.25); assert.equal(w.reg.flywheel.failStreak, 4, 'past the streak it waits the interval');
+  w.send = ok;
+  await w.later(5); assert.equal(w.sends.length, 2, 'bought and burned');
+  assert.equal(w.reg.flywheel.failStreak, 0); assert.equal(w.reg.flywheel.owedRaw, '0');
+  w.send = async () => { throw new Error('reverted'); };
+  w.pay(SINK, 100e6); await assert.rejects(w.later(5));
+  w.send = ok; await w.later(0.25); assert.equal(w.sends.length, 4, 'the next failure starts a new streak');
+  assert.equal(publicFlywheel(w.reg.flywheel).failStreak, undefined);
 });
 
 test('payers: never a retired token, whose sweep is its own money', () => {

@@ -110,7 +110,7 @@ module.exports = {
   // ── platform buyback & burn (lib/flywheel.js): off until the token is set ────
   FLYWHEEL_TOKEN: /^0x[0-9a-fA-F]{40}$/.test(process.env.PERPSPAD_FLYWHEEL_TOKEN || '') ? process.env.PERPSPAD_FLYWHEEL_TOKEN : '',
   FLYWHEEL_SHARE_BPS: Number(process.env.PERPSPAD_FLYWHEEL_SHARE_BPS ?? 7000), // of the protocol's earnings; the rest stays in the treasury
-  FLYWHEEL_INTERVAL_MS: Number(process.env.PERPSPAD_FLYWHEEL_INTERVAL_MS ?? 30 * 60 * 1000),
+  FLYWHEEL_INTERVAL_MS: Number(process.env.PERPSPAD_FLYWHEEL_INTERVAL_MS ?? 5 * 60 * 1000),
   FLYWHEEL_MIN_USD: Number(process.env.PERPSPAD_FLYWHEEL_MIN_USD || 5),
   FLYWHEEL_MAX_USD: Number(process.env.PERPSPAD_FLYWHEEL_MAX_USD || 500),      // one buy never spends more
   FLYWHEEL_MAX_IMPACT_BPS: Number(process.env.PERPSPAD_FLYWHEEL_MAX_IMPACT_BPS ?? 100),
