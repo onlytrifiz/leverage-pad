@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowRight, ArrowUpRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { listCoins } from "@/lib/detail";
 import { loadRegistry } from "@/lib/registry";
 import { Container } from "@/components/ui/container";
@@ -31,8 +32,8 @@ function pickFeatured(coins: CoinListItem[]): CoinListItem | null {
  * The home page reads in two halves.
  *
  * The top half explains the product to someone who has never seen it: the
- * claim, what sets it apart, an instrument to push, the loop and its fuel. Then a preview
- * of the live coins; the full board is its own page, /market.
+ * claim, the top tokens and the way to the market, what sets it apart, an instrument to push, the
+ * loop and its fuel. The full board is its own page, /market.
  */
 export default async function Home() {
   const [coins, flywheelLive] = await Promise.all([listCoins(), loadRegistry().then((r) => r.flywheel != null, () => false)]);
@@ -53,6 +54,31 @@ export default async function Home() {
         {/* the venue's pulse, right under the hero, which now runs up behind the header */}
         <div className="mt-6">
           <TickerTape />
+        </div>
+
+        {/* the top tokens right under the hero, and the way to all of them: the full board lives on /market */}
+        <div id="market" className="scroll-mt-[calc(var(--nav-h)+12px)] pt-16 sm:pt-20">
+          <Container width="landing">
+            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-4">
+              <RevealBlock className="min-w-0 max-w-[640px]">
+                <h2 className="text-4xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-5xl">Top tokens</h2>
+                <p className="mt-3 max-w-[52ch] text-lg leading-relaxed text-ink-2">
+                  Each one carries a position on a market, paid for by its own trading.
+                </p>
+              </RevealBlock>
+              <Button size="xl" className="hidden sm:inline-flex" nativeButton={false} render={<Link href="/market" />}>
+                Explore the market
+                <ArrowRight data-icon="inline-end" aria-hidden />
+              </Button>
+            </div>
+            <div className="mt-8">
+              <MarketPreview items={coins} />
+            </div>
+            <Button size="xl" className="mt-6 w-full sm:hidden" nativeButton={false} render={<Link href="/market" />}>
+              Explore the market
+              <ArrowRight data-icon="inline-end" aria-hidden />
+            </Button>
+          </Container>
         </div>
 
         {/* a memecoin, a perp, and both in one token */}
@@ -113,25 +139,6 @@ export default async function Home() {
             </div>
           </div>
         </Container>
-
-        {/* the market, a preview: the full board lives on /market */}
-        <div id="market" className="scroll-mt-[calc(var(--nav-h)+12px)] pt-24 sm:pt-32">
-          <Container width="landing">
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <h2 className="text-4xl leading-[1.08] font-bold tracking-[-0.03em] sm:text-5xl">Live now</h2>
-              <Link
-                href="/market"
-                className="inline-flex items-center gap-1.5 text-md font-semibold text-brand underline-offset-4 hover:underline"
-              >
-                Open the market
-                <ArrowUpRight size={16} aria-hidden />
-              </Link>
-            </div>
-            <div className="mt-8">
-              <MarketPreview items={coins} />
-            </div>
-          </Container>
-        </div>
 
         {/* the protocol's own burn, a step away from the tokens' */}
         <Container width="landing" className="pt-24 sm:pt-32">
