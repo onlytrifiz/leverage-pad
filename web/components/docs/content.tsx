@@ -629,6 +629,32 @@ function RisksBody() {
   );
 }
 
+function NextBody() {
+  return (
+    <>
+      <p>
+        <K>Today, every token has an engine. One day, every token could own one.</K> Two steps we would like to take.
+        Neither is live, neither has a date, and either may change shape or not happen at all.
+      </p>
+      <p>
+        <K>The vault.</K> Each token would get a contract of its own holding its Lighter account. Fees would go in, the
+        position would be opened in the vault&apos;s name, and whatever comes out would return to the vault, which could
+        spend it in only two ways: the buyback and burn, and the protocol&apos;s share of the gain. The keeper would still
+        trade. It would no longer hold the money.
+      </p>
+      <p>
+        <K>The engine on-chain.</K> Lighter is building an EVM next to its exchange, where a contract can read a live
+        position and place an order on the book. That is the missing piece for an engine that runs as code: take-profits
+        anyone can trigger, and a position any contract can read. Lighter EVM is on a developer network today, apart from
+        the exchange our tokens trade on. We are watching it, and would follow only once it reaches the markets we trade.
+      </p>
+      <p>
+        Until then, what runs is what the rest of these docs describe.
+      </p>
+    </>
+  );
+}
+
 const GROUPS: { label: string; pages: Omit<DocPage, "group" | "n">[] }[] = [
   {
     label: "Start here",
@@ -662,6 +688,7 @@ const GROUPS: { label: string; pages: Omit<DocPage, "group" | "n">[] }[] = [
       { slug: "economics", title: "Economics", lede: "Who gets what, and a worst case bounded by design.", body: EconomicsBody },
       { slug: "multiply", title: "$MULTIPLY buyback & burn", lede: "Most of what the protocol earns buys its token and burns it.", body: MultiplyBody },
       { slug: "verify", title: "What you can verify", lede: "Every contract, one click from the explorer.", body: VerifyBody },
+      { slug: "lighter-evm", title: "Lighter EVM & the future", lede: "Where the engine could go. Not live, not dated, not promised.", body: NextBody },
       { slug: "risks", title: "What we don't promise", lede: "The moving parts, and what pauses when one of them stops.", body: RisksBody },
     ],
   },
