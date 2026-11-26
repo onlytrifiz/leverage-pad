@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { loadFlywheel, type Buyback } from "@/lib/flywheel";
+import { coinDetail } from "@/lib/detail";
 import { PLATFORM_TOKEN, explorerToken, explorerTx } from "@/lib/clientConfig";
 import { FLYWHEEL } from "@/lib/doppler";
 import { fmtInt, fmtUsd } from "@/lib/format";
@@ -13,6 +14,7 @@ import { CoinAvatar } from "@/components/brand/CoinAvatar";
 import { BurningNote } from "@/components/burn/BurningNote";
 import NextBuyback from "@/components/burn/NextBuyback";
 import RevenueSplit from "@/components/burn/RevenueSplit";
+import InPlay, { inPlay } from "@/components/burn/InPlay";
 import { Bar, BarGroup } from "@/components/stats/Bars";
 
 export const metadata = {
@@ -26,7 +28,10 @@ export const dynamic = "force-dynamic";
  * buy, every buy so far, and the tokens that burn themselves with their own engines.
  */
 export default async function BurnPage() {
-  const { flywheel: fw, coins } = await loadFlywheel();
+  const [{ flywheel: fw, coins }, platform] = await Promise.all([loadFlywheel(), coinDetail(PLATFORM_TOKEN).catch(() => null)]);
+  // the platform token's own engine, shown while it holds or is about to hold something
+  const held = platform && !platform.demo ? inPlay(platform) : null;
+  const engine = held && held.inPositions + held.goingIn > 0 ? platform : null;
   const live = fw.token != null;
   const supply = fw.token?.coin.initialSupply ?? 1e9;
   const totals = [
@@ -94,6 +99,8 @@ export default async function BurnPage() {
       </section>
 
       <Container width="landing" className="pb-10">
+        {engine && <InPlay detail={engine} />}
+
         <section className="mt-16 sm:mt-20">
           <RevealBlock className="max-w-[640px]">
             <h2 className="text-3xl leading-[1.1] font-bold tracking-[-0.03em] sm:text-4xl">Where the money comes from.</h2>
