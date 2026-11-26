@@ -160,3 +160,26 @@ test('the doubt is written down with what it needs to be asked about again', asy
   assert.equal(st.perpDoubtUsd, 30); assert.equal(st.perpWithdrawPendingUsd, 30);
   assert.equal(st.perpDoubt.length, 1); assert.equal(st.perpDoubt[0].tx, 'hh'); assert.equal(st.perpDoubt[0].usd, 30); assert.equal(st.perpDoubt[0].profitUsd, 6);
 });
+
+test('telegram: each problem once when it appears and once when it is over, never in the way', async () => {
+  const { createNotifier } = require('../lib/notify');
+  const sent = []; let down = false;
+  const post = async (url, o) => { if (down) throw new Error(`refused ${url}`); sent.push(JSON.parse(o.body)); return { ok: true }; };
+  const logs = [];
+  const n = createNotifier({ token: 'SECRET', chatId: '42', post, log: (m) => logs.push(m) });
+  assert.equal(createNotifier({ token: '', chatId: '42', post }).on, false);
+  const a = { token: T, symbol: 'T', what: 'a transfer has not confirmed for 30 minutes' };
+  const gas = { what: 'the keeper wallet has 0.00150 ETH left for gas' };
+  await n.report([]); assert.equal(sent.length, 0);
+  await n.report([a]); assert.equal(sent.length, 1); assert.match(sent[0].text, /Problem\n• T: a transfer/); assert.equal(sent[0].chat_id, '42');
+  await n.report([a]); assert.equal(sent.length, 1, 'not again while it lasts');
+  await n.report([a, gas]); assert.equal(sent.length, 2);
+  await n.report([a, { what: 'the keeper wallet has 0.00140 ETH left for gas' }]); assert.equal(sent.length, 2, 'another amount is the same problem');
+  down = true;
+  await n.report([gas]); assert.equal(sent.length, 2);
+  assert.ok(logs.some((l) => /not sent/.test(l)) && !logs.some((l) => l.includes('SECRET')), 'the token never in a log');
+  down = false;
+  await n.report([gas]); assert.equal(sent.length, 3, 'the change that could not be sent goes at the next round'); assert.match(sent[2].text, /Over\n• T: a transfer/);
+  await n.report([]); assert.match(sent[3].text, /Over\n• the keeper wallet/);
+});
+

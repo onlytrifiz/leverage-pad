@@ -12,6 +12,7 @@ const publish = require('./lib/publish');
 const { flywheelTick } = require('./lib/flywheel');
 const { createFeed, createUrgent } = require('./lib/marketFeed');
 const { createHealth } = require('./lib/health');
+const { createNotifier } = require('./lib/notify');
 const { createLanes, createMutex } = require('./lib/lanes');
 const { createStore } = require('./lib/store');
 const { multicall } = require('./lib/multicall');
@@ -2011,6 +2012,8 @@ async function main() {
   const feed = watching ? createFeed({ url: config.LIGHTER_WS_URL, onMark: (id, mark) => urgent.onMark(id, mark) }) : null;
   let marketOf = new Map(); // token → the market its position is on
   const health = createHealth();
+  const notifier = createNotifier();
+  if (notifier.on) { console.log('alerts also go to Telegram'); await notifier.started(); }
   let gasEth = null, gasAt = 0;
   const urgentLane = async () => {
     for (;;) {
@@ -2103,8 +2106,11 @@ async function main() {
       try { gasEth = Number(ethers.utils.formatEther(await provider.getBalance(keeper.address))); } catch { /* the last one stands */ }
     }
     publish.writeSnapshot(committed, { viewOf: lighter.accountView });
-    try { publish.writeHealth(health.check({ reg: committed, feedWanted: !!feed && feed.wanted(), feedLive: !!feed && feed.live(), gasEth })); }
-    catch (e) { console.log(`  health: ${String(e.message).slice(0, 100)}`); }
+    try {
+      const found = health.check({ reg: committed, feedWanted: !!feed && feed.wanted(), feedLive: !!feed && feed.live(), gasEth });
+      publish.writeHealth(found);
+      await notifier.report(found.problems);
+    } catch (e) { console.log(`  health: ${String(e.message).slice(0, 100)}`); }
     if (!flag('once')) await sleep(config.TICK_MS);
   } while (!flag('once'));
 }
