@@ -723,6 +723,8 @@ async function tickCoin(keeper, locker, coin, st, checkpoint) {
   const quote = erc20(coin.pair);
   const coinC = erc20(token);
 
+  if (config.PAUSED.has(token.toLowerCase())) { st.lastTickTs = Date.now(); return; }
+
   if (config.RETIRED.has(token.toLowerCase())) {
     await retireTick(keeper, coin, st, checkpoint, sub, unitUsd, quote);
     st.lastTickTs = Date.now();
@@ -1757,7 +1759,7 @@ function lockHolderAlive(lock, { pid = process.pid, host = os.hostname(), kill =
  * the same rule as the take-profit's, on the state in memory. Nothing is closed on its word.
  */
 function hasMature(coin, st, mark) {
-  if (!st || config.RETIRED.has(coin.token.toLowerCase()) || coin.engineError) return false;
+  if (!st || config.RETIRED.has(coin.token.toLowerCase()) || config.PAUSED.has(coin.token.toLowerCase()) || coin.engineError) return false;
   // an order in flight or a switch under way has the token already
   if (st.perpOrder || st.perpSwitch || Number(st.perpWithdrawIntentUsd || 0) > 0) return false;
   if (coin.managed && st.perpEngine && (st.perpEngine.market !== coin.market || st.perpEngine.side !== coin.side)) return false;
@@ -1799,6 +1801,7 @@ async function readBriefs(coins) {
  * every token is looked at again after a while whatever this says.
  */
 function reasonToTick({ coin, st, brief, feedLive, now = Date.now() }) {
+  if (config.PAUSED.has(coin.token.toLowerCase())) return null;
   const idle = now - Number(st.perpLookAt || 0) >= config.PERP_LOOK_MS ? 'look' : null;
   const usd = (raw) => usdOf(BN(raw || '0'), coin.pairDecimals, 1);
   if (st.perpOrder || st.txOut || Number(st.perpWithdrawIntentUsd || 0) > 0) return 'in flight';
@@ -1907,6 +1910,7 @@ const PRODUCTION_DEFAULTS = {
 };
 
 function warnIfNotProduction() {
+  if (config.PAUSED.size) console.log(`paused, left alone: ${[...config.PAUSED].join(', ')}`);
   const diff = Object.entries(PRODUCTION_DEFAULTS)
     .filter(([k, v]) => Number(config[k]) !== v)
     .map(([k, v]) => `${k}=${config[k]} (produzione: ${v})`);

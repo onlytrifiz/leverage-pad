@@ -119,6 +119,9 @@ module.exports = {
 
   // tokens out of service: position closed, funds to the treasury, nothing opened again (retireTick)
   RETIRED: new Set((process.env.PERPSPAD_RETIRED || '').toLowerCase().split(/[\s,]+/).filter((a) => /^0x[0-9a-f]{40}$/.test(a))),
+  // tokens left alone for now: nothing collected, sent, opened or closed; their fees wait in the
+  // pool until they are taken off this list
+  PAUSED: new Set((process.env.PERPSPAD_PAUSED || '').toLowerCase().split(/[\s,]+/).filter((a) => /^0x[0-9a-f]{40}$/.test(a))),
 
   TICK_MS: Number(process.env.PERPSPAD_TICK_MS || 15000),
   TICK_PARALLEL: Number(process.env.PERPSPAD_TICK_PARALLEL || 4),   // tokens side by side in a round

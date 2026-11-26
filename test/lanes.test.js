@@ -327,6 +327,7 @@ test('reasonToTick: nothing to do is skipped, anything to do or unknown is not',
   assert.equal(why({ perpDepositAt: now - 500 }), 'deposit on its way');
   assert.equal(why({ perpSwitch: {} }), 'switch'); assert.equal(why({}, {}, { side: 'short' }), 'switch'); assert.equal(why({ perpCarry: true }), 'switch');
   assert.equal(why({ perpFilling: true }), 'unfinished'); assert.equal(why({ perpTpSplit: 1 }), 'unfinished');
+  config.PAUSED.add(coin.token); assert.equal(why({ perpOrder: { id: 1 } }, { sinkRaw: BN(600_000_000) }), null, 'paused: nothing at all'); config.PAUSED.delete(coin.token);
   assert.equal(why({ perpRealizedUsd: 5, perpCapitalUsd: 16 }), 'withdrawal'); assert.equal(why({ perpRealizedUsd: 5, perpCapitalUsd: 16, perpWithdrawRetryAt: now + 1 }), null);
   assert.equal(why({}, {}, { leverage: 10 }), 'leverage'); assert.equal(why({ lighterLeverageRejected: 10 }, {}, { leverage: 10 }), null);
   assert.equal(why({}, {}, {}, false), 'no marks'); assert.equal(why({ perpTranches: [] }, {}, {}, false), null);
@@ -352,3 +353,18 @@ test('a 429 pauses the reads even when it comes without a body', async () => {
   } finally { globalThis.fetch = real; }
 });
 test.after(() => setTimeout(() => process.exit(), 50).unref());
+
+test('a paused token is left alone: nothing read, sent or traded', async () => {
+  const { tickCoin, hasMature } = require('../keeper');
+  const token = '0x' + 'cd'.repeat(20);
+  const coin = { token, symbol: 'P', pair: config.USDG, pairSymbol: 'USDG', pairDecimals: 6, venue: 'v4', sink: '0x1', sinkAdopted: true, market: 'NVDA', side: 'long', leverage: 20, takeProfitPct: 50 };
+  const st = { perpTranches: [{ base: 1, entryMark: 100, ts: 1, leverage: 20 }], perpOpen: true, lastTickTs: 0 };
+  const touch = new Proxy({}, { get: () => { throw new Error('touched'); } });
+  config.PAUSED.add(token);
+  try {
+    await tickCoin(touch, touch, coin, st, () => { throw new Error('nothing to save'); });
+    assert.ok(st.lastTickTs > 0);
+    assert.equal(hasMature(coin, st, 1000), false);
+  } finally { config.PAUSED.delete(token); }
+  assert.equal(hasMature(coin, st, 1000), true, 'and once taken off the list it is served again');
+});

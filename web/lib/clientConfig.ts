@@ -70,6 +70,14 @@ export const LAUNCH_ROUTER =
 /** First block scanned for launches: TEST8, the first coin through the sink-enabled router. */
 /** launches before this block were tests: they are not listed and have no page. Their engines keep running. */
 export const FIRST_LISTED_BLOCK = 123_025_854;
+/** listed although launched before FIRST_LISTED_BLOCK */
+export const LISTED_ANYWAY = new Set(["0xbe021bf099eff1c81d799079358943a981b77642"]);
+/** launched after it, and not listed */
+export const NOT_LISTED = new Set([
+  "0xd84565275bdff96dfd2a4c544ea6437ff2ff2ace",
+  "0xf041270cdfb99fe427c20f7c5fd72d1e1d99471b",
+  "0xa8dbc79609e6d842743f0f737acb046112af32cb",
+]);
 export const ROUTER_DEPLOY_BLOCK = Number(process.env.NEXT_PUBLIC_LAUNCH_ROUTER_BLOCK || 80058837);
 
 /** Canonical Multicall3 — verified deployed at this address on chain 4663. */
