@@ -71,7 +71,9 @@ export const LAUNCH_ROUTER =
 /** launches before this block were tests: they are not listed and have no page. Their engines keep running. */
 export const FIRST_LISTED_BLOCK = 123_025_854;
 /** listed although launched before FIRST_LISTED_BLOCK */
-export const LISTED_ANYWAY = new Set(["0xbe021bf099eff1c81d799079358943a981b77642"]);
+/** $MULTIPLY, the platform token: the protocol's buyback & burn buys it */
+export const PLATFORM_TOKEN = "0xBe021bF099efF1C81d799079358943A981b77642";
+export const LISTED_ANYWAY = new Set([PLATFORM_TOKEN.toLowerCase()]);
 /** launched after it, and not listed */
 export const NOT_LISTED = new Set([
   "0xd84565275bdff96dfd2a4c544ea6437ff2ff2ace",

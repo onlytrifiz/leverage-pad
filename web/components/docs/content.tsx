@@ -2,7 +2,7 @@ import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { OPEN_GATE_USD, TOPUP_STEP_USD, BUYBACK_FLOOR_USD, fmtThreshold } from "@/lib/config";
 import { BUYBACK_MAX_USD, FIRST_OPEN_DELAY_MIN, TRANCHE_INTERVAL_MIN, fmtEvery } from "@/lib/thresholds";
-import { DOPPLER, LAUNCH_ROUTER, V4_POOL_MANAGER, explorerAddr } from "@/lib/clientConfig";
+import { DOPPLER, LAUNCH_ROUTER, PLATFORM_TOKEN, V4_POOL_MANAGER, explorerAddr, explorerToken } from "@/lib/clientConfig";
 import { FLYWHEEL, SNIPE, FEE_PRESETS, HOOK_FLUSH_EPSILON_USDG, FEE_SPLIT_PCT, PROFIT_SPLIT_PCT, MAX_BUY_ORDERS, fmtSeconds } from "@/lib/doppler";
 
 /**
@@ -26,6 +26,7 @@ export const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 export const FEE_RANGE = `${FEE_PRESETS[0].label} to ${FEE_PRESETS[FEE_PRESETS.length - 1].label}`;
 
 export const CONTRACTS = [
+  { name: "$MULTIPLY token", addr: PLATFORM_TOKEN },
   { name: "Launch router", addr: LAUNCH_ROUTER },
   { name: "Doppler hook initializer", addr: DOPPLER.hookInitializer },
   { name: "Rehype fee hook", addr: DOPPLER.rehype },
@@ -537,7 +538,17 @@ function MultiplyBody() {
         </Link>
         .
       </p>
-      <p>It starts when $MULTIPLY launches, and counts from then.</p>
+      <p>
+        <K>The token.</K> $MULTIPLY is{" "}
+        <span className="break-all">
+          <A href={explorerToken(PLATFORM_TOKEN)}>{PLATFORM_TOKEN}</A>
+        </span>
+        , on Robinhood Chain. Its{" "}
+        <Link href={`/token/${PLATFORM_TOKEN}`} className="font-medium text-brand underline underline-offset-4">
+          page
+        </Link>{" "}
+        has the chart and the swap.
+      </p>
     </>
   );
 }

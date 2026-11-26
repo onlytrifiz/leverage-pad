@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { LogoMark } from "@/components/brand/LogoMark";
-import { CHAIN, EXPLORER, explorerAddr } from "@/lib/clientConfig";
+import { CHAIN, EXPLORER, PLATFORM_TOKEN, explorerAddr } from "@/lib/clientConfig";
 import { IntroLink } from "@/components/intro/IntroButton";
 import { Reveal, RevealItem } from "@/components/motion";
 
@@ -17,6 +17,7 @@ const COLUMNS: { heading: string; links: FooterLink[] }[] = [
     links: [
       { label: "Market", href: "/market" },
       { label: "Launch a token", href: "/launch" },
+      { label: "$MULTIPLY", href: `/token/${PLATFORM_TOKEN}` },
       { label: "Buyback & burn", href: "/burn" },
       { label: "Stats", href: "/stats" },
     ],

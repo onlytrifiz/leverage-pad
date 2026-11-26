@@ -51,7 +51,7 @@ function world({ impact = 0, hookFee = 20000, wallet = 1_000e6 } = {}) {
 test('off without a token, or with one the router does not know, or when the treasury is another wallet', async () => {
   const w = world();
   config.FLYWHEEL_TOKEN = ''; await w.run(); assert.equal(w.reg.flywheel, undefined);
-  config.FLYWHEEL_TOKEN = '0x' + 'dd'.repeat(20); await w.run(); assert.match(w.log[0], /not a live token/);
+  config.FLYWHEEL_TOKEN = '0x' + 'dd'.repeat(20); await w.run(); assert.match(w.log[0], /not a v4 token/);
   config.FLYWHEEL_TOKEN = TOKEN;
   config.TREASURY = SUB; await w.run(); assert.match(w.log[1], /treasury/);
   config.TREASURY = W; assert.deepEqual(w.sends, []);
@@ -147,4 +147,11 @@ test('payers: never a retired token, whose sweep is its own money', () => {
   const c = { token: TOKEN, pair: config.USDG, sink: SINK, subWallet: SUB };
   assert.equal(payers([c]).length, 2);
   config.RETIRED.add(TOKEN); assert.deepEqual(payers([c]), []); config.RETIRED.delete(TOKEN);
+});
+
+test('a retired platform token is still bought and burned: its pool is there', async () => {
+  const w = world();
+  config.FLYWHEEL_TOKEN = TOKEN; config.RETIRED.add(TOKEN.toLowerCase());
+  try { await w.run(); assert.ok(w.reg.flywheel && w.reg.flywheel.token, w.log.join(' | ')); assert.ok(!w.log.some((l) => /off:/.test(l))); }
+  finally { config.RETIRED.delete(TOKEN.toLowerCase()); }
 });

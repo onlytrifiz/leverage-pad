@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowUpRight } from "lucide-react";
 import { loadFlywheel, type Buyback } from "@/lib/flywheel";
-import { explorerTx } from "@/lib/clientConfig";
+import { PLATFORM_TOKEN, explorerToken, explorerTx } from "@/lib/clientConfig";
 import { FLYWHEEL } from "@/lib/doppler";
 import { fmtInt, fmtUsd } from "@/lib/format";
 import type { CoinListItem } from "@/lib/types";
@@ -51,6 +51,20 @@ export default async function BurnPage() {
               {FLYWHEEL.buybackPct}% of what the protocol earns buys $MULTIPLY on its own pool and burns it, every{" "}
               {FLYWHEEL.everyMin} minutes.
             </p>
+            <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+              <Link href={`/token/${PLATFORM_TOKEN}`} className="font-semibold text-mint underline-offset-4 hover:underline">
+                Buy $MULTIPLY
+              </Link>
+              <a
+                href={explorerToken(PLATFORM_TOKEN)}
+                target="_blank"
+                rel="noreferrer"
+                title={PLATFORM_TOKEN}
+                className="num inline-flex items-center gap-1 text-night-ink-2 transition-colors hover:text-night-ink"
+              >
+                {PLATFORM_TOKEN.slice(0, 6)}…{PLATFORM_TOKEN.slice(-4)} <ArrowUpRight size={13} aria-hidden />
+              </a>
+            </div>
             {live ? (
               <>
                 <div className="mt-9 text-xs tracking-wide text-night-ink-2">$MULTIPLY burned</div>
@@ -69,7 +83,7 @@ export default async function BurnPage() {
               </>
             ) : (
               <p className="mt-8 max-w-[46ch] rounded-[14px] border border-night-line px-5 py-4 text-base leading-relaxed text-night-ink">
-                It starts when $MULTIPLY launches. Until then the note is whole.
+                The first buyback is on its way. Until then the note is whole.
               </p>
             )}
           </div>
