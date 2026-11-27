@@ -31,7 +31,7 @@ export default async function BurnPage() {
   const [{ flywheel: fw, coins }, platform] = await Promise.all([loadFlywheel(), coinDetail(PLATFORM_TOKEN).catch(() => null)]);
   // the platform token's own engine, shown while it holds or is about to hold something
   const held = platform && !platform.demo ? inPlay(platform) : null;
-  const engine = held && held.inPositions + held.goingIn > 0 ? platform : null;
+  const engine = held && (held.inPositions + held.goingIn > 0 || platform!.closed.length > 0) ? platform : null;
   const live = fw.token != null;
   const supply = fw.token?.coin.initialSupply ?? 1e9;
   const totals = [

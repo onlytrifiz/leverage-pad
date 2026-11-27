@@ -176,6 +176,7 @@ export async function coinDetail(address: string): Promise<CoinDetail | null> {
     },
     perp,
     tranches,
+    closed: [...(st?.perpClosed ?? [])].sort((a, b) => b.closedAt - a.closedAt),
     engineBlocked: st?.engineBlocked ?? null,
     engineSwitch: switching ? { from: switching.from } : null,
     managedDelayS,

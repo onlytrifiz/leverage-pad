@@ -225,6 +225,7 @@ export function demoDetail(address: string): CoinDetail | null {
     },
     perp: s.perp,
     tranches: demoTranches(s),
+    closed: [],
     subWallet: { address: specCoin(s).subWallet, quoteBalanceUsd: 10 + r() * 40, coinBalance: 0 },
     poolRaw: null, // demo: swap disabilitato
   };

@@ -1,7 +1,10 @@
 import { FLYWHEEL, PROFIT_SPLIT_PCT } from "@/lib/doppler";
 import { TRANCHE_INTERVAL_MIN, fmtEvery } from "@/lib/thresholds";
 import type { CoinDetail } from "@/lib/types";
+import Link from "next/link";
+import { fmtSignedUsd, fmtUsd } from "@/lib/format";
 import { AnimatedNumber, RevealBlock } from "@/components/motion";
+import { closedTotals } from "@/components/token/ClosedTranches";
 
 /** of a take-profit's gain, the part that ends up buying the platform token: its own buyback, and
  *  the protocol's share coming back through the platform buyback */
@@ -20,6 +23,7 @@ export function inPlay(detail: CoinDetail) {
 export default function InPlay({ detail }: { detail: CoinDetail }) {
   const { coin } = detail;
   const { inPositions, goingIn, atTargets, tranches } = inPlay(detail);
+  const closed = closedTotals(detail.closed);
   const cards = [
     {
       k: "In positions",
@@ -59,6 +63,28 @@ export default function InPlay({ detail }: { detail: CoinDetail }) {
           </div>
         ))}
       </dl>
+      {closed.count > 0 && (
+        <p className="mt-5 max-w-[80ch] text-base leading-relaxed text-ink-2">
+          Closed so far: {closed.count} {closed.count === 1 ? "tranche" : "tranches"}
+          {closed.tookProfit > 0 && (
+            <>
+              , {closed.tookProfit === closed.count ? "all" : closed.tookProfit} at the take-profit (
+              <span className="num whitespace-nowrap text-brand">{fmtSignedUsd(closed.banked)}</span>)
+            </>
+          )}
+          {closed.liquidated > 0 && (
+            <>
+              {closed.tookProfit > 0 ? " and " : ", "}
+              {closed.liquidated === closed.count ? "all" : closed.liquidated} liquidated (
+              <span className="num whitespace-nowrap text-down">−{fmtUsd(closed.lost)}</span>)
+            </>
+          )}
+          .{" "}
+          <Link href={`/token/${coin.token}`} className="text-brand underline underline-offset-2">
+            Every tranche on the ${coin.symbol} page
+          </Link>
+        </p>
+      )}
       <p className="mt-4 max-w-[80ch] text-sm leading-relaxed text-ink-3">
         An estimate at today&apos;s targets, not a promise. If the market goes the other way, a tranche can be liquidated and its margin
         is lost.

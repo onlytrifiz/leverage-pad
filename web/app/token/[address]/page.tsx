@@ -7,6 +7,7 @@ import { MarketsProvider } from "@/components/markets-provider";
 import LiveFeed from "@/components/LiveFeed";
 import SwapPanel from "@/components/SwapPanel";
 import TranchePanel from "@/components/TranchePanel";
+import ClosedTranches from "@/components/token/ClosedTranches";
 import VerifySection from "@/components/VerifySection";
 import TokenHero from "@/components/token/TokenHero";
 import AssetPanel from "@/components/token/AssetPanel";
@@ -84,6 +85,9 @@ export default async function TokenPage({
           </div>
           <div className="min-w-0 max-lg:order-3">
             <TranchePanel detail={detail} />
+          </div>
+          <div className="min-w-0 empty:hidden max-lg:order-3">
+            <ClosedTranches detail={detail} />
           </div>
           <div className="min-w-0 max-lg:order-3">
             <LiveFeed address={coin.token} demo={detail.demo} />

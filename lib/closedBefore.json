@@ -1,0 +1,82 @@
+{
+ "0xbe021bf099eff1c81d799079358943a981b77642": [
+  {
+   "openedAt": 1795711073692,
+   "closedAt": 1795745247437,
+   "outcome": "liquidated",
+   "market": "BTC",
+   "side": "short",
+   "leverage": 50,
+   "entry": 60368.09,
+   "exit": 61053.69,
+   "size": 0.15351,
+   "collateralUsd": 187.62,
+   "pnlUsd": -187.62
+  },
+  {
+   "openedAt": 1795714762388,
+   "closedAt": 1795745247437,
+   "outcome": "liquidated",
+   "market": "BTC",
+   "side": "short",
+   "leverage": 50,
+   "entry": 60428.46,
+   "exit": 61053.69,
+   "size": 4.6727,
+   "collateralUsd": 5716.62,
+   "pnlUsd": -5716.62
+  },
+  {
+   "openedAt": 1795719135813,
+   "closedAt": 1795745247437,
+   "outcome": "liquidated",
+   "market": "BTC",
+   "side": "short",
+   "leverage": 50,
+   "entry": 60470.9,
+   "exit": 61053.69,
+   "size": 0.29021,
+   "collateralUsd": 355.29,
+   "pnlUsd": -355.29
+  },
+  {
+   "openedAt": 1795730841767,
+   "closedAt": 1795745247437,
+   "outcome": "liquidated",
+   "market": "BTC",
+   "side": "short",
+   "leverage": 50,
+   "entry": 60623.4,
+   "exit": 61110.25,
+   "size": 0.02218,
+   "collateralUsd": 27.22,
+   "pnlUsd": -27.22
+  },
+  {
+   "openedAt": 1795734657785,
+   "closedAt": 1795745247437,
+   "outcome": "liquidated",
+   "market": "BTC",
+   "side": "short",
+   "leverage": 50,
+   "entry": 60442.71,
+   "exit": 61110.25,
+   "size": 0.33202,
+   "collateralUsd": 406.29,
+   "pnlUsd": -406.29
+  },
+  {
+   "openedAt": 1795739290149,
+   "closedAt": 1795745247437,
+   "outcome": "liquidated",
+   "market": "BTC",
+   "side": "short",
+   "leverage": 50,
+   "entry": 60493.62,
+   "exit": 61110.25,
+   "size": 0.01895,
+   "collateralUsd": 23.21,
+   "pnlUsd": -23.21
+  }
+ ]
+}

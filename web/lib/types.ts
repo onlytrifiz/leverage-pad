@@ -1,3 +1,7 @@
+import type { ClosedTranche } from "./registry";
+
+export type { ClosedTranche };
+
 export type EngineSettings = { market: string; side: "long" | "short"; leverage: number; takeProfitPct: number };
 
 /** one line of a coin's engine history, from the router's events */
@@ -185,6 +189,8 @@ export type CoinDetail = {
   };
   perp: PerpPosition | null;
   tranches: TrancheView[];
+  /** the tranches that are over, newest first */
+  closed: ClosedTranche[];
   /** the keeper's reason for not opening, shown on the coin page; null when the engine can run */
   engineBlocked: string | null;
   /** a managed coin's market or side changed and the keeper is still closing the old position */

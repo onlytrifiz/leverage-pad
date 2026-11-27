@@ -795,3 +795,62 @@ test('what a thin book taught is forgotten when nothing is at its target, and wi
   Object.assign(e.st, { perpTpDeep: 1, perpTpSplit: 3 });
   e.v.units = 0; await e.tick(); assert.deepEqual([e.st.perpTpDeep, e.st.perpTpSplit], [0, 0]);
 });
+
+test('closed tranches: a take-profit and a liquidation are each kept, with how they ended', async () => {
+  const e = engine({ cash: 1000 });
+  await e.tick();
+  const t0 = { ...e.st.perpTranches[0] };
+  e.v.px = 111; await e.tick();
+  assert.equal(e.st.perpClosed.length, 1);
+  const tp = e.st.perpClosed[0];
+  assert.equal(tp.outcome, 'tp'); assert.equal(tp.openedAt, t0.ts); close(tp.entry, t0.entryMark); close(tp.exit, 111 * 0.999);
+  close(tp.collateralUsd, t0.collateralUsd); close(tp.pnlUsd, e.st.perpRealizedUsd);
+  assert.equal(tp.market, 'BTC'); assert.equal(tp.side, 'long');
+
+  // a new tranche, then the venue takes half of it, then the rest: one record, grown
+  config.PERP_WITHDRAW_FLOOR_USD = 1e9;
+  e.v.cash += 500; e.st.perpTrancheAt = 0; e.v.px = 100; await e.tick();
+  const t1 = { ...e.st.perpTranches[0] };
+  e.v.cash = 0; // nothing to top up with: the book is the one tranche
+  e.v.units = Math.round(e.v.units / 2 * 1e4) / 1e4; e.v.margin /= 2; e.v.px = 95; await e.tick();
+  assert.equal(e.st.perpTranches.length, 1);
+  assert.equal(e.st.perpClosed.length, 2); assert.equal(e.st.perpClosed[1].outcome, 'liquidated');
+  close(e.st.perpClosed[1].collateralUsd, t1.collateralUsd / 2, 0.05);
+  e.v.units = 0; e.v.margin = 0; await e.tick();
+  config.PERP_WITHDRAW_FLOOR_USD = 25;
+  assert.equal(e.st.perpClosed.length, 2, 'the rest of the same tranche joins its record');
+  const liq = e.st.perpClosed[1];
+  close(liq.collateralUsd, t1.collateralUsd, 1e-6); close(liq.pnlUsd, -t1.collateralUsd, 1e-6); close(liq.size, t1.base / 1e4);
+  assert.equal(liq.exit, 95, 'the part seen at a price keeps it');
+  assert.equal(e.st.perpTranches.length, 0);
+});
+
+test('closed tranches: the history is bounded, and a part shares the result by its gain', () => {
+  const { recordsOf, bookClosed, partsOf, MAX_CLOSED } = require('../lib/closed');
+  const a = { base: 100, entryMark: 100, collateralUsd: 10, sizeDec: 2, ts: 1 }, b = { base: 100, entryMark: 90, collateralUsd: 10, sizeDec: 2, ts: 2 };
+  const parts = partsOf([a, b], 150);
+  assert.deepEqual(parts.map((p) => p.base), [100, 50]);
+  const r = recordsOf(parts, { outcome: 'tp', exit: 110, side: 'long', market: 'X', pnlUsd: 20 });
+  close(r[0].pnlUsd + r[1].pnlUsd, 20); close(r[0].pnlUsd / r[1].pnlUsd, 10 / 10); close(r[1].collateralUsd, 5);
+  const st = {};
+  for (let i = 0; i < MAX_CLOSED + 5; i++) bookClosed(st, recordsOf([{ t: { ...a, ts: i }, base: 100 }], { outcome: 'liquidated', side: 'long', market: 'X', at: i }));
+  assert.equal(st.perpClosed.length, MAX_CLOSED); assert.equal(st.perpClosed[0].openedAt, 5);
+});
+
+test('closed tranches: what closed before the history began comes from the backfill, once', () => {
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const reg = require('../lib/registry');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'closed-')), was = config.REGISTRY_PATH;
+  config.REGISTRY_PATH = path.join(dir, 'registry.json');
+  const T = '0xBe021bF099efF1C81d799079358943A981b77642', O = '0x' + '11'.repeat(20);
+  fs.writeFileSync(config.REGISTRY_PATH, JSON.stringify({ coins: [{ token: T }, { token: O }], state: { [T.toLowerCase()]: { perpTranches: [] }, [O]: { perpClosed: [] } } }));
+  const r = reg.load();
+  const before = require('../lib/closedBefore.json')[T.toLowerCase()];
+  assert.equal(r.state[T.toLowerCase()].perpClosed.length, before.length);
+  assert.ok(before.every((c) => c.outcome === 'liquidated' && c.pnlUsd === -c.collateralUsd));
+  assert.deepEqual(r.state[O].perpClosed, []);
+  r.state[T.toLowerCase()].perpClosed = [];
+  reg.save(r);
+  assert.deepEqual(reg.load().state[T.toLowerCase()].perpClosed, [], 'not again once the coin has a history of its own');
+  config.REGISTRY_PATH = was;
+});

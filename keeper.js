@@ -13,6 +13,7 @@ const { flywheelTick } = require('./lib/flywheel');
 const { createFeed, createUrgent } = require('./lib/marketFeed');
 const { createHealth } = require('./lib/health');
 const { createNotifier } = require('./lib/notify');
+const { partsOf, shrunk, recordsOf, noteClosed } = require('./lib/closed');
 const { createLanes, createMutex } = require('./lib/lanes');
 const { createStore } = require('./lib/store');
 const { multicall } = require('./lib/multicall');
@@ -309,6 +310,9 @@ function markFromPosition(pos, side) {
 // riconcilia le tranche con la size REALE on-chain (posBase, int scalato sizeDec).
 // La verita' e' sempre Lighter: liquidata → azzera; piu' piccola → scala pro-quota;
 // piu' grande (migrazione/recupero registry) → tranche sintetica all'entry corrente.
+// a tranche cut to `base` units: its collateral goes with its size
+const shrinkTo = (t, base) => ({ ...t, base, ...(t.collateralUsd != null && t.base > 0 ? { collateralUsd: t.collateralUsd * base / t.base } : {}) });
+
 function reconcileTranches(tranches, posBase, mark, sizeDec) {
   const sum = tranches.reduce((a, t) => a + t.base, 0);
   if (posBase <= 0) {
@@ -335,7 +339,7 @@ function reconcileTranches(tranches, posBase, mark, sizeDec) {
     for (let i = 1; i < tranches.length; i++) if (tranches[i].base > tranches[iMax].base) iMax = i;
     scaled[iMax].base += rem;
   }
-  const kept = scaled.filter((t) => t.base > 0);
+  const kept = scaled.map((t, i) => shrinkTo(tranches[i], t.base)).filter((t) => t.base > 0);
   return { tranches: kept, changed: true, note: `tranche riscalate a ${posBase} unita' (contabilita' era ${sum})` };
 }
 
@@ -404,7 +408,7 @@ function removeClosedBase(tranches, closedBase) {
   for (const t of tranches) {
     if (left <= 0) { out.push(t); continue; }
     if (t.base <= left) { left -= t.base; continue; }   // tranche chiusa interamente
-    out.push({ ...t, base: t.base - left });            // chiusa a meta': resta il residuo
+    out.push(shrinkTo(t, t.base - left));               // chiusa a meta': resta il residuo
     left = 0;
   }
   return out;
@@ -1022,6 +1026,7 @@ function bookOrder(coin, st, o, filled, price) {
   const out = filled > 0 ? closeProceeds({ filled, base: o.base, price, avgEntry: o.avgEntry, margin: o.margin, side: o.side, sizeDec: o.sizeDec }) : null;
   if (o.kind === 'tp') {
     if (!out) { console.log(`  [${coin.symbol}] TAKE-PROFIT: nessun fill (book vuoto o mercato chiuso?), riprovo al tick dopo`); return; }
+    noteClosed(st, () => recordsOf(partsOf(o.ready, filled), { outcome: 'tp', exit: price, side: o.side, market: coin.market, leverage: st.lighterLeverage ?? coin.leverage, pnlUsd: out.pnl }));
     st.perpTranches = removeClosedBase(o.ready, filled).concat(o.keep);
     st.perpOpen = st.perpTranches.length > 0; st.perpTpSplit = Math.max(0, Number(st.perpTpSplit || 0) - 1);
     st.perpTpDeep = o.count && o.count < o.of ? o.count * 2 : 0; // what the book took, and a little more next time
@@ -1031,7 +1036,10 @@ function bookOrder(coin, st, o, filled, price) {
     return;
   }
   if (o.kind === 'retire') {
-    if (out) { st.perpTranches = []; st.perpOpen = filled < o.base; st.perpTpSplit = 0; }
+    if (out) {
+      noteClosed(st, () => recordsOf(partsOf(st.perpTranches, filled), { outcome: 'retired', exit: price, side: o.side, market: String(o.label || '').split(' ')[0], pnlUsd: out.pnl }));
+      st.perpTranches = []; st.perpOpen = filled < o.base; st.perpTpSplit = 0;
+    }
     console.log(`  [${coin.symbol}] retired: ${out ? `closed ${o.label} ${filled}/${o.base} @ ${price}, result $${out.pnl.toFixed(2)}` : `closing ${o.label} did not fill, trying again`}`);
     return;
   }
@@ -1047,7 +1055,9 @@ function bookOrder(coin, st, o, filled, price) {
   if (o.own) {
     if (st.perpTranches.length) {
       sw.pnl = Number(sw.pnl || 0) + out.pnl;
-      st.perpTranches = reconcileTranches(reconcileTranches(st.perpTranches, o.base, price, o.sizeDec).tranches, left, price, o.sizeDec).tranches;
+      const was = reconcileTranches(st.perpTranches, o.base, price, o.sizeDec).tranches;
+      st.perpTranches = reconcileTranches(was, left, price, o.sizeDec).tranches;
+      noteClosed(st, () => recordsOf(shrunk(was, st.perpTranches), { outcome: 'switched', exit: price, side: o.side, market: (sw.from || {}).market, pnlUsd: out.pnl }));
     }
     st.perpOpen = left > 0;
   }
@@ -1331,6 +1341,7 @@ async function settleEngineSwitch({ coin, st, checkpoint, accountIndex, marketIn
     // what it made stays in the account as collateral.
     if (!same(st.perpEngine) && st.perpEngine && st.perpTranches.length) {
       console.log(`  [${coin.symbol}] ${tag}switch: the ${from.market} ${from.side} position is gone, its tranches are dropped`);
+      if (!sim) noteClosed(st, () => recordsOf(st.perpTranches.map((t) => ({ t, base: t.base })), { outcome: 'liquidated', side: from.side, market: from.market }));
       st.perpTranches = []; st.perpOpen = false;
     }
     if (st.perpSwitch) {
@@ -1640,6 +1651,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
       // posizione sparita: azzera la contabilita' (il ramo non usa il mark)
       const rec = reconcileTranches(st.perpTranches, 0, 0, mkt.sizeDec);
       if (rec.changed) {
+        // gone without an order of ours: the venue liquidated it, at a price we did not see
+        if (!sim) noteClosed(st, () => recordsOf(st.perpTranches.map((t) => ({ t, base: t.base })), { outcome: 'liquidated', side: coin.side, market: coin.market }));
         st.perpTranches = rec.tranches; st.perpOpen = false;
         st.perpTpDeep = 0; st.perpTpSplit = 0;
         // funding the dead position owed died with its margin: it is not the next one's debt
@@ -1660,6 +1673,8 @@ async function perpTick(keeper, coin, st, checkpoint, sub, unitUsd, quote, { urg
     } else if (mark != null) {
       const rec = reconcileTranches(st.perpTranches, posBase, mark, mkt.sizeDec);
       if (rec.changed) {
+        // smaller than the book without an order of ours: the venue liquidated part of it
+        if (!sim) noteClosed(st, () => recordsOf(shrunk(st.perpTranches, rec.tranches), { outcome: 'liquidated', exit: mark, side: coin.side, market: coin.market }));
         st.perpTranches = rec.tranches;
         if (!sim) checkpoint();
         if (rec.note) console.log(`  [${coin.symbol}] ${tag}tranches: ${rec.note}`);

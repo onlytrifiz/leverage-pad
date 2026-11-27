@@ -26,6 +26,22 @@ export type RegistryTranche = {
   leverage?: number;
 };
 
+/** a tranche that is over, as the keeper keeps it (lib/closed.js) */
+export type ClosedTranche = {
+  openedAt: number | null;
+  closedAt: number;
+  outcome: "tp" | "liquidated" | "switched" | "retired";
+  market: string;
+  side: "long" | "short";
+  leverage: number | null;
+  entry: number;
+  /** null when the venue closed it at a price the keeper did not see */
+  exit: number | null;
+  size: number;
+  collateralUsd: number;
+  pnlUsd: number;
+};
+
 /** the keeper's last read of a token's Lighter account */
 export type AccountView = {
   at: number;
@@ -55,6 +71,8 @@ export type CoinState = {
   perpFundingUsd?: number;
   perpWithdrawPendingUsd: number;
   perpTranches?: RegistryTranche[];
+  /** the tranches that are over, newest last */
+  perpClosed?: ClosedTranche[];
   lighterAccountIndex: number | null;
   lastTickTs: number;
   /** why the keeper is not opening (e.g. leverage above the venue's cap), null when it can */
